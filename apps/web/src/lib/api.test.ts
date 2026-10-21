@@ -1,8 +1,11 @@
+// @vitest-environment jsdom
+// @vitest-environment-options {"url": "https://app.mafhum.dz"}
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiClientError, readCookie } from "./api";
+import { api, ApiClientError, readCookie, readCsrfCookie } from "./api";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  document.cookie = "__Host-mafhum_csrf=; Max-Age=0; path=/; Secure";
   document.cookie = "mafhum_csrf=; Max-Age=0; path=/";
 });
 
@@ -33,6 +36,21 @@ describe("API client security & error handling", () => {
     expect(init?.credentials).toBe("include");
     expect((init?.headers as Record<string, string>)["X-CSRF-Token"]).toBe(
       "test-csrf-token-123",
+    );
+  });
+
+  it("prefers __Host-mafhum_csrf Secure cookie in production HTTPS environments", async () => {
+    document.cookie = "mafhum_csrf=legacy-dev-cookie; path=/";
+    document.cookie = "__Host-mafhum_csrf=hardened-host-csrf-999; path=/; Secure";
+    expect(readCsrfCookie()).toBe("hardened-host-csrf-999");
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "Logged out" }), { status: 200 }),
+    );
+    await api.logout();
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init?.headers as Record<string, string>)["X-CSRF-Token"]).toBe(
+      "hardened-host-csrf-999",
     );
   });
 

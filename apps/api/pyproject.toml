@@ -26,6 +26,7 @@ test = [
   "mypy==1.15.0",
   "ruff==0.11.9",
   "pip-audit==2.10.1",
+  "pgserver==0.1.4",
 ]
 
 [tool.ruff]
@@ -42,3 +43,7 @@ strict = true
 warn_return_any = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["pgserver.*"]
+ignore_missing_imports = true

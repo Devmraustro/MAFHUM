@@ -6,6 +6,8 @@ Production settings are validated at startup and the application refuses to
 start with an insecure production configuration.
 """
 
+import ipaddress
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -31,6 +33,7 @@ class Settings(BaseSettings):
     request_timeout_seconds: int = 30
 
     allow_dev_origins: str = "http://localhost:3000"
+    trusted_proxy_ips: str = ""
 
     # --- Sessions -------------------------------------------------------
     session_secret: str = "change-me-in-production"
@@ -40,7 +43,8 @@ class Settings(BaseSettings):
     session_max_per_user: int = 10
 
     # --- Rate limiting (auth endpoints) ---------------------------------
-    auth_rate_limit: int = 5  # max attempts per key in sliding window
+    auth_rate_limit: int = 5  # per-account attempts within window
+    auth_ip_rate_limit: int = 10  # independent per-IP attempts within window
     auth_rate_window_seconds: int = 60
 
     # --- Quotas ---------------------------------------------------------
@@ -71,6 +75,7 @@ class Settings(BaseSettings):
         "session_ttl_minutes",
         "session_max_per_user",
         "auth_rate_limit",
+        "auth_ip_rate_limit",
         "auth_rate_window_seconds",
         "default_project_quota",
     )
@@ -90,6 +95,43 @@ class Settings(BaseSettings):
             )
         return value.lower()
 
+    @field_validator("trusted_proxy_ips")
+    @classmethod
+    def _trusted_proxies(cls, value: str) -> str:
+        for entry in (item.strip() for item in value.split(",") if item.strip()):
+            ipaddress.ip_network(entry, strict=False)
+        return value
+
+    @property
+    def effective_session_cookie_name(self) -> str:
+        """Use RFC 6265bis `__Host-` prefix automatically in HTTPS production."""
+        if self.app_env == "production" and not self.session_cookie_name.startswith("__Host-"):
+            return f"__Host-{self.session_cookie_name}"
+        return self.session_cookie_name
+
+    @property
+    def effective_csrf_cookie_name(self) -> str:
+        """Use `__Host-` cookie prefix in production to block domain cookie tossing."""
+        if self.app_env == "production":
+            return "__Host-mafhum_csrf"
+        return "mafhum_csrf"
+
+    def parsed_trusted_proxies(
+        self,
+    ) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        return [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in self.trusted_proxy_ips.split(",")
+            if item.strip()
+        ]
+
+    def parsed_allowed_origins(self) -> set[str]:
+        return {
+            origin.strip().rstrip("/").lower()
+            for origin in self.allow_dev_origins.split(",")
+            if origin.strip()
+        }
+
     def validate_for_production(self) -> None:
         """Called at startup. Production must not run with insecure defaults."""
         if self.app_env != "production":
@@ -105,6 +147,8 @@ class Settings(BaseSettings):
             problems.append("SQLite DATABASE_URL is not supported in multi-user production")
         if self.session_cookie_same_site == "none":
             problems.append("SESSION_COOKIE_SAME_SITE must not be 'none' in production")
+        if "*" in self.parsed_allowed_origins():
+            problems.append("Wildcard '*' origin is forbidden with credentialed cookies")
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)

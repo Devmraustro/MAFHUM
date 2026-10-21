@@ -1,19 +1,20 @@
-# MAFHUM Data Policy (Implementation Requirements & Phase 2 Lifecycle)
+# MAFHUM Data Policy (Implementation Requirements & Phase 2 Hardened Lifecycle)
 
-## User data
+## User data & PII minimization
 Collect only data needed for accounts, saved work, usage and support:
 - Account identity (`email`, hashed password, optional `full_name`, `preferred_locale` in `ar` | `fr`, account status, project quota counters, timestamps).
 - Passwords are never stored or logged in plaintext; only SHA-256 pre-hashed salted `bcrypt` digests (`pyca/bcrypt`, cost 12) are persisted.
-- Session tokens are never stored in plaintext; only secret-keyed `HMAC-SHA256` digests are stored server-side.
+- Session tokens are never stored in plaintext; only `SESSION_SECRET`-keyed `HMAC-SHA256` digests are stored server-side.
+- Login rate-limiter account buckets never store raw email addresses in memory or cache keys; emails are canonicalized (`NFKC` + trim + lowercase) and hashed with `HMAC-SHA256(SESSION_SECRET, ...)` so in-memory rate-limit state contains zero plaintext email PII.
 - Every project and document has explicit server-enforced ownership (`owner_id`). Client-supplied user or owner IDs are never trusted.
 - Do not train on student documents by default. Do not send uploads to external inference providers unless configured and disclosed.
 
 ## Account export, deletion, and honest retention boundaries (Phase 2)
-- **Export (`GET /api/v1/me/export`)**: Authenticated students can export their profile metadata and all owned project records as JSON without exposing password hashes or session secrets.
-- **Deletion (`DELETE /api/v1/me`, CSRF-protected)**: Atomically revokes and deletes all active/historical server sessions for the user, deletes all owned `projects` records in the primary relational database, deletes the `users` record, and clears browser session/CSRF cookies immediately.
+- **Export (`GET /api/v1/me/export`)**: Authenticated students can export their profile metadata and all owned project records as JSON without exposing password hashes, session digests, or server secrets.
+- **Deletion (`DELETE /api/v1/me`, Origin + session-bound CSRF protected)**: Atomically revokes and deletes all active/historical server sessions for the user, deletes all owned `projects` records in the primary relational database (`ON DELETE CASCADE` on PostgreSQL plus explicit child row deletion inside the transaction), deletes the `users` record, and clears browser session/CSRF cookies immediately.
 - **Retention & external limitations (explicitly disclosed, never overstated)**:
   1. Encrypted database backups and infrastructure-level redacted access/error logs follow their scheduled operational retention rotation and are **not** retroactively rewritten at the instant `DELETE /api/v1/me` runs.
-  2. In Phase 2, no third-party authentication or external AI provider receives user data (`AI_PROVIDER=mock`). When optional external providers or object-storage buckets are introduced in later phases, deletion guarantees only cover stores explicitly purged and verified by deletion jobs — MAFHUM never claims deletion of data residing in backups or external systems without proof.
+  2. In Phase 2, no mandatory paid auth service or external AI provider receives user data (`AI_PROVIDER=mock`). When optional external providers or object-storage buckets are introduced in later phases, deletion guarantees only cover stores explicitly purged and verified by deletion jobs — MAFHUM never claims deletion of data residing in backups or external systems without proof.
 
 ## Uploads and retention (Phase 3+)
 Validate uploads and store privately. Record provenance and processing status. Define retention by data class and implement deletion of originals, extracted text, chunks, embeddings, caches and generated artifacts. Do not put document contents or credentials in ordinary logs.
@@ -28,6 +29,6 @@ All output is a draft. Use a provider-neutral gateway and disclose configured pr
 Every citation must resolve to a source record and supporting excerpt or page/section when available. Never invent authors, pages, URLs, titles, quotations or legal provisions. Mark unverified details for student review and encourage reading original sources.
 
 ## Logging/access
-Least privilege, redacted logs, audit privileged access, and avoid storing prompts/responses unless required for saved work and covered by retention rules.
+Least privilege, redacted logs, sanitized `X-Request-ID` correlation headers, audit privileged access, and avoid storing prompts/responses unless required for saved work and covered by retention rules.
 
 Before public release, review this policy against applicable Algerian law, provider terms and actual deployment. This document is not legal advice or a compliance certification.

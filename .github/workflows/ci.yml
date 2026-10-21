@@ -47,8 +47,22 @@ jobs:
           echo "Required docs present; obvious secret patterns absent."
 
   backend:
-    name: Backend checks (lint, mypy strict, pytest, migrations, pip-audit)
+    name: Backend checks (lint, mypy strict, pytest + PostgreSQL, migrations, pip-audit)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: mafhum
+          POSTGRES_PASSWORD: mafhum_ci_password
+          POSTGRES_DB: mafhum_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U mafhum -d mafhum_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     defaults:
       run:
         working-directory: apps/api
@@ -65,11 +79,18 @@ jobs:
         run: ruff check .
       - name: Typecheck with Mypy (strict)
         run: mypy app migrations tests
-      - name: Run unit, integration, and security tests
+      - name: Run unit, integration, concurrency, security, and PostgreSQL tests
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://mafhum:mafhum_ci_password@127.0.0.1:5432/mafhum_ci
         run: python -m pytest -v
-      - name: Verify Alembic migrations on clean DB
+      - name: Verify Alembic upgrade & downgrade on clean SQLite and PostgreSQL
         run: |
           DATABASE_URL=sqlite:////tmp/ci_migration_check.db PYTHONPATH=. alembic -c alembic.ini upgrade head
+          DATABASE_URL=sqlite:////tmp/ci_migration_check.db PYTHONPATH=. alembic -c alembic.ini downgrade base
+          DATABASE_URL=sqlite:////tmp/ci_migration_check.db PYTHONPATH=. alembic -c alembic.ini upgrade head
+          DATABASE_URL=postgresql+psycopg://mafhum:mafhum_ci_password@127.0.0.1:5432/mafhum_ci PYTHONPATH=. alembic -c alembic.ini upgrade head
+          DATABASE_URL=postgresql+psycopg://mafhum:mafhum_ci_password@127.0.0.1:5432/mafhum_ci PYTHONPATH=. alembic -c alembic.ini downgrade base
+          DATABASE_URL=postgresql+psycopg://mafhum:mafhum_ci_password@127.0.0.1:5432/mafhum_ci PYTHONPATH=. alembic -c alembic.ini upgrade head
       - name: Audit Python dependencies
         run: pip-audit
 

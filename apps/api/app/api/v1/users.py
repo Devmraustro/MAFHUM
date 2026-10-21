@@ -88,7 +88,7 @@ def delete_account(
     service = AuthService(db)
     sessions_revoked, projects_deleted = service.delete_account(user.id)
     db.commit()
-    set_auth_cookies(response, None, None)
+    set_auth_cookies(request, response, None, None)
     return DeleteAccountResponse(
         detail="Account deleted",
         deleted_user_id=deleted_id,

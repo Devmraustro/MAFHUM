@@ -12,6 +12,8 @@ def test_defaults_are_safe_for_local_development() -> None:
     assert s.api_prefix == "/api/v1"
     assert s.max_upload_mb == 20
     assert s.app_env == "development"
+    assert s.effective_session_cookie_name == "mafhum_session"
+    assert s.effective_csrf_cookie_name == "mafhum_csrf"
 
 
 def test_invalid_app_env_is_rejected() -> None:
@@ -29,7 +31,12 @@ def test_positive_limits_enforced() -> None:
         Settings(max_upload_mb=0)
 
 
-def test_production_rejects_default_or_short_secret() -> None:
+def test_invalid_trusted_proxy_cidr_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(trusted_proxy_ips="10.0.0.0/8,not-an-ip")
+
+
+def test_production_rejects_default_or_short_secret_or_wildcard_cors() -> None:
     s_default = Settings(
         app_env="production",
         database_url="postgresql+psycopg://mafhum:pw@db:5432/mafhum",
@@ -44,6 +51,15 @@ def test_production_rejects_default_or_short_secret() -> None:
     )
     with pytest.raises(ValueError, match="32 characters"):
         s_short.validate_for_production()
+
+    s_wildcard = Settings(
+        app_env="production",
+        session_secret="s" * 48,
+        database_url="postgresql+psycopg://mafhum:pw@db:5432/mafhum",
+        allow_dev_origins="*",
+    )
+    with pytest.raises(ValueError, match="Wildcard"):
+        s_wildcard.validate_for_production()
 
 
 def test_production_rejects_missing_or_sqlite_db_and_samesite_none() -> None:
@@ -74,11 +90,15 @@ def test_production_rejects_missing_or_sqlite_db_and_samesite_none() -> None:
         s_samesite.validate_for_production()
 
 
-def test_production_accepts_hardened_configuration() -> None:
+def test_production_accepts_hardened_configuration_and_host_cookie_prefix() -> None:
     s = Settings(
         app_env="production",
         session_secret="s" * 48,
         database_url="postgresql+psycopg://mafhum:pw@db:5432/mafhum",
         session_cookie_same_site="lax",
+        trusted_proxy_ips="10.0.0.0/8, 172.16.0.0/12",
     )
     s.validate_for_production()
+    assert s.effective_session_cookie_name == "__Host-mafhum_session"
+    assert s.effective_csrf_cookie_name == "__Host-mafhum_csrf"
+    assert len(s.parsed_trusted_proxies()) == 2

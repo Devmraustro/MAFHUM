@@ -1,8 +1,10 @@
 """Authentication, session management, profile, export, and deletion service."""
 
+import unicodedata
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as SaSession
 
 from app.config import settings
@@ -18,6 +20,10 @@ RETENTION_NOTICE = (
     "operational logs are subject to infrastructure retention windows and are not "
     "retroactively rewritten; no third-party data deletion is claimed unless verified."
 )
+
+
+def _normalize_email(email: str) -> str:
+    return unicodedata.normalize("NFKC", email).strip().lower()
 
 
 class AuthError(Exception):
@@ -36,12 +42,13 @@ class AuthService:
         full_name: str | None = None,
         preferred_locale: str = "ar",
     ) -> User:
-        normalized_email = email.strip().lower()
+        normalized_email = _normalize_email(email)
         existing = self.db.execute(
             select(User).where(User.email == normalized_email)
         ).scalar_one_or_none()
         if existing is not None:
             raise AuthError("email_already_registered")
+
         user = User(
             email=normalized_email,
             password_hash=hash_password(password),
@@ -51,7 +58,13 @@ class AuthService:
             projects_count=0,
         )
         self.db.add(user)
-        self.db.flush()
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # Concurrent duplicate-email registration race: roll back cleanly
+            # instead of propagating an unhandled 500 error.
+            self.db.rollback()
+            raise AuthError("email_already_registered") from None
         return user
 
     # ----- login / sessions -----
@@ -61,7 +74,7 @@ class AuthService:
         Runs dummy bcrypt verification when the email does not exist so response
         timing does not leak whether an email address is registered.
         """
-        normalized_email = email.strip().lower()
+        normalized_email = _normalize_email(email)
         user = self.db.execute(
             select(User).where(User.email == normalized_email)
         ).scalar_one_or_none()
@@ -75,7 +88,7 @@ class AuthService:
         return user
 
     def create_session(self, user: User) -> tuple[str, str]:
-        """Create a server-side session. Returns (session_token, csrf_token)."""
+        """Create a server-side session and session-bound CSRF token."""
         active_sessions = list(
             self.db.execute(
                 select(SessionModel)
@@ -100,7 +113,7 @@ class AuthService:
         )
         self.db.add(session)
         self.db.flush()
-        return token, new_csrf_token()
+        return token, new_csrf_token(token)
 
     def get_session(self, token: str | None) -> SessionModel | None:
         if not token:
@@ -188,10 +201,7 @@ class AuthService:
 
     # ----- account deletion -----
     def delete_account(self, user_id: str) -> tuple[int, int]:
-        """Atomically revoke & delete all sessions, owned projects, and user record.
-
-        Returns `(sessions_removed, projects_deleted)`.
-        """
+        """Atomically revoke & delete all sessions, owned projects, and user record."""
         user = self.db.get(User, user_id)
         if user is None:
             raise AuthError("user_not_found")
@@ -209,8 +219,6 @@ class AuthService:
             ).scalar_one()
         )
 
-        # Explicitly delete child records in addition to ON DELETE CASCADE so
-        # deletion lifecycle guarantees hold regardless of DB backend settings.
         self.db.execute(delete(SessionModel).where(SessionModel.user_id == user_id))
         self.db.execute(delete(Project).where(Project.owner_id == user_id))
         self.db.delete(user)

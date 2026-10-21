@@ -10,7 +10,7 @@ Endpoints:
   POST /api/v1/auth/logout-all        — revoke all sessions for current user
   GET  /api/v1/auth/sessions          — list active sessions for current user
   DELETE /api/v1/auth/sessions/{id}   — revoke a specific session
-  GET  /api/v1/auth/csrf-token        — set double-submit CSRF cookie
+  GET  /api/v1/auth/csrf-token        — set session-bound CSRF cookie
   GET/PATCH/DELETE /api/v1/me         — profile, usage, export, account deletion
   GET/POST/PATCH/DELETE /api/v1/projects — user-owned project CRUD
   POST /api/v1/ai/generate            — deterministic mock draft (development/authenticated)
@@ -26,7 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.deps import current_user
+from app.api.deps import current_user, require_csrf, require_same_origin
 from app.api.v1.health import health_live, health_ready
 from app.api.v1.router import router as v1_router
 from app.config import settings
@@ -62,11 +62,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-allowed_origins = [
-    origin.strip()
-    for origin in settings.allow_dev_origins.split(",")
-    if origin.strip()
-]
+allowed_origins = settings.parsed_allowed_origins()
 
 app.add_middleware(
     CORSMiddleware,
@@ -111,13 +107,17 @@ async def ai_generate(
     """Deterministic mock draft endpoint.
 
     Permitted unauthenticated only in local development contract checks; requires
-    an authenticated user in staging/production.
+    an authenticated user + valid session-bound CSRF token in staging/production
+    and whenever a cookie-authenticated session is present.
     """
+    require_same_origin(request)
     if settings.app_env != "development" and user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
         )
+    if user is not None or settings.app_env != "development":
+        require_csrf(request)
     provider = get_ai_provider()
     return await provider.generate(payload, request_id=_request_id(request))
 

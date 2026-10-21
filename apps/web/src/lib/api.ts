@@ -1,6 +1,6 @@
 /**
  * Browser API client using same-origin `/api/v1` proxy routes, HttpOnly session
- * cookies, double-submit CSRF headers, and typed SafeErrorEnvelope handling.
+ * cookies, session-bound CSRF headers, and typed SafeErrorEnvelope handling.
  */
 
 import type {
@@ -51,14 +51,18 @@ export function readCookie(name: string): string | null {
   return null;
 }
 
+export function readCsrfCookie(): string | null {
+  return readCookie("__Host-mafhum_csrf") ?? readCookie("mafhum_csrf");
+}
+
 async function ensureCsrfToken(): Promise<string | null> {
-  const existing = readCookie("mafhum_csrf");
+  const existing = readCsrfCookie();
   if (existing) return existing;
   await fetch("/api/v1/auth/csrf-token", {
     method: "GET",
     credentials: "include",
   });
-  return readCookie("mafhum_csrf");
+  return readCsrfCookie();
 }
 
 async function request<T>(

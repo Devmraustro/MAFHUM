@@ -1,9 +1,26 @@
-"""Project service — every access path enforces server-side ownership."""
+"""Project service — server-side ownership & concurrency-safe quota enforcement.
+
+Concurrency design:
+- On PostgreSQL (`READ COMMITTED`), concurrent `create_project` / `delete_project`
+  calls for the same user acquire an exclusive row lock on the parent `users`
+  row (`SELECT ... FROM users WHERE id = :uid FOR UPDATE`) *before* counting or
+  mutating rows in `projects`. Because the parent `users` row always exists even
+  when the user owns 0 projects, locking the parent row prevents the classic
+  empty-result TOCTOU race without blocking other users.
+- In addition, `users.projects_count` is maintained inside the same atomic
+  transaction and bounded by SQL constraint `ck_users_projects_within_quota`
+  (`projects_count <= project_quota`), rolling back cleanly if ever violated.
+- On SQLite (local dev/tests), write serialization acquires an upfront SQLite
+  write lock (`UPDATE users SET projects_count = projects_count WHERE id = :uid`
+  with `busy_timeout`). Note: SQLite uses database-level single-writer locking
+  and is not equivalent to PostgreSQL multi-process MVCC concurrency.
+"""
 
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as SaSession
 
 from app.models.project import Project
@@ -33,14 +50,38 @@ class ProjectService:
             ).scalar_one()
         )
 
-    def _enforce_quota(self) -> int:
-        actual_count = self.count_projects()
-        if actual_count >= self.current_user.project_quota:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Project quota reached",
+    def _lock_user_row_for_mutation(self) -> User:
+        dialect = self.db.bind.dialect.name if self.db.bind is not None else ""
+        if dialect == "postgresql":
+            stmt = (
+                select(User)
+                .where(User.id == self.current_user.id)
+                .with_for_update()
             )
-        return actual_count
+            locked = self.db.execute(stmt).scalar_one_or_none()
+        elif dialect == "sqlite":
+            # Acquire SQLite RESERVED write lock immediately as the first write
+            # statement of the transaction so concurrent local threads serialize
+            # cleanly before reading COUNT(*).
+            self.db.execute(
+                text("UPDATE users SET projects_count = projects_count WHERE id = :uid"),
+                {"uid": self.current_user.id},
+            )
+            locked = self.db.execute(
+                select(User).where(User.id == self.current_user.id)
+            ).scalar_one_or_none()
+        else:
+            locked = self.db.execute(
+                select(User).where(User.id == self.current_user.id)
+            ).scalar_one_or_none()
+
+        if locked is None or not locked.is_active:
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        return locked
 
     def list_projects(self, limit: int, offset: int) -> list[Project]:
         return list(
@@ -73,18 +114,34 @@ class ProjectService:
         return project
 
     def create_project(self, title: str, description: str | None) -> Project:
-        actual_count = self._enforce_quota()
+        locked_user = self._lock_user_row_for_mutation()
+        actual_count = self.count_projects()
+        if actual_count >= locked_user.project_quota:
+            locked_user.projects_count = actual_count
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Project quota reached",
+            )
+
         now = datetime.now(UTC)
         project = Project(
-            owner_id=self.current_user.id,
+            owner_id=locked_user.id,
             title=title,
             description=description,
             created_at=now,
             updated_at=now,
         )
         self.db.add(project)
-        self.current_user.projects_count = actual_count + 1
-        self.db.flush()
+        locked_user.projects_count = actual_count + 1
+        try:
+            self.db.flush()
+        except IntegrityError:
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Project quota reached",
+            ) from None
         return project
 
     def update_project(
@@ -106,8 +163,9 @@ class ProjectService:
         return project
 
     def delete_project(self, project_id: str) -> None:
+        locked_user = self._lock_user_row_for_mutation()
         project = self.get_project(project_id)
         self.db.delete(project)
         self.db.flush()
-        self.current_user.projects_count = self.count_projects()
+        locked_user.projects_count = self.count_projects()
         self.db.flush()

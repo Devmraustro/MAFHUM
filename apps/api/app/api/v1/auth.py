@@ -10,6 +10,7 @@ from app.api.deps import (
     check_register_rate,
     require_csrf,
     require_db,
+    require_same_origin,
     require_user,
     set_auth_cookies,
 )
@@ -23,14 +24,11 @@ from app.schemas.auth import (
     UserOut,
     UserRegister,
 )
+from app.security.network import is_https_request
 from app.security.session import hash_token, new_csrf_token
 from app.services.auth import AuthError, AuthService
 
 router = APIRouter(tags=["auth"])
-
-
-def _client_identifier(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
 
 
 @router.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -40,7 +38,8 @@ def register(
     payload: UserRegister,
     db: SaSession = Depends(require_db),
 ) -> UserOut:
-    check_register_rate(_client_identifier(request))
+    require_same_origin(request)
+    check_register_rate(request)
     service = AuthService(db)
     try:
         user = service.register(
@@ -59,7 +58,7 @@ def register(
     session_token, csrf_token = service.create_session(user)
     db.commit()
     db.refresh(user)
-    set_auth_cookies(response, session_token, csrf_token)
+    set_auth_cookies(request, response, session_token, csrf_token)
     return UserOut.model_validate(user)
 
 
@@ -70,7 +69,8 @@ def login(
     payload: UserLogin,
     db: SaSession = Depends(require_db),
 ) -> UserOut:
-    check_login_rate(_client_identifier(request), payload.email)
+    require_same_origin(request)
+    check_login_rate(request, payload.email)
     service = AuthService(db)
     user = service.authenticate(payload.email, payload.password)
     if user is None:
@@ -81,7 +81,7 @@ def login(
     session_token, csrf_token = service.create_session(user)
     db.commit()
     db.refresh(user)
-    set_auth_cookies(response, session_token, csrf_token)
+    set_auth_cookies(request, response, session_token, csrf_token)
     return UserOut.model_validate(user)
 
 
@@ -94,11 +94,11 @@ def logout(
 ) -> AuthMessage:
     require_csrf(request)
     service = AuthService(db)
-    token = request.cookies.get(settings.session_cookie_name)
+    token = request.cookies.get(settings.effective_session_cookie_name)
     if token:
         service.revoke_session(token)
         db.commit()
-    set_auth_cookies(response, None, None)
+    set_auth_cookies(request, response, None, None)
     return AuthMessage(detail="Logged out")
 
 
@@ -113,7 +113,7 @@ def logout_all(
     service = AuthService(db)
     service.revoke_all_user_sessions(user.id)
     db.commit()
-    set_auth_cookies(response, None, None)
+    set_auth_cookies(request, response, None, None)
     return AuthMessage(detail="All sessions revoked")
 
 
@@ -124,7 +124,7 @@ def list_sessions(
     db: SaSession = Depends(require_db),
 ) -> SessionListOut:
     service = AuthService(db)
-    token = request.cookies.get(settings.session_cookie_name)
+    token = request.cookies.get(settings.effective_session_cookie_name)
     current_digest = hash_token(token) if token else ""
     active = service.list_active_sessions(user.id)
     return SessionListOut(
@@ -151,8 +151,7 @@ def revoke_session_by_id(
 ) -> AuthMessage:
     require_csrf(request)
     service = AuthService(db)
-    # Check if revoking own current session so cookies can be cleared cleanly too.
-    token = request.cookies.get(settings.session_cookie_name)
+    token = request.cookies.get(settings.effective_session_cookie_name)
     current_sess = service.get_session(token)
     revoked = service.revoke_session_by_id(user.id, session_id)
     if not revoked:
@@ -162,7 +161,7 @@ def revoke_session_by_id(
         )
     db.commit()
     if current_sess is not None and current_sess.id == session_id:
-        set_auth_cookies(response, None, None)
+        set_auth_cookies(request, response, None, None)
     return AuthMessage(detail="Session revoked")
 
 
@@ -172,11 +171,17 @@ def auth_me(user: User = Depends(require_user)) -> UserOut:
 
 
 @router.get("/auth/csrf-token", response_model=AuthMessage)
-def csrf_token_endpoint(response: Response) -> AuthMessage:
-    token = new_csrf_token()
-    secure = settings.app_env == "production" or settings.session_cookie_same_site == "none"
+def csrf_token_endpoint(request: Request, response: Response) -> AuthMessage:
+    session_token = request.cookies.get(settings.effective_session_cookie_name, "")
+    token = new_csrf_token(session_token)
+    https = is_https_request(request, settings.parsed_trusted_proxies())
+    secure = (
+        settings.app_env == "production"
+        or settings.session_cookie_same_site == "none"
+        or https
+    )
     response.set_cookie(
-        key="mafhum_csrf",
+        key=settings.effective_csrf_cookie_name,
         value=token,
         httponly=False,
         secure=secure,

@@ -40,5 +40,6 @@ class User(Base):
         UniqueConstraint("email", name="uq_users_email_lower"),
         CheckConstraint("project_quota >= 0", name="ck_users_project_quota_nonneg"),
         CheckConstraint("projects_count >= 0", name="ck_users_projects_count_nonneg"),
+        CheckConstraint("projects_count <= project_quota", name="ck_users_projects_within_quota"),
         CheckConstraint("preferred_locale IN ('ar', 'fr')", name="ck_users_preferred_locale"),
     )

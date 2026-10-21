@@ -8,7 +8,7 @@ If any external code, asset, or model weight is adopted in future phases:
 3. Document any local modifications.
 4. Review model-weight licenses separately from source-code licenses.
 
-## Declared dependencies (Phases 1–2)
+## Declared dependencies (Phases 1–2 + Phase 2 Security Hardening)
 
 ### Backend (`apps/api/requirements.txt` & `requirements-test.txt`)
 - `fastapi==0.159.0` — MIT License (`https://github.com/fastapi/fastapi`)
@@ -20,7 +20,13 @@ If any external code, asset, or model weight is adopted in future phases:
 - `alembic==1.20.0` — MIT License (`https://github.com/sqlalchemy/alembic`)
 - `psycopg==3.2.7` — LGPL-3.0 License (`https://github.com/psycopg/psycopg`; dynamic package dependency only, not modified or statically linked; review distribution obligations prior to binary redistribution)
 - `bcrypt==4.3.0` (`pyca/bcrypt`) — Apache-2.0 License (`https://github.com/pyca/bcrypt`)
-- Test/audit dev dependencies: `pytest==9.1.1` (MIT), `httpx==0.28.1` (BSD-3-Clause), `mypy==1.15.0` (MIT), `ruff==0.11.9` (MIT), `pip-audit==2.10.1` (Apache-2.0).
+- Test/audit dev dependencies (`requirements-test.txt` only, excluded from production runtime):
+  - `pytest==9.1.1` — MIT License
+  - `httpx==0.28.1` — BSD-3-Clause License
+  - `mypy==1.15.0` — MIT License
+  - `ruff==0.11.9` — MIT License
+  - `pip-audit==2.10.1` — Apache-2.0 License
+  - `pgserver==0.1.4` (`https://github.com/orm011/pgserver`) — Apache-2.0 License (Python wrapper) + PostgreSQL License (bundled PostgreSQL 16 server binaries used strictly in offline local test fixtures)
 
 ### Frontend (`apps/web/package.json`)
 - Runtime dependencies: `next@16.4.2`, `react@19.3.0`, `react-dom@19.3.0` — MIT License.
