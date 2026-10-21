@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --color-navy-900: #0b1f3b;
+  --color-navy-800: #12315c;
+  --color-navy-700: #1b406e;
+  --color-navy-600: #25517a;
+  --color-navy-100: #eef2f7;
+  --color-navy-50: #f5f8fc;
+
+  --font-arabic: ui-arabic, "Segoe UI Arabic", "Arial Arabic", Tahoma, "Arial", sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-arabic), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+/* Academic navy-and-white identity. No color claims beyond the design token. */
+.navy-text {
+  color: var(--color-navy-900);
+}
+.bg-navy {
+  background-color: var(--color-navy-900);
+}
+.border-navy {
+  border-color: var(--color-navy-900);
+}
+
+/* True RTL helpers — used where logical properties are not enough.
+   Icons/logos are NOT mirrored; only directional layout is mirrored. */
+.rtl-mirror {
+  transform: scaleX(-1);
+}
+
+/* Focus-visible for keyboard navigation (accessibility). */
+*:focus-visible {
+  outline: 2px solid var(--color-navy-600);
+  outline-offset: 2px;
+}
+
+/* Skip link shown on focus. */
+.skip-link {
+  position: absolute;
+  top: -48px;
+  left: 0; /* rtl:ignore */
+  padding: 8px 16px;
+  background: var(--color-navy-900);
+  color: #ffffff;
+  text-decoration: none;
+  border-radius: 4px;
+  z-index: 50;
+  transform: translatex(0); /* rtl:ignore */
+}
+.skip-link:focus {
+  top: 8px;
+  left: 8px; /* rtl:ignore */
+}

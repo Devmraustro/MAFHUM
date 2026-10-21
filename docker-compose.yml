@@ -1,0 +1,48 @@
+# MAFHUM local development stack — starts without paid credentials and
+# without downloading any model. Database credentials are dev-only placeholders
+# copied from .env.example; rotate them before any non-local use.
+#
+# NOTE: No Docker daemon is present in the automated test container; this
+# compose specification is validated statically with PyYAML and verified at
+# application level via live uvicorn + next start + Alembic smoke runs.
+#
+services:
+  db:
+    image: postgres:15-alpine
+    env_file: .env
+    environment:
+      POSTGRES_DB: mafhum
+      POSTGRES_USER: mafhum
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev_only}
+    volumes:
+      - mafhum-db-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://mafhum:${DB_PASSWORD:-dev_only}@db:5432/mafhum
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_started
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      API_UPSTREAM_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: http://api:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  mafhum-db-data:

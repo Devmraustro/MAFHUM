@@ -89,16 +89,24 @@ Do not adopt PaperLens community-license code without written permission/legal r
 - Redact secrets and document content from logs by default; encrypt transport and use managed at-rest encryption when provided.
 - Implement export/delete workflows, retention limits, artifact/job cleanup and tests. Admin sensitive actions are audited. Do not claim legal compliance without review.
 
-## 9. API conventions and suggested initial endpoints
-- Versioned `/api/v1`, OpenAPI contract, consistent errors `{code, message, request_id, field_errors?}`.
-- `GET /health/live`, `GET /health/ready` without leaking secrets.
-- `/api/v1/auth/...`, `/api/v1/me`, `/api/v1/projects`, `/api/v1/projects/{id}`.
-- `/api/v1/documents`, `/api/v1/documents/{id}`, `/api/v1/documents/{id}/status`.
-- `/api/v1/sources/search`, `/api/v1/sources/{id}`.
-- `/api/v1/research/jobs`, `/api/v1/jobs/{id}`, `/api/v1/research/{id}`.
-- `/api/v1/tutor/sessions`, `/api/v1/tutor/sessions/{id}/messages`, `/api/v1/td/drafts`.
-- `/api/v1/presentations/jobs`, `/api/v1/artifacts/{id}/download`, `/api/v1/usage`; admin routes require a distinct role.
-These are proposed contracts, not implemented endpoints.
+## 9. API conventions and implemented vs. planned endpoints
+- Versioned `/api/v1`, OpenAPI contract (`/openapi.json`), consistent error envelope `{code, message, request_id, field_errors?}` with matching `X-Request-ID` response header.
+- **Implemented & verified in Phases 1–2**:
+  - `GET /health/live`, `GET /health/ready`, `GET /api/v1/health/live`, `GET /api/v1/health/ready` (degraded-safe DB + AI provider checks without leaking secrets).
+  - `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `POST /api/v1/auth/logout-all`, `GET /api/v1/auth/sessions`, `DELETE /api/v1/auth/sessions/{session_id}`, `GET /api/v1/auth/me`, `GET /api/v1/auth/csrf-token`.
+    - Passwords hashed strictly via SHA-256 pre-hashed `pyca/bcrypt` (`bcrypt==4.3.0`, rounds=12) supporting full Arabic/Unicode passphrases without 72-byte truncation; dummy verification pad prevents login email-enumeration timing leaks.
+    - Cookies: `HttpOnly`, `SameSite=Lax` (or stricter), `Secure` enforced in production; raw tokens never stored server-side (keyed `HMAC-SHA256` digest in indexed `sessions.token_hash`).
+    - State-changing endpoints enforce double-submit `X-CSRF-Token` validation (`hmac.compare_digest`), and auth endpoints enforce sliding-window rate limits with `Retry-After` headers.
+    - Production startup validation (`Settings.validate_for_production`) refuses to start with default/short secrets, SQLite, missing `DATABASE_URL`, or `SameSite=None`.
+  - `GET /api/v1/me`, `PATCH /api/v1/me`, `GET /api/v1/me/usage`, `GET /api/v1/me/export`, `DELETE /api/v1/me` (atomic session revocation + owned project deletion + primary user deletion + explicit backup/log retention disclosure).
+  - `GET /api/v1/projects`, `POST /api/v1/projects`, `GET /api/v1/projects/{project_id}`, `PATCH /api/v1/projects/{project_id}`, `DELETE /api/v1/projects/{project_id}` (strict query-level `owner_id == current_user.id`, consistent `404` policy, pagination, timestamps, live server-side quota enforcement).
+  - `POST /api/v1/ai/generate` (deterministic mock provider draft; unauthenticated allowed only in `APP_ENV=development`).
+- **Planned contracts (Phases 3–7 — not yet implemented)**:
+  - `/api/v1/documents`, `/api/v1/documents/{id}`, `/api/v1/documents/{id}/status`.
+  - `/api/v1/sources/search`, `/api/v1/sources/{id}`.
+  - `/api/v1/research/jobs`, `/api/v1/jobs/{id}`, `/api/v1/research/{id}`.
+  - `/api/v1/tutor/sessions`, `/api/v1/tutor/sessions/{id}/messages`, `/api/v1/td/drafts`.
+  - `/api/v1/presentations/jobs`, `/api/v1/artifacts/{id}/download`, `/api/v1/usage`; admin routes requiring a distinct role.
 
 ## 10. Phased roadmap and exit gates
 ### Phase 0 — repository baseline

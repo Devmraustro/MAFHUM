@@ -2,7 +2,7 @@ name: MAFHUM CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, arena/dee89266-mafhum]
   pull_request:
   workflow_dispatch:
 
@@ -36,12 +36,65 @@ jobs:
           for file in "${required[@]}"; do
             test -s "$file" || { echo "Missing required file: $file"; exit 1; }
           done
-      - name: Check .env.example does not contain obvious real secrets
+      - name: Check .env.example contains no real credentials or placeholder secrets
         shell: bash
         run: |
           set -euo pipefail
-          if grep -Eiq '(sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY)' .env.example; then
+          if grep -Eiq '(sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|password\s*=\s*.{8,}|secret\s*=\s*.{8,}|api_key\s*=\s*.{8,})' .env.example; then
             echo "Possible secret found in .env.example"
             exit 1
           fi
           echo "Required docs present; obvious secret patterns absent."
+
+  backend:
+    name: Backend checks (lint, mypy strict, pytest, migrations, pip-audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip>=26.2.2" "setuptools>=84.2.1"
+          python -m pip install -r requirements.txt -r requirements-test.txt
+      - name: Lint with Ruff
+        run: ruff check .
+      - name: Typecheck with Mypy (strict)
+        run: mypy app migrations tests
+      - name: Run unit, integration, and security tests
+        run: python -m pytest -v
+      - name: Verify Alembic migrations on clean DB
+        run: |
+          DATABASE_URL=sqlite:////tmp/ci_migration_check.db PYTHONPATH=. alembic -c alembic.ini upgrade head
+      - name: Audit Python dependencies
+        run: pip-audit
+
+  frontend:
+    name: Frontend checks (lint, typecheck, test, build, runtime audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit & component tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Production dependency security audit
+        run: npm audit --omit=dev
