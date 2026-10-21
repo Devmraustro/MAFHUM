@@ -2,7 +2,7 @@ name: MAFHUM CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, arena/dee89266-mafhum]
   pull_request:
   workflow_dispatch:
 
@@ -36,7 +36,15 @@ jobs:
           for file in "${required[@]}"; do
             test -s "$file" || { echo "Missing required file: $file"; exit 1; }
           done
-      - name: Check .env.example does not contain obvious real secrets
+      - name: Check .env.example contains no real credentials or placeholder secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eiq '(sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|password\s*=\s*.{8,}|secret\s*=\s*.{8,}|api_key\s*=\s*.{8,})' .env.example; then
+            echo "Possible secret found in .env.example"
+            exit 1
+          fi
+          echo "Required docs present; obvious secret patterns absent."
         shell: bash
         run: |
           set -euo pipefail
