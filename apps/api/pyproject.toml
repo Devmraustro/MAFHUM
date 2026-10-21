@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mafhum-api"
+version = "0.1.0"
+description = "MAFHUM API — FastAPI + Pydantic v2 modular monolith skeleton"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.116.1",
+  "pydantic==2.11.1",
+  "pydantic-settings==2.8.1",
+  "uvicorn[standard]==0.35.0",
+  "sqlalchemy==2.0.39",
+  "alembic==1.20.0",
+  "psycopg[binary,pool]==3.2.7",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==8.4.1",
+  "httpx==0.28.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "UP", "B", "C4", "DTZ"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
