@@ -1,0 +1,47 @@
+name: MAFHUM CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-baseline:
+    name: Repository baseline checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required architecture documents
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            README.md
+            AGENTS.md
+            ARENA_MASTER_PROMPT.md
+            docs/PROJECT_ARCHITECTURE.md
+            docs/ROADMAP.md
+            docs/THREAT_MODEL.md
+            docs/DATA_POLICY.md
+            docs/OSS_REUSE_REGISTER.md
+            docs/ADR/0001-modular-monolith.md
+            THIRD_PARTY_NOTICES.md
+            .gitignore
+            .env.example
+          )
+          for file in "${required[@]}"; do
+            test -s "$file" || { echo "Missing required file: $file"; exit 1; }
+          done
+      - name: Check .env.example does not contain obvious real secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eiq '(sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY)' .env.example; then
+            echo "Possible secret found in .env.example"
+            exit 1
+          fi
+          echo "Required docs present; obvious secret patterns absent."
