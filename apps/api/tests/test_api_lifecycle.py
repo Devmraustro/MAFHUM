@@ -241,6 +241,134 @@ class TestAccountDeletion:
         assert body["complete"] is True
         assert body["documents_removed"] == 0
 
+    def test_tombstone_rollback_destroys_nothing(self, user_a: AuthedClient, app: FastAPI) -> None:
+        """Phase 1 touches no bytes, so rolling it back is harmless.
+
+        This is the invariant the old single-transaction design violated: it
+        deleted blobs before the rows, so any rollback resurrected document rows
+        whose bytes were already gone.
+        """
+        document_id = make_ready_document(user_a, app)
+        assert blob_count(app) == 1
+
+        with app.state.context.database.session() as session:
+            report = app.state.context.deletion.tombstone_account(session, user_a.user_id)
+            assert report.error is None
+            assert report.documents_tombstoned == 1
+            session.rollback()  # the intent never became durable
+
+        assert blob_count(app) == 1, "a rolled-back tombstone destroyed stored bytes"
+        assert table_counts(app)["documents"] == 1
+
+        # The account is untouched and fully usable.
+        assert user_a.get("/api/v1/auth/me").status_code == 200
+        assert user_a.get(f"/api/v1/documents/{document_id}/download").status_code == 200
+
+    def test_failed_commit_destroys_nothing(self, user_a: AuthedClient, app: FastAPI) -> None:
+        """If the tombstone cannot be committed, reclamation must not run at all."""
+        from sqlalchemy.exc import SQLAlchemyError
+
+        document_id = make_ready_document(user_a, app)
+        assert blob_count(app) == 1
+
+        with app.state.context.database.session() as session:
+
+            def failing_commit() -> None:
+                raise SQLAlchemyError("simulated commit failure")
+
+            session.commit = failing_commit  # type: ignore[method-assign]
+            report = app.state.context.deletion.delete_account(session, user_a.user_id)
+
+        assert report.error == "database_error"
+        assert report.complete is False
+        assert report.blobs_removed == 0
+
+        # Nothing was erased, and the surviving rows still resolve to real bytes.
+        assert blob_count(app) == 1
+        assert table_counts(app)["documents"] == 1
+        downloaded = user_a.get(f"/api/v1/documents/{document_id}/download")
+        assert downloaded.status_code == 200, downloaded.text
+        assert len(downloaded.content) > 0
+
+    def test_interrupted_cleanup_is_recoverable(
+        self, user_a: AuthedClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash between committing intent and reclaiming bytes must be resumable.
+
+        Intent has to live in the database, not in a callback, or a process that
+        dies mid-cleanup strands the blobs with no record that they were meant to
+        go. The tombstone is what makes the work discoverable again.
+        """
+        from mafhum_api.db.models import DeletionState, Document
+        from mafhum_api.services.documents.storage import LocalFileStorage
+
+        document_id = uuid.UUID(make_ready_document(user_a, app))
+
+        # Commit the tombstone, then "crash" before any byte is reclaimed.
+        with app.state.context.database.session() as session:
+            app.state.context.deletion.tombstone_account(session, user_a.user_id)
+            session.commit()
+
+        with app.state.context.database.session() as session:
+            tombstoned = session.scalars(
+                select(Document.deletion_state).where(Document.id == document_id)
+            ).one()
+        assert tombstoned == DeletionState.PENDING_DELETION.value
+        assert blob_count(app) == 1, "tombstoning must not touch bytes"
+
+        # A new process finds the outstanding work from the database alone and
+        # finishes it.
+        with app.state.context.database.session() as session:
+            reports = app.state.context.deletion.resume_pending_deletions(session)
+            session.commit()
+
+        assert any(report.complete for report in reports)
+        assert blob_count(app) == 0
+        assert table_counts(app)["documents"] == 0
+        assert table_counts(app)["users"] == 0
+        _ = LocalFileStorage
+
+    def test_repeated_account_deletion_is_idempotent(
+        self, user_a: AuthedClient, app: FastAPI
+    ) -> None:
+        """Deleting twice must not error or double-count."""
+        make_ready_document(user_a, app)
+        assert user_a.delete("/api/v1/me").json()["complete"] is True
+        assert blob_count(app) == 0
+
+        with app.state.context.database.session() as session:
+            report = app.state.context.deletion.delete_account(session, user_a.user_id)
+            session.commit()
+        assert report.error == "user_not_found"
+        assert report.documents_removed == 0
+        assert blob_count(app) == 0
+
+    def test_concurrent_account_deletions_do_not_error(
+        self, user_a: AuthedClient, app: FastAPI
+    ) -> None:
+        """Two overlapping deletions of the same account must both be safe."""
+        import threading
+
+        from tests.test_api_concurrency import in_parallel
+
+        make_ready_document(user_a, app)
+        assert blob_count(app) == 1
+
+        barrier = threading.Barrier(4)
+
+        def attempt() -> object:
+            barrier.wait()
+            return user_a.delete("/api/v1/me").status_code
+
+        codes = in_parallel(4, attempt)
+        assert not [c for c in codes if isinstance(c, Exception)], codes
+        assert all(code in (200, 401) for code in codes), codes
+
+        # Exactly one erasure happened, and it was complete.
+        assert blob_count(app) == 0
+        assert table_counts(app)["documents"] == 0
+        assert table_counts(app)["users"] == 0
+
 
 class TestRetryIdempotency:
     def test_retry_twice_keeps_one_segment_set(self, user_a: AuthedClient, app: FastAPI) -> None:

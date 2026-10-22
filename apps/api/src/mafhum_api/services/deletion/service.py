@@ -1,21 +1,31 @@
 """Account deletion and document data lifecycle.
 
-Ordering matters for safety:
+Deletion runs in **two phases separated by a commit**, because erasing bytes and
+recording that they were erased cannot safely happen in the same transaction.
 
-1. **Block access first.** The user is flipped to ``pending_deletion`` and every
-   session is revoked before any file is touched, so no request can read the
-   account's data while deletion is in flight.
-2. **Delete blobs, tolerating failure.** Each stored file is removed; failures are
-   collected rather than aborting the run.
-3. **Delete rows only once their files are gone.** A row is never removed while
-   its blob still exists, because a row is the only record that the blob belongs
-   to someone and must be reclaimed.
-4. **Report honestly.** The result states what was deleted and what was not.
-   Nothing here claims that backups were purged — backups are out of scope and
-   are documented as a residual-data limitation in ``docs/DATA_POLICY.md``.
+1. **Tombstone (transactional, touches no bytes).** Sessions are revoked, the
+   user flips to ``pending_deletion``, every document is marked
+   ``pending_deletion`` with a timestamp, and blobless dependents are dropped.
+   Committing this makes the *intent* durable. A rollback here destroys nothing,
+   because nothing has been erased yet.
+2. **Reclaim (after the commit).** Blobs are deleted, and each document's rows
+   are dropped only once its bytes are gone. Whatever cannot be finished stays
+   tombstoned in the database, so ``resume_pending_deletions`` — which a periodic
+   cleanup job calls — finds and finishes it in a later process.
 
-Incomplete runs leave the user in ``pending_deletion`` and are resumable by
-``resume_pending_deletions``, which is also what a periodic cleanup job calls.
+The commit between the phases is what makes this crash-safe. An in-memory
+callback cannot survive the process that registered it; a committed tombstone
+can, and it is what lets a fresh process discover outstanding work from the
+database alone.
+
+Row deletion is conditional and rowcount-checked. Two concurrent deletions of
+one account both pass the ownership read, and an unguarded ORM delete that
+matches zero rows makes SQLAlchemy warn — which ``filterwarnings=error`` turns
+into a failure.
+
+Incomplete runs leave the user in ``pending_deletion`` and are resumable.
+Nothing here claims that backups were purged; backups are out of scope and are
+documented as a residual-data limitation in ``docs/DATA_POLICY.md``.
 """
 
 from __future__ import annotations
@@ -25,7 +35,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -53,6 +63,7 @@ def _utcnow() -> datetime:
 class DeletionReport:
     user_id: uuid.UUID
     documents_removed: int = 0
+    documents_tombstoned: int = 0
     blobs_removed: int = 0
     blobs_failed: list[str] = field(default_factory=list)
     segments_removed: int = 0
@@ -73,22 +84,79 @@ class DeletionService:
         self._storage = storage
 
     def delete_account(self, db: Session, user_id: uuid.UUID) -> DeletionReport:
-        """Run the full deletion lifecycle for one account."""
+        """Run the full deletion lifecycle for one account.
+
+        Owns its transaction boundaries: the tombstone is committed before any
+        byte is touched, so a failure during reclamation can never resurrect a
+        row whose bytes are gone.
+        """
+        report = self.tombstone_account(db, user_id)
+        if report.error is not None:
+            return report
+
+        try:
+            # Durable intent. Past this point a crash leaves recoverable work in
+            # the database rather than an inconsistent filesystem.
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            report.error = "database_error"
+            return report
+
+        return self.reclaim_account(db, user_id, report)
+
+    def tombstone_account(self, db: Session, user_id: uuid.UUID) -> DeletionReport:
+        """Phase 1: block access and record what must be erased. Touches no bytes.
+
+        The caller commits. Safe to run repeatedly — an already-tombstoned
+        account is simply re-tombstoned.
+        """
         report = DeletionReport(user_id=user_id)
         user = db.get(User, user_id)
         if user is None:
             report.error = "user_not_found"
             return report
 
-        # Step 1: block access immediately.
         report.sessions_revoked = self._revoke_sessions(db, user_id)
-        if user.deletion_state == DeletionState.ACTIVE.value:
-            user.deletion_state = DeletionState.PENDING_DELETION.value
+        user.deletion_state = DeletionState.PENDING_DELETION.value
+        report.documents_tombstoned = execute_rowcount(
+            db,
+            update(Document)
+            .where(
+                Document.owner_id == user_id,
+                Document.deletion_state != DeletionState.PENDING_DELETION.value,
+            )
+            .values(
+                deletion_state=DeletionState.PENDING_DELETION.value,
+                deleted_at=_utcnow(),
+            ),
+        )
+        # Blobless dependents can go now; they have nothing to reclaim.
+        report.sources_removed += _delete_where(db, SourceRecord, SourceRecord.owner_id == user_id)
+        report.projects_removed += _delete_where(db, Project, Project.owner_id == user_id)
         db.flush()
+        return report
 
-        # Step 2 + 3: documents, their blobs and their dependents.
-        documents = list(db.scalars(select(Document).where(Document.owner_id == user_id)).all())
-        remaining_keys: list[str] = []
+    def reclaim_account(
+        self, db: Session, user_id: uuid.UUID, report: DeletionReport | None = None
+    ) -> DeletionReport:
+        """Phase 2: erase the bytes, then the rows that pointed at them.
+
+        Idempotent and resumable. A blob that cannot be deleted leaves its
+        document tombstoned for the next run rather than aborting the account.
+        """
+        report = report if report is not None else DeletionReport(user_id=user_id)
+
+        documents = list(
+            db.scalars(
+                select(Document)
+                .where(
+                    Document.owner_id == user_id,
+                    Document.deletion_state == DeletionState.PENDING_DELETION.value,
+                )
+                .with_for_update(skip_locked=True)
+            ).all()
+        )
         for document in documents:
             key = document.storage_key
             try:
@@ -100,10 +168,9 @@ class DeletionService:
                     extra={"event": "deletion_blob_failed", "user_id": str(user_id)},
                 )
                 report.blobs_failed.append(key)
-                remaining_keys.append(key)
                 continue
 
-            # Blob is gone: now the rows are safe to drop.
+            # Bytes are gone, so the rows are safe to drop.
             report.segments_removed += _delete_where(
                 db, DocumentTextSegment, DocumentTextSegment.document_id == document.id
             )
@@ -113,21 +180,13 @@ class DeletionService:
             report.sources_removed += _delete_where(
                 db, SourceRecord, SourceRecord.document_id == document.id
             )
-            db.delete(document)
-            report.documents_removed += 1
+            if self._delete_document_row(db, document.id, user_id):
+                report.documents_removed += 1
         db.flush()
 
-        # Step 4: the rest of the account.
-        report.sources_removed += _delete_where(db, SourceRecord, SourceRecord.owner_id == user_id)
-        report.projects_removed += _delete_where(db, Project, Project.owner_id == user_id)
-
         if report.blobs_failed:
-            # Keep the account tombstoned so it stays inaccessible, and leave the
-            # rows that still own blobs so reconciliation can finish the job.
-            self._mark_pending_documents(db, remaining_keys)
-            user.deletion_state = DeletionState.PENDING_DELETION.value
+            # Stay tombstoned and inaccessible; a later run finishes the job.
             report.complete = False
-            db.flush()
             logger.warning(
                 "account deletion incomplete; blobs retained for retry",
                 extra={
@@ -138,13 +197,16 @@ class DeletionService:
             )
             return report
 
-        db.delete(user)
-        try:
-            db.flush()
-        except SQLAlchemyError:
-            db.rollback()
+        outcome = self._remove_account_row(db, user_id)
+        if outcome == "database_error":
             report.error = "database_error"
             return report
+        if outcome == "documents_remain":
+            # Another caller holds the remaining rows (reclaim skips locked rows
+            # rather than blocking on them). Not an error, but not finished.
+            report.complete = False
+            return report
+
         report.complete = True
         logger.info(
             "account deleted",
@@ -157,13 +219,22 @@ class DeletionService:
         return report
 
     def resume_pending_deletions(self, db: Session) -> list[DeletionReport]:
-        """Finish deletions whose blob removal previously failed."""
-        users = list(
+        """Finish deletions whose reclamation did not complete.
+
+        Reads the outstanding work from the committed tombstones, so it also
+        recovers from a process that died mid-cleanup.
+        """
+        user_ids = list(
             db.scalars(
-                select(User).where(User.deletion_state == DeletionState.PENDING_DELETION.value)
+                select(User.id).where(User.deletion_state == DeletionState.PENDING_DELETION.value)
             ).all()
         )
-        return [self.delete_account(db, user.id) for user in users]
+        reports: list[DeletionReport] = []
+        for user_id in user_ids:
+            report = self.reclaim_account(db, user_id)
+            db.commit()
+            reports.append(report)
+        return reports
 
     def purge_pending_documents(self, db: Session) -> tuple[int, list[str]]:
         """Reclaim blobs for documents tombstoned ``pending_deletion``.
@@ -190,7 +261,7 @@ class DeletionService:
             _delete_where(
                 db, DocumentProcessingJob, DocumentProcessingJob.document_id == document.id
             )
-            db.delete(document)
+            self._delete_document_row(db, document.id, document.owner_id)
         db.flush()
         if removed:
             logger.info(
@@ -208,14 +279,46 @@ class DeletionService:
             .values(revoked_at=_utcnow()),
         )
 
-    def _mark_pending_documents(self, db: Session, keys: list[str]) -> None:
-        if not keys:
-            return
-        db.execute(
-            update(Document)
-            .where(Document.storage_key.in_(keys))
-            .values(deletion_state=DeletionState.PENDING_DELETION.value, deleted_at=_utcnow())
+    def _delete_document_row(
+        self, db: Session, document_id: uuid.UUID, owner_id: uuid.UUID
+    ) -> bool:
+        """Drop one document row, reporting whether this caller actually did it.
+
+        Conditional on ownership and checked by rowcount: of two concurrent
+        deletions only one matches, and the loser reports no work instead of
+        claiming a delete it did not perform.
+        """
+        return (
+            execute_rowcount(
+                db,
+                delete(Document).where(
+                    Document.id == document_id,
+                    Document.owner_id == owner_id,
+                ),
+            )
+            > 0
         )
+
+    def _remove_account_row(self, db: Session, user_id: uuid.UUID) -> str:
+        """Drop the account row once nothing of its own remains.
+
+        Returns ``"deleted"``, ``"documents_remain"`` or ``"database_error"``.
+        Another caller having already removed the row counts as ``"deleted"``:
+        the intended end state was reached.
+        """
+        remaining = db.scalar(
+            select(func.count()).select_from(Document).where(Document.owner_id == user_id)
+        )
+        if remaining:
+            # Documents still exist, so their bytes are still owed.
+            return "documents_remain"
+        try:
+            execute_rowcount(db, delete(User).where(User.id == user_id))
+            db.flush()
+        except SQLAlchemyError:
+            db.rollback()
+            return "database_error"
+        return "deleted"
 
 
 def _delete_where(db: Session, model: type[Base], *conditions: object) -> int:
