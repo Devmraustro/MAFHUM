@@ -40,6 +40,7 @@ from mafhum_api.core.errors import (
     QuotaExceededError,
     ValidationError,
 )
+from mafhum_api.db.base import execute_rowcount
 from mafhum_api.db.models import (
     DOCUMENT_TRANSITIONS,
     DeletionState,
@@ -319,23 +320,44 @@ class DocumentService:
     ) -> DocumentProcessingJob:
         """Queue a new processing generation for a failed document.
 
-        Idempotent: a document that is already queued or running returns the
-        existing job instead of creating a second concurrent run.
+        Idempotent **and** race-safe. The document row is taken ``FOR UPDATE``
+        before any decision is made, so concurrent retries serialise on that row
+        lock and every caller after the first observes the winner's committed
+        job instead of inventing a second run.
+
+        Two defects lived here before:
+
+        * the generation was computed as ``MAX(generation) + 1`` after a plain
+          SELECT, so two concurrent callers picked the same generation and
+          collided on the ``(document_id, generation)`` unique constraint — a
+          500 for the client;
+        * a ``PENDING`` document returned the existing job only when it was
+          ``PROCESSING``, so a second retry queued a duplicate run.
         """
+        # ``get_owned`` supplies the 404 semantics; the locking re-read below is
+        # what actually serialises concurrent callers.
+        #
+        # ``populate_existing`` is load-bearing, not cosmetic: ``get_owned`` has
+        # already put this row in the identity map, and a plain query returns the
+        # cached instance *without* refreshing its attributes. Without it the
+        # caller keeps reading the pre-lock status ('failed') even though the row
+        # it now holds says 'pending', and every concurrent retry queues its own
+        # duplicate job.
         document = self.get_owned(db, owner_id, document_id)
+        document = db.execute(
+            select(Document)
+            .where(Document.id == document.id, Document.owner_id == owner_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one()
+
         if document.status == DocumentStatus.READY.value:
             raise ConflictError("المستند تمت معالجته بالفعل.")
-        if document.status == DocumentStatus.PROCESSING.value:
-            existing = db.scalar(
-                select(DocumentProcessingJob)
-                .where(
-                    DocumentProcessingJob.document_id == document.id,
-                    DocumentProcessingJob.status.in_(
-                        [JobStatus.QUEUED.value, JobStatus.RUNNING.value]
-                    ),
-                )
-                .order_by(DocumentProcessingJob.generation.desc())
-            )
+        if document.status in {
+            DocumentStatus.PROCESSING.value,
+            DocumentStatus.PENDING.value,
+        }:
+            existing = self._in_flight_job(db, document.id)
             if existing is not None:
                 return existing
         if document.status not in {
@@ -362,6 +384,17 @@ class DocumentService:
         )
         return job
 
+    def _in_flight_job(self, db: Session, document_id: uuid.UUID) -> DocumentProcessingJob | None:
+        """Return the newest queued or running job for a document, if any."""
+        return db.scalar(
+            select(DocumentProcessingJob)
+            .where(
+                DocumentProcessingJob.document_id == document_id,
+                DocumentProcessingJob.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
+            )
+            .order_by(DocumentProcessingJob.generation.desc())
+        )
+
     # ----------------------------------------------------------------- delete
     def delete(self, db: Session, owner_id: uuid.UUID, document_id: uuid.UUID) -> None:
         """Delete a document, its segments, its jobs and its stored blob.
@@ -380,7 +413,21 @@ class DocumentService:
         db.execute(
             delete(DocumentProcessingJob).where(DocumentProcessingJob.document_id == document.id)
         )
-        db.delete(document)
+        # Gate on the rowcount of the parent delete. Two concurrent deletes both
+        # pass the ownership SELECT; only one matches a row. Without this check
+        # the loser still returned ``deleted: true`` for a delete it did not
+        # perform, and SQLAlchemy warned that 0 rows were matched. The rollback
+        # undoes the child deletes in this transaction, so nothing is lost.
+        removed = execute_rowcount(
+            db,
+            delete(Document).where(
+                Document.id == document.id,
+                Document.owner_id == owner_id,
+            ),
+        )
+        if removed == 0:
+            db.rollback()
+            raise AuthorizationError()
         try:
             db.flush()
         except SQLAlchemyError:
