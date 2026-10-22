@@ -29,6 +29,7 @@ from mafhum_api.services.identity.service import AuthenticatedUser, IdentityServ
 from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.sources.service import SourceService
+from mafhum_api.services.study.service import StudyService
 
 
 @dataclass(slots=True)
@@ -44,6 +45,7 @@ class AppContext:
     sources: SourceService
     deletion: DeletionService
     research: ResearchService
+    study: StudyService
     worker: ProcessingWorker
 
     @property

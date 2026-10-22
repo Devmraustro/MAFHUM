@@ -37,6 +37,7 @@ from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.retrieval import HttpSourceFetcher
 from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.sources.service import SourceService
+from mafhum_api.services.study.service import StudyService
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
         research=ResearchService(
             HttpSourceFetcher() if settings.research_retrieval_enabled else None
         ),
+        study=StudyService(),
         worker=worker,
     )
 
