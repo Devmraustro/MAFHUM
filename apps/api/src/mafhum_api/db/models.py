@@ -31,6 +31,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -412,6 +413,16 @@ class SourceRecord(TimestampMixin, Base):
             "verification_status <> 'verified' OR verified_by IS NOT NULL",
             name="ck_sources_verified_requires_source",
         ),
+        # Deduplication is enforced here rather than by an application-level
+        # pre-insert lookup, which two concurrent requests can both pass.
+        # Partial: sources with no canonical URL have no identity to clash on.
+        Index(
+            "uq_sources_owner_url_normalized",
+            "owner_id",
+            "url_normalized",
+            unique=True,
+            postgresql_where=text("url_normalized IS NOT NULL"),
+        ),
         Index("ix_sources_owner_created", "owner_id", "created_at"),
     )
 
@@ -442,6 +453,11 @@ class SourceRecord(TimestampMixin, Base):
     doi: Mapped[str | None] = mapped_column(String(255), nullable=True)
     isbn: Mapped[str | None] = mapped_column(String(32), nullable=True)
     url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Canonical identity derived from ``url`` by services.sources.canonical.
+    # The original URL is always preserved; this column exists only to make
+    # duplicates detectable atomically. NULL means no identity could be
+    # established, which is not the same as "no URL".
+    url_normalized: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     repository_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language: Mapped[str | None] = mapped_column(String(8), nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

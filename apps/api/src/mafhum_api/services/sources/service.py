@@ -31,6 +31,7 @@ from mafhum_api.db.models import (
     SourceType,
     VerificationStatus,
 )
+from mafhum_api.services.sources.canonical import canonicalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ class SourceService:
         values.pop("document_id", None)
         document = self._attach_document(db, owner_id, draft.document_id)
 
+        values["url_normalized"] = canonicalize_url(values.get("url"))
         record = SourceRecord(
             id=uuid.uuid4(),
             owner_id=owner_id,
@@ -137,11 +139,38 @@ class SourceService:
             db.flush()
         except IntegrityError as exc:
             db.rollback()
+            # A clash on the canonical URL means a concurrent request already
+            # catalogued this exact source. Hand back that record rather than
+            # reporting an error: the caller's intent was satisfied.
+            existing = self._find_by_canonical_url(db, owner_id, values.get("url_normalized"))
+            if existing is not None:
+                logger.info(
+                    "source deduplicated",
+                    extra={"event": "source_deduplicated", "source_id": str(existing.id)},
+                )
+                return existing
             raise SourceValidationError(
                 "تعذّر حفظ المصدر؛ تحقق من صحة القيم.",
             ) from exc
         logger.info("source created", extra={"event": "source_created"})
         return record
+
+    def _find_by_canonical_url(
+        self, db: Session, owner_id: uuid.UUID, url_normalized: str | None
+    ) -> SourceRecord | None:
+        """Look up an owner's source by canonical URL identity.
+
+        Scoped to the owner: another user's catalog of the same paper is theirs,
+        and must never be returned here.
+        """
+        if not url_normalized:
+            return None
+        return db.scalar(
+            select(SourceRecord).where(
+                SourceRecord.owner_id == owner_id,
+                SourceRecord.url_normalized == url_normalized,
+            )
+        )
 
     def update(
         self, db: Session, *, owner_id: uuid.UUID, source_id: uuid.UUID, draft: SourceDraft
@@ -150,6 +179,10 @@ class SourceService:
         values = self._clean(draft)
         for key, value in values.items():
             setattr(record, key, value)
+        if "url" in values:
+            # The derived identity must follow the URL, or a stale value would
+            # keep deduplicating against the address this record no longer has.
+            record.url_normalized = canonicalize_url(values["url"])
         if "document_id" in values:
             document = self._attach_document(db, owner_id, values["document_id"])
             record.document_id = document.id if document else None

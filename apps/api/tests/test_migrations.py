@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,18 @@ class TestHistory:
         config = make_config("postgresql://unused")
         script = ScriptDirectory.from_config(config)
         revisions = list(script.walk_revisions("base", "heads"))
-        assert len(revisions) == 2
-        assert revisions[-1].down_revision is None
-        assert revisions[0].down_revision == revisions[-1].revision
+        # walk_revisions returns newest-first. Asserting the exact chain, rather
+        # than just its length, catches both a gap and a duplicated revision.
+        assert [r.revision for r in revisions] == [
+            "0003_source_dedup",
+            "0002_documents",
+            "0001_identity",
+        ]
+        assert revisions[-1].down_revision is None, "the base revision must have no parent"
+        # Every link must point at the revision immediately before it, so a
+        # skipped or duplicated revision fails here rather than only at deploy
+        # time.
+        for newer, older in pairwise(revisions):
+            assert newer.down_revision == older.revision, (
+                f"{newer.revision} claims parent {newer.down_revision}, expected {older.revision}"
+            )
