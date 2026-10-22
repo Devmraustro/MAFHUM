@@ -82,6 +82,32 @@ class TestDocumentDeletion:
         assert source["document_id"] is None
         assert source["title"] == "مصدر مرتبط"
 
+    def test_rollback_keeps_the_blob_it_points_at(self, user_a: AuthedClient, app: FastAPI) -> None:
+        """A rolled-back delete must not destroy bytes the surviving row needs.
+
+        ``delete()`` documents that the blob is removed only after the
+        transaction commits. Deleting it at flush time breaks that: if the
+        commit then fails, the row survives with its ``storage_key`` intact but
+        the bytes are gone, and every later download of that document fails.
+        """
+        document_id = make_ready_document(user_a, app)
+        assert blob_count(app) == 1
+
+        with app.state.context.database.session() as session:
+            app.state.context.documents.delete(session, user_a.user_id, uuid.UUID(document_id))
+            session.rollback()
+
+        # The row survived the rollback, so the bytes must have survived too.
+        assert blob_count(app) == 1, "blob was deleted by a transaction that never committed"
+        assert table_counts(app)["documents"] == 1
+
+        # And the document must still be fully usable, including download.
+        fetched = user_a.get(f"/api/v1/documents/{document_id}")
+        assert fetched.status_code == 200, fetched.text
+        downloaded = user_a.get(f"/api/v1/documents/{document_id}/download")
+        assert downloaded.status_code == 200, downloaded.text
+        assert len(downloaded.content) > 0
+
     def test_blob_deletion_failure_does_not_resurrect_row(
         self, user_a: AuthedClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
     ) -> None:

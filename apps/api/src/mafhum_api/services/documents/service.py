@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, event, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -434,13 +434,50 @@ class DocumentService:
             db.rollback()
             raise
 
-        try:
-            self._storage.delete(storage_key)
-        except StorageError:
-            logger.error(
-                "blob deletion failed after document removal; queued for reconciliation",
-                extra={"event": "document_blob_orphaned"},
-            )
+        # Register, do not execute: the bytes may only go once the transaction
+        # is durable. The endpoint commits *after* this method returns, so
+        # deleting here would leave a surviving row pointing at missing bytes
+        # whenever the commit failed — a document that still lists, opens and
+        # authorises, but can never be downloaded.
+        self._delete_blob_after_commit(db, storage_key)
+
+    def _delete_blob_after_commit(self, db: Session, storage_key: str) -> None:
+        """Remove a blob only if the enclosing transaction commits.
+
+        A rollback detaches the listener without touching the filesystem, so the
+        bytes outlive any transaction that did not become durable. Listeners are
+        one-shot and removed on either outcome so a pooled session cannot carry
+        a stale deletion into a later request.
+        """
+
+        # ``event.remove`` cannot be called from inside a handler — SQLAlchemy is
+        # iterating its listener deque at that point and raises. A one-shot flag
+        # gives the same guarantee; the listeners are attached to this Session
+        # instance only, so they are discarded with it at the end of the request.
+        settled = False
+
+        def after_commit(session: Session) -> None:
+            nonlocal settled
+            if settled:
+                return
+            settled = True
+            try:
+                self._storage.delete(storage_key)
+            except StorageError:
+                # The row is already gone, so nothing can point at these bytes;
+                # reconciliation reclaims them later.
+                logger.error(
+                    "blob deletion failed after document removal; queued for reconciliation",
+                    extra={"event": "document_blob_orphaned"},
+                )
+
+        def after_rollback(session: Session) -> None:
+            # The row survived, so the bytes must survive with it.
+            nonlocal settled
+            settled = True
+
+        event.listen(db, "after_commit", after_commit)
+        event.listen(db, "after_rollback", after_rollback)
 
     # ------------------------------------------------------------- maintenance
     def reconcile_orphan_blobs(self, db: Session) -> tuple[list[str], list[str]]:
