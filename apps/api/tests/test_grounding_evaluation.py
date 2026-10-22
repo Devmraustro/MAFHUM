@@ -26,19 +26,19 @@ import pytest
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools" / "evaluate_citation_grounding.py"
 DATASET = Path(__file__).resolve().parent / "evaluation" / "citation_grounding_v1.json"
-REPORT = Path("/tmp/mafhum_grounding_report.json")
 
 
 @pytest.fixture(scope="module")
-def report() -> dict[str, object]:
+def report(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
+    report_path = tmp_path_factory.mktemp("grounding") / "report.json"
     completed = subprocess.run(
-        [sys.executable, str(TOOLS), "--json", str(REPORT)],
+        [sys.executable, str(TOOLS), "--json", str(report_path)],
         capture_output=True,
         text=True,
         check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    return json.loads(REPORT.read_text(encoding="utf-8"))
+    return json.loads(report_path.read_text(encoding="utf-8"))
 
 
 class TestDatasetShape:
@@ -92,9 +92,7 @@ class TestScores:
         assert isinstance(entry, dict)
         assert entry["rate"] >= 0.83, f"claim support regressed: {entry}"
 
-    def test_known_limitations_are_reported_not_suppressed(
-        self, report: dict[str, object]
-    ) -> None:
+    def test_known_limitations_are_reported_not_suppressed(self, report: dict[str, object]) -> None:
         limitations = report["known_limitations"]
         assert isinstance(limitations, list)
         assert len(limitations) == 4, [item["id"] for item in limitations]
