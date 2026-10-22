@@ -343,26 +343,81 @@ class TestAccountDeletion:
         assert report.documents_removed == 0
         assert blob_count(app) == 0
 
+    def test_concurrent_account_deletion_at_the_service_layer(self, app: FastAPI) -> None:
+        """Overlapping service-level deletions must never raise.
+
+        This is the interleaving that actually produced the defect: several
+        callers run ``delete_account`` on one account at once, and the loser
+        reaches its flush after the winner has removed the row. Writing the
+        tombstone through the ORM then emitted ``UPDATE users`` against a deleted
+        row and raised ``StaleDataError`` -- a 500 for a request that should
+        simply report the account gone.
+
+        The window is narrow, so the race is run repeatedly across fresh
+        accounts. A single round passes even when the bug is present.
+        """
+        import threading
+        import traceback
+
+        from tests.conftest import _register
+        from tests.test_api_concurrency import in_parallel
+
+        failures: list[str] = []
+        for round_index in range(8):
+            user = _register(app, f"race{round_index}@example.com", "Str0ng-Passw0rd!")
+            user.upload(
+                **upload_kwargs(make_pdf("arabic", pages=2), f"r{round_index}.pdf", PDF_MIME)
+            )
+            run_worker(app)
+            barrier = threading.Barrier(4)
+
+            def attempt(
+                barrier: threading.Barrier = barrier, user_id: object = user.user_id
+            ) -> object:
+                barrier.wait()
+                try:
+                    with app.state.context.database.session() as session:
+                        app.state.context.deletion.delete_account(session, user_id)
+                        session.commit()
+                    return "ok"
+                except Exception:
+                    return traceback.format_exc()
+
+            results = in_parallel(4, attempt)
+            failures.extend(r for r in results if r != "ok")
+
+        assert not failures, failures[0][-1200:] if failures else ""
+
     def test_concurrent_account_deletions_do_not_error(
         self, user_a: AuthedClient, app: FastAPI
     ) -> None:
-        """Two overlapping deletions of the same account must both be safe."""
+        """Overlapping deletions of one account must all be safe.
+
+        Repeated across several documents because the race is narrow: the second
+        caller has to reach the tombstone flush after the winner has already
+        removed the account row. One round does not reliably hit it, so a single
+        pass would let a regression through. This is what caught the
+        ``StaleDataError`` raised when the tombstone was written through the ORM.
+        """
         import threading
 
         from tests.test_api_concurrency import in_parallel
 
-        make_ready_document(user_a, app)
-        assert blob_count(app) == 1
+        for _ in range(5):
+            make_ready_document(user_a, app)
+        assert blob_count(app) == 5
 
-        barrier = threading.Barrier(4)
+        barrier = threading.Barrier(6)
 
         def attempt() -> object:
             barrier.wait()
             return user_a.delete("/api/v1/me").status_code
 
-        codes = in_parallel(4, attempt)
+        codes = in_parallel(6, attempt)
         assert not [c for c in codes if isinstance(c, Exception)], codes
+        # A 500 means the race escaped the service entirely.
         assert all(code in (200, 401) for code in codes), codes
+        assert codes.count(200) >= 1, codes
 
         # Exactly one erasure happened, and it was complete.
         assert blob_count(app) == 0

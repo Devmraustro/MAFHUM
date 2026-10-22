@@ -112,13 +112,28 @@ class DeletionService:
         account is simply re-tombstoned.
         """
         report = DeletionReport(user_id=user_id)
-        user = db.get(User, user_id)
-        if user is None:
-            report.error = "user_not_found"
-            return report
+
+        # The tombstone is a conditional Core UPDATE, not an ORM attribute
+        # assignment. Two concurrent deletions both read the row; whichever runs
+        # second would otherwise flush ``UPDATE users ... WHERE id = ?`` against a
+        # row the winner has already removed, and SQLAlchemy raises
+        # StaleDataError -- a 500 for a request that should simply report that the
+        # account is gone.
+        tombstoned = execute_rowcount(
+            db,
+            update(User)
+            .where(User.id == user_id)
+            .values(deletion_state=DeletionState.PENDING_DELETION.value),
+        )
+        if tombstoned == 0:
+            # Read the id as a column: `db.get` would return a stale identity-map
+            # instance and report the account as present after it was deleted.
+            still_there = db.scalar(select(User.id).where(User.id == user_id))
+            if still_there is None:
+                report.error = "user_not_found"
+                return report
 
         report.sessions_revoked = self._revoke_sessions(db, user_id)
-        user.deletion_state = DeletionState.PENDING_DELETION.value
         report.documents_tombstoned = execute_rowcount(
             db,
             update(Document)
