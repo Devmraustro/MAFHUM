@@ -87,14 +87,15 @@ version considered — not inferred from popularity or from a package's README.
 - **License:** Apache-2.0 (acceptable)
 - **Reason:** publishes no cp311 wheel, so it cannot be installed on Python 3.11.
 
-### pgserver 0.1.4 — accepted for tests only, with a caveat
+### pgserver 0.1.4 — accepted for tests only
 
-- **License:** **not published** (no PyPI license field, no classifier)
+- **License:** **Apache-2.0**, verified against the upstream repository
+  (`github.com/orm011/pgserver`). PyPI publishes no license field, which is why
+  this needed checking at source rather than trusting the registry.
 - **Reason accepted:** it bundles a self-contained PostgreSQL 16.2 and is the
   only way to run real PostgreSQL integration tests in an environment with no
   system database. It is a **dev/test dependency only** and never ships.
-- **Open item:** its licensing must be clarified before MAFHUM is ever
-  redistributed as a bundle.
+- **Caveat:** last upstream push was mid-2024 — maintained, but not fast moving.
 
 ---
 
@@ -106,7 +107,7 @@ version considered — not inferred from popularity or from a package's README.
 | DOCX text extraction | python-docx 1.2.0 (MIT) |
 | Scanned-PDF handling | **Detect and report; do not OCR** |
 | Malware scanning | **Not integrated — do not claim it** |
-| Test PostgreSQL | pgserver 0.1.4 (dev/test only, license unverified) |
+| Test PostgreSQL | pgserver 0.1.4 (dev/test only, Apache-2.0) |
 
 Two overlapping PDF parsers were deliberately **not** adopted. One parser per
 format keeps the extraction behaviour predictable and the audit surface small.

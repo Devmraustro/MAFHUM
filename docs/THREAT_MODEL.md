@@ -181,8 +181,10 @@ Recorded deliberately. None is hidden by a passing test suite.
    was **rejected** because it downgrades `eslint-config-next` from 16.4.2 to
    14.2.35 — a breaking change that would not fix `braces` either. Follow-up:
    re-audit when upstream publishes a fix.
-5. **`pgserver` license is unpublished.** Dev/test only, never shipped. Must be
-   clarified before any bundled redistribution.
+5. **`pgserver` maintenance cadence.** Its license is confirmed Apache-2.0 (the
+   PyPI field is blank, but the upstream `LICENSE` is standard Apache-2.0). The
+   repository was last pushed in mid-2024, so it is maintained but not fast
+   moving. It is dev/test only and never ships.
 6. **No encryption at rest.** Filesystem permissions only.
 7. **A passing test suite does not prove the absence of vulnerabilities.** The
    suite covers the controls listed above; it is not a penetration test.

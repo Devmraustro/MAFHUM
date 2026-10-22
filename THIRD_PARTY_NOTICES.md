@@ -67,18 +67,22 @@ These are **never** part of a production install (`pip install .` excludes them)
 | pip-audit | 2.9.0 | Apache-2.0 | Dependency vulnerability scanning |
 | fonttools | 4.67.0 | MIT | Builds the synthetic PDF fixtures |
 | types-setuptools | 84.0.0.20261006 | MIT | Type stubs |
-| **pgserver** | 0.1.4 | **not published** | See the note below |
+| pgserver | 0.1.4 | Apache-2.0 | See the note below |
 
-### Note on pgserver (license not published)
+### Note on pgserver (Apache-2.0)
 
 `pgserver` bundles a self-contained PostgreSQL 16.2 binary and is used **only**
-by the test suite to start a real database. Its PyPI metadata contains **no
-license field and no license classifier**, so its terms are unverified.
+by the test suite to start a real database.
 
-It is accepted on that basis only because it is a dev/test dependency that never
-ships in the product and never runs in production. If MAFHUM is ever
-redistributed as a bundle, `pgserver` must be removed or its licensing clarified
-first. This is recorded as an open item rather than glossed over.
+Its **PyPI metadata has no license field**, which initially made its terms look
+unverified. The upstream repository (`github.com/orm011/pgserver`) was checked
+directly: GitHub reports `Apache-2.0` and the committed `LICENSE` file is the
+standard Apache License 2.0 text. **The license is therefore confirmed
+permissive** and the earlier "unverified" caveat is withdrawn.
+
+It remains a dev/test-only dependency that never ships in the product. The
+bundled PostgreSQL binaries are covered by the PostgreSQL License (permissive,
+MIT-like).
 
 ---
 
@@ -128,3 +132,4 @@ repository. The fixtures are generated at test time.
 
 PostgreSQL itself is only present in development, via `pgserver` (see above).
 PostgreSQL is licensed under the PostgreSQL License (permissive, MIT-like).
+`pgserver` is Apache-2.0.
