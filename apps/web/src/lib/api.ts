@@ -265,6 +265,47 @@ export const projects = {
   },
 };
 
+// ----------------------------------------------------------------- research
+export interface ResearchCitation {
+  kind: string;
+  quote: string;
+  document_id: string | null;
+  source_id: string | null;
+  title: string | null;
+  page_number: number | null;
+  ordinal: number | null;
+  url: string | null;
+  locator: string;
+  score: number;
+}
+
+export type ResearchStatus = "grounded" | "insufficient_evidence" | "no_evidence_available";
+
+export interface ResearchAnswer {
+  question: string;
+  language: string;
+  status: ResearchStatus;
+  evidence_sufficient: boolean;
+  coverage: number;
+  explanation: string;
+  citations: ResearchCitation[];
+}
+
+export interface KnownSource {
+  key: string;
+  title: string;
+  institution: string | null;
+  url: string | null;
+  language: string | null;
+  notes: string | null;
+}
+
+export interface KnownSourceList {
+  items: KnownSource[];
+  /** False means no external source has actually been fetched. */
+  retrieval_enabled: boolean;
+}
+
 // ---------------------------------------------------------------- documents
 export const documents = {
   list(params: { page?: number; pageSize?: number; projectId?: string } = {}): Promise<DocumentListResponse> {
@@ -314,5 +355,14 @@ export const documents = {
   /** Relative download URL; the API authorizes and streams the bytes. */
   downloadUrl(id: string): string {
     return `${API_PREFIX}/documents/${id}/download`;
+  },
+};
+
+export const research = {
+  ask(question: string): Promise<ResearchAnswer> {
+    return request("/research/ask", { method: "POST", body: JSON.stringify({ question }) });
+  },
+  sources(): Promise<KnownSourceList> {
+    return request("/research/sources");
   },
 };

@@ -49,6 +49,7 @@ export function SiteHeader() {
 
   const navItems = [
     { href: "/documents", label: t("nav.documents") },
+    { href: "/research", label: t("nav.research") },
   ];
 
   return (
