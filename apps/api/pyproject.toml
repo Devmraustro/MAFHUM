@@ -103,6 +103,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers --strict-config"
 markers = [
     "postgres: requires a real PostgreSQL server (MAFHUM_TEST_DATABASE_URL or pgserver)",
+    "live_source: needs a real network and MAFHUM_LIVE_RESEARCH=1; never a fixture",
 ]
 filterwarnings = [
     "error",

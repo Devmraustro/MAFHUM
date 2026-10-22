@@ -27,6 +27,7 @@ from mafhum_api.services.documents.storage import DocumentStorage
 from mafhum_api.services.documents.worker import ProcessingWorker, WorkerConfig
 from mafhum_api.services.identity.service import AuthenticatedUser, IdentityService
 from mafhum_api.services.projects.service import ProjectService
+from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.sources.service import SourceService
 
 
@@ -42,6 +43,7 @@ class AppContext:
     documents: DocumentService
     sources: SourceService
     deletion: DeletionService
+    research: ResearchService
     worker: ProcessingWorker
 
     @property

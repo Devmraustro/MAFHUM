@@ -34,6 +34,8 @@ from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.projects.service import ProjectService
+from mafhum_api.services.research.retrieval import HttpSourceFetcher
+from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.sources.service import SourceService
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,9 @@ def build_context(settings: Settings | None = None) -> AppContext:
         documents=DocumentService(storage, limits, row_locking=database.supports_row_locking),
         sources=SourceService(),
         deletion=DeletionService(storage),
+        research=ResearchService(
+            HttpSourceFetcher() if settings.research_retrieval_enabled else None
+        ),
         worker=worker,
     )
 

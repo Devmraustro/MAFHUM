@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     default_page_size: int = 20
     max_page_size: int = 100
     enable_ai_gateway: bool = False
+    # External source retrieval is opt-in. Off by default so core MAFHUM needs
+    # no outbound network at all; enabling it does not enable any paid service.
+    research_retrieval_enabled: bool = False
 
     @field_validator("max_upload_mb", "max_docx_uncompressed_mb", "max_total_bytes_per_user_mb")
     @classmethod
