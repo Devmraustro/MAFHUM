@@ -136,6 +136,15 @@ class ProcessingWorker:
     def worker_id(self) -> str:
         return self._worker_id
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the dispatcher thread is live.
+
+        Exposed so tests and the readiness probe can observe worker state
+        without reaching into private attributes.
+        """
+        return self._dispatcher is not None and self._dispatcher.is_alive()
+
     def wake(self) -> None:
         """Interrupt the dispatcher's idle wait so a new job starts immediately."""
         self._wake.set()

@@ -112,6 +112,11 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True) -
         lifespan=lifespan,
         docs_url="/api/docs" if settings.app_env != "production" else None,
         redoc_url=None,
+        # Disabling `docs_url` alone is not enough: FastAPI still serves the
+        # generated schema at `/openapi.json`, which hands an unauthenticated
+        # caller the complete route, parameter and schema surface. Turn the
+        # schema itself off in production.
+        openapi_url="/openapi.json" if settings.app_env != "production" else None,
     )
     app.state.context = context
 
