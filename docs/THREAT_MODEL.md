@@ -1,24 +1,196 @@
-# MAFHUM Threat Model (Initial)
+# Threat model and security position
 
-## Assets
-Student identities/sessions, uploads, research drafts, source records/citations, generated artifacts, AI credentials, usage records, admin settings and audit events.
+MAFHUM is a multi-tenant application handling students' personal study
+documents. The primary adversary model is:
 
-## Trust boundaries
-Browser/web server, web/API, API/database, API/private object storage, API/parser workers, API/model runtime, ingestion workers/public sources, admin/privileged endpoints.
+1. **Another authenticated user** trying to read, alter or delete someone else's
+   documents.
+2. **An anonymous attacker** uploading hostile files to exhaust resources, escape
+   the storage directory, or execute content.
+3. **A cross-site attacker** driving a logged-in student's browser.
+4. **An operator mistake** — a misconfigured deployment leaking secrets or data.
 
-## Threats and required controls
-- IDOR/broken authorization: enforce ownership in every service/repository query; test user A cannot read/change/delete user B's items.
-- Malicious uploads/parser exploits: MIME+extension allowlist, byte/page limits, quarantine, patched parsers, isolated workers, timeouts, no macro execution and cleanup.
-- SSRF via URL import: allowlist sources, block loopback/private/reserved IPs, validate DNS and redirects, restrict schemes/ports, enforce byte/time limits.
-- Prompt injection inside documents/pages: treat retrieved content as untrusted evidence, never as system instructions; validate tools server-side.
-- Citation fabrication: cite only persisted source IDs/snippets; validate citations; flag unsupported claims.
-- Secret leakage: environment secrets only; scan repository; redact logs; rotate exposed keys.
-- Session abuse: strong secrets, secure cookies, expiry/revocation, rate limits, brute-force and CSRF controls as appropriate.
-- Cross-tenant leakage via vector search/cache/storage: tenant scope on search, cache keys and object metadata; cross-tenant tests.
-- Resource exhaustion: input/page/output limits, bounded concurrency, timeouts, quotas and cancellation.
-- XSS/injection: output encoding, safe Markdown rendering, parameterized queries, CSP where suitable.
-- Admin abuse: least privilege and audit every sensitive action.
-- Data surviving deletion: lifecycle tests for originals, text, chunks, embeddings, artifacts and caches.
-- Supply-chain issues: lockfiles, reviewed upstream provenance, dependency audit and pinned releases.
+Controls below are stated only where they are implemented **and** covered by a
+test. Residual risks are listed at the end rather than omitted.
 
-Do not expose model runners, databases, storage or admin endpoints directly. Never log full documents/secrets by default. Review this threat model before public deployment and after major architecture changes.
+---
+
+## Implemented controls
+
+### Authentication and sessions
+
+| Control | Implementation | Verified by |
+|---|---|---|
+| Password storage | scrypt with per-user salt | unit tests |
+| Session tokens | Random; stored only as SHA-256 digests | unit tests |
+| Session cookie | `HttpOnly`, `SameSite=lax`, `Path=/` | integration tests |
+| CSRF | Double-submit cookie + `X-CSRF-Token` header on every cookie-authenticated mutation | integration tests |
+| Origin validation | Parsed `scheme://host` compared against an allowlist — never substring-matched, so `https://mafhum.example.evil` cannot pass for `https://mafhum.example` | unit tests |
+| Enumeration resistance | Identical `401` for unknown email and wrong password | integration tests |
+| Login throttling | 12 failures then `429 rate_limited` | integration tests |
+| Logout | Revokes the session server-side; returns `204` with an empty body | integration + regression test |
+
+**Login throttling is process-local.** It does not coordinate across workers, so
+N replicas permit roughly N× the attempts. This is documented rather than
+described as distributed rate limiting.
+
+### Authorization and tenant isolation
+
+- Ownership is enforced in the SQL `WHERE` clause on every read, download, retry
+  and delete.
+- A cross-user request returns `404 resource_not_found`, **byte-identical** to a
+  genuinely missing resource, so existence cannot be probed.
+- Verified live over HTTP: user B could not read, download, list or delete user
+  A's document, and A's document survived the attempt.
+
+### Upload handling
+
+Uploads are treated as fully untrusted:
+
+- Extension and browser MIME are **never** trusted; magic bytes and real parser
+  behaviour decide the format.
+- Server-side limits: upload size, PDF page count, DOCX entry count, DOCX
+  decompressed size, archive compression ratio, extracted-text size.
+- Archive shape is inspected for zip-bomb and path-traversal members.
+- Encrypted PDFs are rejected rather than passed to a password prompt.
+- Macros are never executed: `vbaProject.bin` in a DOCX is detected and skipped,
+  never opened.
+- Filenames are sanitized for display and never used to build a path. Storage
+  keys are server-generated `shard/64-hex-char` values.
+- Symlink and `..` traversal is refused during key resolution.
+- Files are written atomically and never clobber an existing object (`O_EXCL`).
+- On **any** failure after the blob is written, the blob is deleted — including
+  on `BaseException`, so a cancellation cannot orphan a file.
+
+Verified live: empty, non-PDF, signature-then-garbage, truncated and zip-bomb
+shapes were all rejected `422 file_rejected`, leaving **zero** database rows and
+**zero** files on disk.
+
+### Resource exhaustion
+
+- Fixed-size chunked reads; uploads are never buffered whole into memory.
+- Bounded worker pool (`PROCESSING_WORKER_COUNT`) claiming jobs with
+  `SELECT ... FOR UPDATE SKIP LOCKED`.
+- Job timeout, attempt cap, and stale-job recovery so a crashed worker cannot
+  lock a document forever.
+- Quotas on document count, total bytes and concurrent uploads per user.
+
+Verified live: with a limit of 3, the fourth upload returned `429`. The test
+suite additionally runs an **8-thread race** against a limit of 5 and asserts
+exactly 5×`201` and 3×`429` — no over-admission.
+
+### Information disclosure
+
+- Fixed error envelope with a generic Arabic message; no traceback, SQL, path or
+  parser detail.
+- Log redaction at the formatter boundary for document text, credentials,
+  `Bearer`/`Basic` values, tokens and filesystem paths.
+- `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+- Extracted text is rendered by the UI **as text only** — never parsed as markup.
+  A regression test feeds `<img src=x onerror=...>` through the whole path and
+  asserts no element is created.
+- Interactive API docs are disabled when `APP_ENV=production`.
+- `assert_production_ready()` refuses to boot in production with the development
+  session secret, without `COOKIE_SECURE`, or with a localhost database URL.
+
+---
+
+## Findings fixed during this phase
+
+Each was found by verification, fixed, and given a regression test.
+
+### 1. Logout sent a body with `204 No Content` — **Medium**
+
+- **Component:** `api/v1/auth.py`
+- **Root cause:** `JSONResponse(status_code=204, content=None)` renders
+  `b"null"`. A 204 must carry no body, so the server wrote 4 bytes it had not
+  declared, desynchronising HTTP keep-alive framing.
+- **Impact:** the *next* request on the same connection failed with
+  `RuntimeError: Response content longer than Content-Length`; the client saw a
+  `500` or a reset connection. Any browser reusing a connection after logout was
+  affected.
+- **Why tests missed it:** `TestClient` does not reuse a raw socket, so the
+  framing corruption never surfaced. Only a running server exposed it.
+- **Fix:** return a bare `Response(status_code=204)` with an empty body.
+- **Regression test:** `test_logout_response_has_no_body`; plus 12 live
+  logout→`/me` cycles on a single keep-alive connection, all clean.
+
+### 2. Storage root recreated world-readable at runtime — **Low/Medium**
+
+- **Component:** `services/documents/storage.py`
+- **Root cause:** `mkdir(parents=True)` creates a missing ancestor with the
+  process umask. If the storage root was removed while the process ran, it came
+  back `0o755` under a `0o022` umask, and only the shard directory was
+  re-tightened.
+- **Impact:** another local user could traverse into the storage tree. Blob files
+  themselves stayed `0o600`, so contents were not readable — this was a
+  traversal/exposure-of-existence issue, not a read.
+- **Fix:** re-assert the configured mode on the root as well as the shard on
+  every write.
+- **Regression test:** `test_root_removed_at_runtime_is_recreated_private`.
+- **Verified live:** storage root `0o700`, all blobs `0o600`, all names opaque
+  64-character hex.
+
+### 3. Migrations and the application read different env vars — **Low**
+
+- **Component:** `alembic/env.py`
+- **Root cause:** migrations read only `MAFHUM_DATABASE_URL` while the
+  application and `.env.example` use `DATABASE_URL`.
+- **Impact:** an operator could migrate one database while the application served
+  another.
+- **Fix:** migrations now read `MAFHUM_DATABASE_URL` then `DATABASE_URL`, and
+  percent-encode safely through ConfigParser (a `%` in a password or unix-socket
+  path previously raised or mangled the URL).
+- **Verified:** upgrade → downgrade → upgrade round-trip on a scratch PostgreSQL
+  database using `DATABASE_URL` alone.
+
+### 4. Vulnerable `python-multipart` — **High (dependency)**
+
+- **Component:** runtime dependency
+- **Detail:** `0.0.21` carried six advisories (PYSEC-2026-1852, -3036 to -3040,
+  -3038). This is the package that parses multipart uploads — directly on the
+  attack surface.
+- **Fix:** upgraded to `0.0.32`. `pip-audit` over the whole environment now
+  reports no known vulnerabilities. The full 429-test suite was re-run after the
+  upgrade.
+
+---
+
+## Known residual risks
+
+Recorded deliberately. None is hidden by a passing test suite.
+
+1. **No malware scanning.** A valid PDF that is also malicious will be stored and
+   served back to its owner on download. Mitigation: `nosniff`, `attachment`
+   disposition and CSP reduce browser-side impact. A real scanner is not
+   integrated.
+2. **No OCR.** Scanned documents yield no text. The UI says so explicitly instead
+   of showing an empty result.
+3. **Quotas and rate limits are process-local.** Documented; do not run multiple
+   API replicas without moving enforcement to the database.
+4. **`braces` advisory in the dev tree (GHSA-vfj7-8cjw-p6xm, high, CVSS 7.5).**
+   Affects `braces <= 3.0.3`, which is the **latest release** — no patched
+   version exists. It reaches MAFHUM only through
+   `eslint-config-next → @next/eslint-plugin-next → fast-glob → micromatch`, so
+   it is lint-time only and **absent from the production tree**
+   (`npm audit --omit=dev` reports 0). Exploitation needs a deeply nested brace
+   glob, which in this project comes from our own committed config, not user
+   input; the worst outcome is a crashed lint process. `npm audit fix --force`
+   was **rejected** because it downgrades `eslint-config-next` from 16.4.2 to
+   14.2.35 — a breaking change that would not fix `braces` either. Follow-up:
+   re-audit when upstream publishes a fix.
+5. **`pgserver` license is unpublished.** Dev/test only, never shipped. Must be
+   clarified before any bundled redistribution.
+6. **No encryption at rest.** Filesystem permissions only.
+7. **A passing test suite does not prove the absence of vulnerabilities.** The
+   suite covers the controls listed above; it is not a penetration test.
+
+---
+
+## Reporting a vulnerability
+
+Please report privately to the maintainers rather than opening a public issue.
+Include reproduction steps and the affected version. Do not test against a
+deployment you do not own.
