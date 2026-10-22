@@ -1,0 +1,160 @@
+"""Authentication endpoints: register, login, logout, session and CSRF token."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Request, Response
+
+from mafhum_api.api.deps import Context, CurrentUser, DbSession
+from mafhum_api.api.schemas import (
+    CsrfTokenResponse,
+    LoginRequest,
+    RegisterRequest,
+    SessionResponse,
+    UserResponse,
+)
+from mafhum_api.core.errors import RateLimitedError
+from mafhum_api.core.security import generate_csrf_token
+from mafhum_api.db.models import User
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Simple in-process throttle. It is deliberately process-local and documented as
+# such: it slows opportunistic abuse but is not a distributed rate limiter.
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_WINDOW_SECONDS = 60.0
+_LOGIN_MAX_ATTEMPTS = 10
+
+
+def _throttle_login(key: str) -> None:
+    import time
+
+    now = time.monotonic()
+    bucket = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+    if len(bucket) >= _LOGIN_MAX_ATTEMPTS:
+        _LOGIN_ATTEMPTS[key] = bucket
+        raise RateLimitedError("محاولات تسجيل دخول كثيرة. انتظر قليلًا ثم أعد المحاولة.")
+    bucket.append(now)
+    _LOGIN_ATTEMPTS[key] = bucket
+
+
+def _client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    return (request.client.host if request.client else "unknown")[:64]
+
+
+def _set_auth_cookies(response: Response, context: Context, token: str, csrf: str) -> None:
+    settings = context.settings
+    common = {
+        "httponly": True,
+        "secure": settings.cookie_secure,
+        "samesite": "lax",
+        "path": "/",
+        "max_age": settings.session_ttl_minutes * 60,
+    }
+    response.set_cookie(settings.session_cookie_name, token, **common)  # type: ignore[arg-type]
+    # The CSRF cookie is intentionally readable by script: it is only useful in
+    # combination with the Origin allowlist enforced on mutations.
+    response.set_cookie(
+        settings.csrf_cookie_name,
+        csrf,
+        httponly=False,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+        max_age=settings.session_ttl_minutes * 60,
+    )
+
+
+def _clear_auth_cookies(response: Response, context: Context) -> None:
+    settings = context.settings
+    response.delete_cookie(settings.session_cookie_name, path="/")
+    response.delete_cookie(settings.csrf_cookie_name, path="/")
+
+
+def _user_payload(user: User) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        preferred_language=user.preferred_language,
+    )
+
+
+@router.post("/register", response_model=SessionResponse, status_code=201)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    context: Context,
+    db: DbSession,
+) -> SessionResponse:
+    user = context.identity.register(
+        db,
+        email=payload.email,
+        password=payload.password,
+        display_name=payload.display_name,
+    )
+    issued = context.identity.issue_session(db, user, user_agent=request.headers.get("user-agent"))
+    db.commit()
+    csrf = generate_csrf_token()
+    _set_auth_cookies(response, context, issued.token, csrf)
+    return SessionResponse(user=_user_payload(user), expires_at=issued.expires_at)
+
+
+@router.post("/login", response_model=SessionResponse)
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    context: Context,
+    db: DbSession,
+) -> SessionResponse:
+    _throttle_login(_client_key(request))
+    user = context.identity.authenticate(db, email=payload.email, password=payload.password)
+    issued = context.identity.issue_session(db, user, user_agent=request.headers.get("user-agent"))
+    db.commit()
+    csrf = generate_csrf_token()
+    _set_auth_cookies(response, context, issued.token, csrf)
+    return SessionResponse(user=_user_payload(user), expires_at=issued.expires_at)
+
+
+@router.post("/logout", status_code=204)
+def logout(
+    request: Request,
+    response: Response,
+    context: Context,
+    db: DbSession,
+) -> Response:
+    token = request.cookies.get(context.settings.session_cookie_name)
+    context.identity.revoke_session(db, token)
+    db.commit()
+    # A 204 must carry no body. `JSONResponse(content=None)` renders `b"null"`,
+    # which desynchronises HTTP keep-alive framing and makes the *next* request
+    # on the same connection fail — so use a bare Response with an empty body.
+    result = Response(status_code=204)
+    _clear_auth_cookies(result, context)
+    return result
+
+
+@router.get("/session", response_model=CsrfTokenResponse)
+def session_csrf(user: CurrentUser, response: Response, context: Context) -> CsrfTokenResponse:
+    """Issue or rotate the CSRF token for the current session."""
+    csrf = generate_csrf_token()
+    response.set_cookie(
+        context.settings.csrf_cookie_name,
+        csrf,
+        httponly=False,
+        secure=context.settings.cookie_secure,
+        samesite="lax",
+        path="/",
+        max_age=context.settings.session_ttl_minutes * 60,
+    )
+    return CsrfTokenResponse(csrf_token=csrf)
+
+
+@router.get("/me", response_model=UserResponse)
+def me(user: CurrentUser) -> UserResponse:
+    return _user_payload(user)

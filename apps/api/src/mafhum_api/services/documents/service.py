@@ -1,0 +1,597 @@
+"""Document service: the only component that mutates document state.
+
+Concurrency and consistency rules
+---------------------------------
+* **Quota enforcement** locks the owning user row (``SELECT ... FOR UPDATE``)
+  before counting, so simultaneous uploads from one user cannot both pass a
+  boundary check. This is a database-level guarantee on PostgreSQL.
+* **Write ordering** is a saga: the blob is written first (so its true size is
+  known), then the row is inserted. Any failure after the blob write triggers
+  compensation (blob deletion), and ``reconcile_orphan_blobs`` catches crashes
+  between the two steps.
+* **Retry idempotency** uses a monotonically increasing ``generation``. New
+  segments are written and old-generation segments deleted in the *same*
+  transaction, and ``UNIQUE(document_id, ordinal)`` makes a double-insert
+  impossible rather than merely unlikely.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import secrets
+import uuid
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from sqlalchemy import and_, delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from mafhum_api.core.errors import (
+    AuthorizationError,
+    ConflictError,
+    FileRejectedError,
+    NotFoundError,
+    ProcessingUnavailableError,
+    QuotaExceededError,
+    ValidationError,
+)
+from mafhum_api.db.models import (
+    DOCUMENT_TRANSITIONS,
+    DeletionState,
+    Document,
+    DocumentFormat,
+    DocumentProcessingJob,
+    DocumentStatus,
+    DocumentTextSegment,
+    JobStatus,
+    Project,
+    User,
+)
+from mafhum_api.services.documents import validators
+from mafhum_api.services.documents.storage import (
+    DocumentStorage,
+    StorageError,
+    StorageObjectNotFoundError,
+)
+
+logger = logging.getLogger(__name__)
+
+_READ_CHUNK = 1024 * 256
+_SIGNATURE_BYTES = 16
+# How many leading bytes we inspect for magic-number detection.
+MAX_PAGE_SIZE_DEFAULT = 20
+SHA_CHUNK = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentLimits:
+    max_upload_bytes: int
+    max_extracted_chars: int
+    max_pdf_pages: int
+    max_docx_entries: int
+    max_docx_uncompressed_bytes: int
+    max_archive_compression_ratio: float
+    max_documents_per_user: int
+    max_total_bytes_per_user: int
+    max_segment_chars: int
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSummary:
+    id: uuid.UUID
+    display_filename: str
+    format: str
+    size_bytes: int
+    status: str
+    page_count: int | None
+    char_count: int
+    segment_count: int
+    project_id: uuid.UUID | None
+    error_code: str | None
+    error_message: str | None
+    is_scanned: bool | None
+    language_hint: str | None
+    created_at: datetime
+    processed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class TextPage:
+    segments: Sequence[tuple[int, uuid.UUID, int | None, str]]
+    total: int
+    page: int
+    page_size: int
+    document_status: str
+
+
+class DocumentService:
+    def __init__(
+        self,
+        storage: DocumentStorage,
+        limits: DocumentLimits,
+        *,
+        row_locking: bool = True,
+    ) -> None:
+        self._storage = storage
+        self._limits = limits
+        self._row_locking = row_locking
+
+    # ------------------------------------------------------------------ upload
+    def upload(
+        self,
+        db: Session,
+        *,
+        owner_id: uuid.UUID,
+        filename: str,
+        content_type: str | None,
+        fileobj: BinaryReader,
+        project_id: uuid.UUID | None = None,
+        language_hint: str | None = None,
+    ) -> Document:
+        """Validate, store and register an upload, then queue processing.
+
+        ``fileobj`` must expose ``read(size) -> bytes``; it is consumed in
+        bounded chunks so memory use does not grow with the upload size.
+        """
+        display_name = validators.sanitize_display_name(filename)
+        declared_format = validators.check_extension_and_mime(filename, content_type)
+
+        if project_id is not None:
+            self._assert_project_owned(db, owner_id, project_id)
+
+        # Cheap, unlocked pre-check for fast feedback; re-checked under lock below.
+        self._soft_quota_check(db, owner_id)
+
+        storage_key = self._storage.generate_key()
+        reader = _ChunkReader(fileobj, _READ_CHUNK)
+        head = reader.peek(_SIGNATURE_BYTES)
+        detected = validators.check_signature(head, declared_format)
+
+        try:
+            stored = self._storage.write(
+                storage_key, reader, max_bytes=self._limits.max_upload_bytes
+            )
+        except StorageError as exc:
+            raise FileRejectedError(
+                validators.ARABIC_MESSAGES[validators.REASON_TOO_LARGE],
+                details={"reason": validators.REASON_TOO_LARGE},
+            ) from exc
+
+        # From here on a blob exists on disk. ANY failure before the row is
+        # committed must remove it, otherwise rejected uploads accumulate as
+        # orphans that no database row accounts for.
+        try:
+            digest, size_bytes = self._digest(storage_key)
+            if size_bytes != stored.size_bytes:
+                raise FileRejectedError(
+                    validators.ARABIC_MESSAGES[validators.REASON_MALFORMED],
+                    details={"reason": validators.REASON_MALFORMED},
+                )
+            validators.check_size(size_bytes, self._validation_limits())
+
+            # Format-specific structural validation, on the stored bytes.
+            if detected == DocumentFormat.DOCX.value:
+                self._validate_docx_container(storage_key)
+            elif detected == DocumentFormat.PDF.value:
+                self._validate_pdf_page_count(storage_key)
+
+            document = Document(
+                id=uuid.uuid4(),
+                owner_id=owner_id,
+                project_id=project_id,
+                storage_key=storage_key,
+                display_filename=display_name,
+                format=detected,
+                size_bytes=size_bytes,
+                content_sha256=digest,
+                status=DocumentStatus.PENDING.value,
+                language_hint=(language_hint or None),
+            )
+            try:
+                self._enforce_quota(db, owner_id, size_bytes)
+                db.add(document)
+                db.add(
+                    DocumentProcessingJob(
+                        id=uuid.uuid4(),
+                        document_id=document.id,
+                        generation=1,
+                        status=JobStatus.QUEUED.value,
+                    )
+                )
+                db.flush()
+            except SQLAlchemyError:
+                db.rollback()
+                raise
+        except BaseException:
+            # Covers validation failures, quota rejections, database errors and
+            # interrupts alike: the blob never outlives a failed upload.
+            self._compensate(storage_key)
+            raise
+
+        logger.info(
+            "document uploaded",
+            extra={"event": "document_uploaded", "document_id": str(document.id)},
+        )
+        return document
+
+    # -------------------------------------------------------------------- read
+    def get_owned(self, db: Session, owner_id: uuid.UUID, document_id: uuid.UUID) -> Document:
+        """Fetch a document, enforcing ownership in the query itself."""
+        document = db.scalar(
+            select(Document).where(
+                Document.id == document_id,
+                Document.owner_id == owner_id,
+                Document.deletion_state != DeletionState.DELETED.value,
+            )
+        )
+        if document is None:
+            # Same error for missing and not-owned: no existence oracle.
+            raise AuthorizationError()
+        return document
+
+    def list_owned(
+        self,
+        db: Session,
+        owner_id: uuid.UUID,
+        *,
+        page: int = 1,
+        page_size: int = MAX_PAGE_SIZE_DEFAULT,
+        project_id: uuid.UUID | None = None,
+        status: str | None = None,
+    ) -> tuple[list[Document], int]:
+        conditions = [
+            Document.owner_id == owner_id,
+            Document.deletion_state != DeletionState.DELETED.value,
+        ]
+        if project_id is not None:
+            conditions.append(Document.project_id == project_id)
+        if status is not None:
+            conditions.append(Document.status == status)
+        total = db.scalar(select(func.count()).select_from(Document).where(and_(*conditions)))
+        rows = db.scalars(
+            select(Document)
+            .where(and_(*conditions))
+            .order_by(Document.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+        return list(rows), int(total or 0)
+
+    def get_text(
+        self,
+        db: Session,
+        owner_id: uuid.UUID,
+        document_id: uuid.UUID,
+        *,
+        page: int = 1,
+        page_size: int = MAX_PAGE_SIZE_DEFAULT,
+    ) -> TextPage:
+        document = self.get_owned(db, owner_id, document_id)
+        conditions = [DocumentTextSegment.document_id == document.id]
+        total = int(
+            db.scalar(
+                select(func.count()).select_from(DocumentTextSegment).where(and_(*conditions))
+            )
+            or 0
+        )
+        rows = db.execute(
+            select(
+                DocumentTextSegment.ordinal,
+                DocumentTextSegment.id,
+                DocumentTextSegment.page_number,
+                DocumentTextSegment.text,
+            )
+            .where(and_(*conditions))
+            .order_by(DocumentTextSegment.ordinal)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+        segments = [(int(r[0]), r[1], r[2], r[3]) for r in rows]
+        return TextPage(
+            segments=segments,
+            total=total,
+            page=page,
+            page_size=page_size,
+            document_status=document.status,
+        )
+
+    def open_stream(
+        self, db: Session, owner_id: uuid.UUID, document_id: uuid.UUID
+    ) -> tuple[Iterator[bytes], Document]:
+        """Return a byte stream only after ownership has been verified."""
+        document = self.get_owned(db, owner_id, document_id)
+        try:
+            stream = self._storage.open_read(document.storage_key)
+        except StorageObjectNotFoundError as exc:
+            raise NotFoundError("محتوى المستند غير متوفر.") from exc
+        except StorageError as exc:
+            raise NotFoundError("محتوى المستند غير متوفر.") from exc
+        return stream, document
+
+    # ------------------------------------------------------------------ retry
+    def retry(
+        self, db: Session, owner_id: uuid.UUID, document_id: uuid.UUID
+    ) -> DocumentProcessingJob:
+        """Queue a new processing generation for a failed document.
+
+        Idempotent: a document that is already queued or running returns the
+        existing job instead of creating a second concurrent run.
+        """
+        document = self.get_owned(db, owner_id, document_id)
+        if document.status == DocumentStatus.READY.value:
+            raise ConflictError("المستند تمت معالجته بالفعل.")
+        if document.status == DocumentStatus.PROCESSING.value:
+            existing = db.scalar(
+                select(DocumentProcessingJob)
+                .where(
+                    DocumentProcessingJob.document_id == document.id,
+                    DocumentProcessingJob.status.in_(
+                        [JobStatus.QUEUED.value, JobStatus.RUNNING.value]
+                    ),
+                )
+                .order_by(DocumentProcessingJob.generation.desc())
+            )
+            if existing is not None:
+                return existing
+        if document.status not in {
+            DocumentStatus.FAILED.value,
+            DocumentStatus.PENDING.value,
+        }:
+            raise ConflictError("لا يمكن إعادة المحاولة في الحالة الحالية.")
+
+        next_generation = self._next_generation(db, document.id)
+        self._transition(db, document, DocumentStatus(document.status), DocumentStatus.PENDING)
+        document.error_code = None
+        document.error_message = None
+        job = DocumentProcessingJob(
+            id=uuid.uuid4(),
+            document_id=document.id,
+            generation=next_generation,
+            status=JobStatus.QUEUED.value,
+        )
+        db.add(job)
+        db.flush()
+        logger.info(
+            "document retry queued",
+            extra={"event": "document_retry", "document_id": str(document.id)},
+        )
+        return job
+
+    # ----------------------------------------------------------------- delete
+    def delete(self, db: Session, owner_id: uuid.UUID, document_id: uuid.UUID) -> None:
+        """Delete a document, its segments, its jobs and its stored blob.
+
+        The blob is removed only after the transaction commits, so a rollback can
+        never leave a row pointing at deleted bytes. A filesystem failure does not
+        resurrect the row: the document is marked ``pending_deletion`` and handed
+        to reconciliation.
+        """
+        document = self.get_owned(db, owner_id, document_id)
+        storage_key = document.storage_key
+
+        db.execute(
+            delete(DocumentTextSegment).where(DocumentTextSegment.document_id == document.id)
+        )
+        db.execute(
+            delete(DocumentProcessingJob).where(DocumentProcessingJob.document_id == document.id)
+        )
+        db.delete(document)
+        try:
+            db.flush()
+        except SQLAlchemyError:
+            db.rollback()
+            raise
+
+        try:
+            self._storage.delete(storage_key)
+        except StorageError:
+            logger.error(
+                "blob deletion failed after document removal; queued for reconciliation",
+                extra={"event": "document_blob_orphaned"},
+            )
+
+    # ------------------------------------------------------------- maintenance
+    def reconcile_orphan_blobs(self, db: Session) -> tuple[list[str], list[str]]:
+        """Delete blobs with no live row. Returns ``(deleted, failed)``."""
+        live_keys = list(db.scalars(select(Document.storage_key)).all())
+        orphans = self._storage.reconcile_orphans(live_keys)
+        if not orphans:
+            return [], []
+        deleted, failed = self._storage.delete_many(orphans)
+        if deleted:
+            logger.info(
+                "reclaimed orphan blobs",
+                extra={"event": "orphan_blobs_reclaimed", "count": len(deleted)},
+            )
+        return deleted, failed
+
+    def storage_usage(self, db: Session, owner_id: uuid.UUID) -> tuple[int, int]:
+        """Return ``(document_count, total_bytes)`` for a user."""
+        row = db.execute(
+            select(func.count(Document.id), func.coalesce(func.sum(Document.size_bytes), 0)).where(
+                Document.owner_id == owner_id,
+                Document.deletion_state != DeletionState.DELETED.value,
+            )
+        ).one()
+        return int(row[0]), int(row[1])
+
+    # ------------------------------------------------------------------ helpers
+    def summarize(self, document: Document) -> DocumentSummary:
+        return DocumentSummary(
+            id=document.id,
+            display_filename=document.display_filename,
+            format=document.format,
+            size_bytes=document.size_bytes,
+            status=document.status,
+            page_count=document.page_count,
+            char_count=document.char_count,
+            segment_count=document.segment_count,
+            project_id=document.project_id,
+            error_code=document.error_code,
+            error_message=document.error_message,
+            is_scanned=document.is_scanned,
+            language_hint=document.language_hint,
+            created_at=document.created_at,
+            processed_at=document.processed_at,
+        )
+
+    def _assert_project_owned(
+        self, db: Session, owner_id: uuid.UUID, project_id: uuid.UUID
+    ) -> Project:
+        project = db.scalar(
+            select(Project).where(Project.id == project_id, Project.owner_id == owner_id)
+        )
+        if project is None:
+            # Identical to a missing project: never disclose another user's id.
+            raise ValidationError(
+                "المشروع المحدد غير متاح.",
+                field_errors={"project_id": ["غير متاح."]},
+            )
+        return project
+
+    def _soft_quota_check(self, db: Session, owner_id: uuid.UUID) -> None:
+        count, total_bytes = self.storage_usage(db, owner_id)
+        if count >= self._limits.max_documents_per_user:
+            raise QuotaExceededError(
+                f"وصلت إلى الحد الأقصى لعدد المستندات ({self._limits.max_documents_per_user})."
+            )
+        if total_bytes >= self._limits.max_total_bytes_per_user:
+            raise QuotaExceededError("وصلت إلى الحد الأقصى لمساحة التخزين.")
+
+    def _enforce_quota(self, db: Session, owner_id: uuid.UUID, additional_bytes: int) -> None:
+        """Authoritative quota check, serialized on the owning user row."""
+        if self._row_locking:
+            user = db.execute(
+                select(User).where(User.id == owner_id).with_for_update()
+            ).scalar_one_or_none()
+            if user is None:
+                raise AuthorizationError()
+        count, total_bytes = self.storage_usage(db, owner_id)
+        if count >= self._limits.max_documents_per_user:
+            raise QuotaExceededError(
+                f"وصلت إلى الحد الأقصى لعدد المستندات ({self._limits.max_documents_per_user})."
+            )
+        if total_bytes + additional_bytes > self._limits.max_total_bytes_per_user:
+            raise QuotaExceededError("رفع هذا الملف سيتجاوز الحد الأقصى لمساحة التخزين المخصصة لك.")
+
+    def _next_generation(self, db: Session, document_id: uuid.UUID) -> int:
+        current = db.scalar(
+            select(func.coalesce(func.max(DocumentProcessingJob.generation), 0)).where(
+                DocumentProcessingJob.document_id == document_id
+            )
+        )
+        return int(current or 0) + 1
+
+    def _transition(
+        self,
+        db: Session,
+        document: Document,
+        current: DocumentStatus,
+        target: DocumentStatus,
+    ) -> None:
+        if target not in DOCUMENT_TRANSITIONS[current]:
+            raise ConflictError("لا يمكن تغيير حالة المستند بهذه الطريقة.")
+        document.status = target.value
+
+    def _validation_limits(self) -> validators.ValidationLimits:
+        return validators.ValidationLimits(
+            max_upload_bytes=self._limits.max_upload_bytes,
+            max_pdf_pages=self._limits.max_pdf_pages,
+            max_docx_entries=self._limits.max_docx_entries,
+            max_docx_uncompressed_bytes=self._limits.max_docx_uncompressed_bytes,
+            max_archive_compression_ratio=self._limits.max_archive_compression_ratio,
+        )
+
+    def _validate_docx_container(self, storage_key: str) -> None:
+        path = self._storage_path(storage_key)
+        validators.check_archive_shape(path, self._validation_limits())
+
+    def _validate_pdf_page_count(self, storage_key: str) -> None:
+        """Reject over-long PDFs before any parsing work happens."""
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+
+        path = self._storage_path(storage_key)
+        try:
+            reader = PdfReader(str(path), strict=False)
+        except (PdfReadError, OSError, ValueError) as exc:
+            raise FileRejectedError(
+                validators.ARABIC_MESSAGES[validators.REASON_MALFORMED],
+                details={"reason": validators.REASON_MALFORMED},
+            ) from exc
+        if getattr(reader, "is_encrypted", False):
+            raise FileRejectedError(
+                validators.ARABIC_MESSAGES[validators.REASON_ENCRYPTED],
+                details={"reason": validators.REASON_ENCRYPTED},
+            )
+        validators.check_page_count(len(reader.pages), self._validation_limits())
+
+    def _storage_path(self, storage_key: str) -> Path:
+        resolve = getattr(self._storage, "resolve", None)
+        if resolve is None:  # pragma: no cover - defensive for alt backends
+            raise ProcessingUnavailableError()
+        return Path(resolve(storage_key))
+
+    def _digest(self, storage_key: str) -> tuple[str, int]:
+        hasher = hashlib.sha256()
+        total = 0
+        for chunk in self._storage.open_read(storage_key):
+            hasher.update(chunk)
+            total += len(chunk)
+        return hasher.hexdigest(), total
+
+    def _compensate(self, storage_key: str) -> None:
+        try:
+            self._storage.delete(storage_key)
+        except StorageError:
+            logger.error(
+                "compensating blob deletion failed",
+                extra={"event": "compensation_failed"},
+            )
+
+
+@runtime_checkable
+class BinaryReader(Protocol):
+    """Minimal synchronous file-like reader accepted by ``upload``."""
+
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+class _ChunkReader(Iterable[bytes]):
+    """Bounded reader over a file-like object.
+
+    Reads fixed-size chunks so memory use is independent of upload size.
+    """
+
+    def __init__(self, fileobj: BinaryReader, chunk_size: int) -> None:
+        self._fileobj = fileobj
+        self._chunk_size = chunk_size
+        self._peeked: bytes | None = None
+
+    def peek(self, size: int) -> bytes:
+        data = self._fileobj.read(size)
+        self._peeked = data
+        return data
+
+    def __iter__(self) -> Iterator[bytes]:
+        if self._peeked:
+            yield self._peeked
+            self._peeked = None
+        while True:
+            chunk = self._fileobj.read(self._chunk_size)
+            if not chunk:
+                return
+            yield chunk
+
+
+def new_worker_id() -> str:
+    return f"worker-{secrets.token_hex(6)}"
+
+
+def now_utc() -> datetime:
+    return datetime.now(UTC)

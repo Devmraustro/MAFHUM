@@ -1,0 +1,111 @@
+[project]
+name = "mafhum-api"
+version = "0.3.0"
+description = "MAFHUM API - modular monolith backend (identity, projects, documents, sources)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.159.1",
+    "uvicorn[standard]==0.54.0",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.16.1",
+    "sqlalchemy[postgresql]==2.1.6",
+    "alembic==1.20.0",
+    "psycopg[binary]==3.3.6",
+    "python-multipart==0.0.32",
+    "pypdf==6.21.2",
+    "python-docx==1.2.0",
+    "email-validator==2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+    # Starlette's TestClient builds on httpx2; without it, test collection
+    # fails under `filterwarnings = error`.
+    "httpx2==2.16.0",
+    # Used only by tests/factories/pdf_factory.py to build synthetic PDFs.
+    "fonttools==4.67.0",
+    "ruff==0.17.1",
+    "mypy==2.4.0",
+    "pip-audit==2.9.0",
+    "pgserver==0.1.4",
+    "types-setuptools==84.0.0.20261006",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "alembic"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",     # pycodestyle
+    "F",          # pyflakes
+    "I",          # isort
+    "N",          # pep8-naming
+    "UP",         # pyupgrade
+    "B",          # flake8-bugbear
+    "C4",         # flake8-comprehensions
+    "SIM",        # flake8-simplify
+    "S",          # flake8-bandit (security)
+    "ASYNC",      # flake8-async
+    "PTH",        # flake8-use-pathlib
+    "RUF",        # ruff-specific
+]
+ignore = [
+    # Docstring enforcement is out of scope for this phase.
+    "D",
+    # MAFHUM is Arabic-first: Arabic script in strings, comments and docstrings is
+    # the product, not an "ambiguous character" typo. These rules are designed
+    # for Latin-only codebases and would flag correct Arabic text.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # (str, enum.Enum) is kept deliberately: the models store ``.value`` strings
+    # in VARCHAR columns and compare against them, and the explicit mixin works
+    # identically on every supported interpreter.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic migrations run top-level DDL and need the alembic op/context globals.
+"alembic/versions/*.py" = ["S"]
+# Tests legitimately exercise unsafe inputs (path traversal payloads, weak hashes).
+"tests/*" = ["S101", "S105", "S106", "S110", "S311", "S404", "S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mafhum_api"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+packages = ["mafhum_api"]
+warn_unreachable = true
+disallow_any_unimported = false
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["pypdf.*", "docx.*", "pgserver.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "postgres: requires a real PostgreSQL server (MAFHUM_TEST_DATABASE_URL or pgserver)",
+]
+filterwarnings = [
+    "error",
+    # pgserver warns when XDG_RUNTIME_DIR is unset in sandboxes; not actionable here.
+    "ignore:.*XDG_RUNTIME_DIR.*:RuntimeWarning",
+]
