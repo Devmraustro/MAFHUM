@@ -9,6 +9,9 @@ credentials/
 
 # Python
 __pycache__/
+*.egg-info/
+.eggs/
+build/
 *.py[cod]
 .venv/
 venv/
@@ -39,3 +42,7 @@ artifacts/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local end-to-end verification scratch space (a real PostgreSQL data directory,
+# uploaded blobs and generated connection strings live here).
+.e2e/
