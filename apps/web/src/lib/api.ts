@@ -366,3 +366,214 @@ export const research = {
     return request("/research/sources");
   },
 };
+
+// ---------------------------------------------------------------------------
+// Phase 5: tutoring
+// ---------------------------------------------------------------------------
+
+export interface StudyTopic {
+  id: string;
+  title: string;
+  description: string | null;
+  language: "ar" | "fr";
+  created_at: string;
+}
+
+export interface StudyMaterial {
+  id: string;
+  document_id: string | null;
+  source_id: string | null;
+  title: string | null;
+  /** False once the underlying document or source has been deleted. */
+  available: boolean;
+}
+
+export interface StudyCitation {
+  kind: string;
+  quote: string;
+  locator: string;
+  document_id: string | null;
+  title: string | null;
+  page_number: number | null;
+  ordinal: number | null;
+  score: number;
+}
+
+export interface StudySession {
+  id: string;
+  question: string;
+  answer: string | null;
+  status: "grounded" | "insufficient_evidence" | "no_evidence_available";
+  evidence_sufficient: boolean;
+  coverage: number;
+  citations: StudyCitation[];
+  created_at: string;
+}
+
+export interface AnswerFeedback {
+  supported_by_source: boolean;
+  reference_excerpt: string;
+  source_available: boolean;
+  verdict: "supported" | "not_established_by_lexical_comparison";
+  explanation: string;
+  /** Always false: the comparison is lexical, not a judgement of meaning. */
+  graded_semantically: boolean;
+}
+
+export interface StudyQuestion {
+  id: string;
+  prompt: string;
+  difficulty: "recall" | "comprehension" | "application";
+  answer_submitted: boolean;
+  submitted_answer: string | null;
+  feedback: AnswerFeedback | null;
+  source_document_id: string | null;
+  source_page_number: number | null;
+  source_ordinal: number | null;
+  source_available: boolean;
+}
+
+export interface Flashcard {
+  id: string;
+  prompt: string;
+  answer: string;
+  source_title: string | null;
+  source_page_number: number | null;
+  source_ordinal: number | null;
+  /** False once the source behind the answer has been deleted. */
+  source_available: boolean;
+  due_at: string;
+  interval_days: number;
+  repetitions: number;
+  review_count: number;
+}
+
+export interface StudyPlan {
+  total: number;
+  completed: number;
+  outstanding: number;
+  progress: number;
+  by_state: Record<string, number>;
+  items: {
+    id: string;
+    objective: string;
+    scheduled_for: string;
+    state: "not_started" | "in_progress" | "completed" | "blocked";
+    material_note: string | null;
+  }[];
+}
+
+export const study = {
+  listTopics(): Promise<{ topics: StudyTopic[] }> {
+    return request("/study/topics");
+  },
+
+  createTopic(payload: {
+    title: string;
+    description?: string;
+    language: "ar" | "fr";
+  }): Promise<StudyTopic> {
+    return request("/study/topics", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  getTopic(id: string): Promise<StudyTopic & { materials: StudyMaterial[]; plan: StudyPlan }> {
+    return request(`/study/topics/${id}`);
+  },
+
+  deleteTopic(id: string): Promise<void> {
+    return request(`/study/topics/${id}`, { method: "DELETE" });
+  },
+
+  attachMaterial(
+    topicId: string,
+    payload: { documentId?: string; sourceId?: string },
+  ): Promise<{ id: string }> {
+    return request(`/study/topics/${topicId}/materials`, {
+      method: "POST",
+      body: JSON.stringify({
+        document_id: payload.documentId ?? null,
+        source_id: payload.sourceId ?? null,
+      }),
+    });
+  },
+
+  listMaterials(topicId: string): Promise<{ materials: StudyMaterial[] }> {
+    return request(`/study/topics/${topicId}/materials`);
+  },
+
+  ask(topicId: string, question: string): Promise<StudySession> {
+    return request(`/study/topics/${topicId}/ask`, {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    });
+  },
+
+  listSessions(topicId: string): Promise<{ sessions: StudySession[] }> {
+    return request(`/study/topics/${topicId}/sessions`);
+  },
+
+  generateQuestions(topicId: string, count: number): Promise<{ questions: StudyQuestion[] }> {
+    return request(`/study/topics/${topicId}/questions`, {
+      method: "POST",
+      body: JSON.stringify({ count }),
+    });
+  },
+
+  listQuestions(topicId: string): Promise<{ questions: StudyQuestion[] }> {
+    return request(`/study/topics/${topicId}/questions`);
+  },
+
+  submitAnswer(topicId: string, questionId: string, answer: string): Promise<StudyQuestion> {
+    return request(`/study/topics/${topicId}/questions/${questionId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ answer }),
+    });
+  },
+
+  createFlashcard(
+    topicId: string,
+    payload: { prompt: string; answer: string; segmentId?: string },
+  ): Promise<Flashcard> {
+    return request(`/study/topics/${topicId}/flashcards`, {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: payload.prompt,
+        answer: payload.answer,
+        segment_id: payload.segmentId ?? null,
+      }),
+    });
+  },
+
+  dueCards(topicId: string): Promise<{ cards: Flashcard[] }> {
+    return request(`/study/topics/${topicId}/flashcards/due`);
+  },
+
+  reviewCard(topicId: string, cardId: string, rating: number): Promise<Flashcard> {
+    return request(`/study/topics/${topicId}/flashcards/${cardId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ rating }),
+    });
+  },
+
+  plan(topicId: string): Promise<StudyPlan> {
+    return request(`/study/topics/${topicId}/plan`);
+  },
+
+  addPlanItem(topicId: string, payload: { objective: string; scheduledFor: string }): Promise<{ id: string }> {
+    return request(`/study/topics/${topicId}/plan`, {
+      method: "POST",
+      body: JSON.stringify({ objective: payload.objective, scheduled_for: payload.scheduledFor }),
+    });
+  },
+
+  setPlanState(
+    topicId: string,
+    itemId: string,
+    state: "not_started" | "in_progress" | "completed" | "blocked",
+  ): Promise<{ id: string; state: string }> {
+    return request(`/study/topics/${topicId}/plan/${itemId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ state }),
+    });
+  },
+};
