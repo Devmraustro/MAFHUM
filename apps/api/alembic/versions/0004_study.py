@@ -41,8 +41,12 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("language", sa.String(length=2), nullable=False),
         sa.Column("archived", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["owner_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint("language IN ('ar', 'fr')", name="ck_study_topics_language"),
@@ -55,13 +59,19 @@ def upgrade() -> None:
         sa.Column("topic_id", sa.Uuid(), nullable=False),
         sa.Column("document_id", sa.Uuid(), nullable=True),
         sa.Column("source_id", sa.Uuid(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["topic_id"], ["study_topics.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["source_id"], ["source_records.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("topic_id", "document_id", "source_id", name="uq_materials_topic_target"),
+        sa.UniqueConstraint(
+            "topic_id", "document_id", "source_id", name="uq_materials_topic_target"
+        ),
         # At most one, not exactly one: ON DELETE SET NULL leaves both NULL once
         # the target is gone, and an exactly-one check would reject that UPDATE.
         sa.CheckConstraint(
@@ -81,8 +91,12 @@ def upgrade() -> None:
         sa.Column("evidence_sufficient", sa.Boolean(), nullable=False),
         sa.Column("coverage", sa.Float(), nullable=False),
         sa.Column("citations", JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["topic_id"], ["study_topics.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint(
@@ -107,8 +121,12 @@ def upgrade() -> None:
         sa.Column("submitted_answer", sa.Text(), nullable=True),
         sa.Column("feedback", JSONB(), nullable=True),
         sa.Column("answered_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["topic_id"], ["study_topics.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(
             ["source_segment_id"], ["document_text_segments.id"], ondelete="SET NULL"
@@ -137,8 +155,12 @@ def upgrade() -> None:
         sa.Column("repetitions", sa.Integer(), nullable=False),
         sa.Column("due_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("review_count", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["topic_id"], ["study_topics.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint("ease_factor >= 1.3", name="ck_flashcards_ease_floor"),
@@ -154,8 +176,12 @@ def upgrade() -> None:
         sa.Column("rating", sa.Integer(), nullable=False),
         sa.Column("interval_before_days", sa.Integer(), nullable=False),
         sa.Column("interval_after_days", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["flashcard_id"], ["flashcards.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint("rating BETWEEN 0 AND 5", name="ck_reviews_rating"),
@@ -171,8 +197,12 @@ def upgrade() -> None:
         sa.Column("state", sa.String(length=32), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("material_note", sa.String(length=300), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["topic_id"], ["study_topics.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint(
