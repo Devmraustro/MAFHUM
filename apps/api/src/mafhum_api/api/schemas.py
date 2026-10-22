@@ -149,6 +149,9 @@ class LimitsResponse(BaseModel):
     max_total_bytes_per_user_mb: int
     allowed_extensions: list[str]
     ocr_available: bool = False
+    # Disclosed so no client can assume an upload was virus-checked. MAFHUM
+    # ships no malware engine; see services/documents/scanning.py.
+    malware_scanning_available: bool = False
 
 
 # --------------------------------------------------------------------- sources

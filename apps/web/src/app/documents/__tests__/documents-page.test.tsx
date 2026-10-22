@@ -43,6 +43,7 @@ const LIMITS = {
   max_total_bytes_per_user_mb: 200,
   allowed_extensions: [".pdf", ".docx"],
   ocr_available: false,
+    malware_scanning_available: false,
 };
 
 const USAGE = {
@@ -237,6 +238,9 @@ describe("documents workspace", () => {
     await screen.findByText(t("ar", "documents.empty"));
     // The scanned-PDF notice is present on the upload card, up front.
     expect(screen.getAllByText(t("ar", "detail.scanned")).length).toBeGreaterThan(0);
+    // So is the disclosure that uploads are not virus-checked. A successful
+    // upload must never be readable as "this file is safe".
+    expect(screen.getAllByText(t("ar", "documents.noMalwareScanning")).length).toBeGreaterThan(0);
   });
 
   it("surfaces a validation rejection verbatim and does not fake success", async () => {

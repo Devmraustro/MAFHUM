@@ -119,6 +119,8 @@ export interface UploadLimits {
   max_total_bytes_per_user_mb: number;
   allowed_extensions: string[];
   ocr_available: boolean;
+  /** False while MAFHUM ships no antivirus engine; uploads are not virus-checked. */
+  malware_scanning_available: boolean;
 }
 
 const CSRF_COOKIE = "mafhum_csrf";

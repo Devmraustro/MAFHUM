@@ -215,6 +215,9 @@ export default function DocumentsPage() {
         {limits && !limits.ocr_available ? (
           <p className="hint">{t("detail.scanned")}</p>
         ) : null}
+        {limits && !limits.malware_scanning_available ? (
+          <p className="hint">{t("documents.noMalwareScanning")}</p>
+        ) : null}
 
         {uploadError ? <ErrorAlert message={uploadError} onClose={() => setUploadError(null)} /> : null}
 

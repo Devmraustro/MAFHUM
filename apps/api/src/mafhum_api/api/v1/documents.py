@@ -38,6 +38,7 @@ from mafhum_api.api.schemas import (
 )
 from mafhum_api.core.errors import ValidationError
 from mafhum_api.db.models import Document
+from mafhum_api.services.documents.scanning import MalwareScanner, NullScanner
 from mafhum_api.services.documents.validators import ALLOWED_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 _DISPOSITION_SAFE_RE = re.compile(r"[^ \w.\-\u0600-\u06ff\u00c0-\u024f]")
+
+# The single place that decides whether uploads are scanned. Swapping in a real
+# engine here is what turns the disclosed capability on; the /limits response
+# reads this object rather than a literal, so the disclosure cannot drift from
+# the behaviour.
+_SCANNER: MalwareScanner = NullScanner()
 _DOWNLOAD_CHUNK = 1024 * 128
 
 
@@ -81,6 +88,7 @@ def upload_limits(context: Context) -> LimitsResponse:
         max_total_bytes_per_user_mb=settings.max_total_bytes_per_user_mb,
         allowed_extensions=sorted(ALLOWED_EXTENSIONS),
         ocr_available=False,
+        malware_scanning_available=_SCANNER.available,
     )
 
 
