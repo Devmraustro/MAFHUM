@@ -67,14 +67,23 @@ check_scanner() {
   fi
   pass "signature database present ($dbfiles database file(s) in $dbdir)"
 
-  # Freshness: warn as a failure if the newest signature file is older than 7 days.
-  local newest_age_days
-  newest_age_days="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' \) -mtime +7 2>/dev/null | wc -l)"
-  if [ "$newest_age_days" -gt 0 ]; then
-    fail "signature database is older than 7 days — run freshclam"
-  else
-    pass "signature database is fresher than 7 days"
+  # Require a core ClamAV database (.cvd or .cld), not merely a .cdb
+  # auxiliary file. Assess the newest core database by its timestamp: counting
+  # files older than seven days incorrectly fails when an old file coexists with
+  # a fresh one, and incorrectly passes when only .cdb files exist.
+  local core_db_count newest_db_mtime now_epoch
+  core_db_count="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' \) -type f 2>/dev/null | wc -l)"
+  if [ "$core_db_count" -eq 0 ]; then
+    blocked "no core ClamAV signature database (.cvd/.cld) in $dbdir" "run freshclam and verify its database files"
+    return
   fi
+  newest_db_mtime="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' \) -type f -printf '%T@\n' 2>/dev/null | sort -nr | head -1)"
+  now_epoch="$(date +%s)"
+  if [ -z "$newest_db_mtime" ] || [ "$((now_epoch - ${newest_db_mtime%.*}))" -gt 604800 ]; then
+    fail "newest core signature database is older than 7 days — run freshclam"
+    return
+  fi
+  pass "newest core signature database is fresher than 7 days"
 
   # EICAR: the published, non-malicious antivirus test string. Using anything
   # else would mean handling real malware, which this procedure forbids.
@@ -107,12 +116,6 @@ check_scanner() {
   if [ ! -s "$eicar_pdf" ]; then
     fail "could not build the EICAR PDF probe"
     sed 's/^/         /' "$EVIDENCE/probe.err" | head -5
-    return
-  fi
-  pass "built a structurally valid PDF carrying the EICAR string"
-
-  if [ ! -s "$eicar_pdf" ]; then
-    fail "could not build the EICAR PDF probe"
     return
   fi
   pass "built a structurally valid PDF carrying the EICAR string"
@@ -210,6 +213,15 @@ check_container() {
     fail ".dockerignore does not exclude .env and .git"
   fi
 
+  # Validate required staging-only settings before invoking the runtime.
+  # Bash's ${VAR:?} exits the entire script immediately, bypassing the structured
+  # BLOCKED summary; preflight instead records the missing prerequisite explicitly.
+  if [ -z "${MAFHUM_STAGING_DATABASE_URL:-}" ] || [ -z "${MAFHUM_STAGING_SESSION_SECRET:-}" ]; then
+    blocked "staging database URL or session secret is not configured" \
+      "set MAFHUM_STAGING_DATABASE_URL and MAFHUM_STAGING_SESSION_SECRET for a disposable staging database"
+    return
+  fi
+
   # Start against a throwaway database and watch the health endpoints.
   local cid
   # No --rm: the container must survive long enough for its exit state to be
@@ -217,8 +229,8 @@ check_container() {
   # It is removed explicitly at the end of this function.
   cid="$($runtime run -d \
     -e MAFHUM_APP_ENV=development \
-    -e MAFHUM_DATABASE_URL="${MAFHUM_STAGING_DATABASE_URL:?set MAFHUM_STAGING_DATABASE_URL}" \
-    -e MAFHUM_SESSION_SECRET="${MAFHUM_STAGING_SESSION_SECRET:?set MAFHUM_STAGING_SESSION_SECRET}" \
+    -e MAFHUM_DATABASE_URL="$MAFHUM_STAGING_DATABASE_URL" \
+    -e MAFHUM_SESSION_SECRET="$MAFHUM_STAGING_SESSION_SECRET" \
     -p 18000:8000 "$image" 2>/dev/null)"
   if [ -z "$cid" ]; then
     fail "container did not start"
