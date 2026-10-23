@@ -82,7 +82,26 @@ jobs:
       - name: Tests against real PostgreSQL
         # The suite starts its own PostgreSQL via pgserver and runs the real
         # Alembic migrations against it, so no service container is needed.
-        run: pytest -p no:cacheprovider
+        #
+        # Output is teed and the failure summary re-emitted as workflow
+        # annotations. Run logs live on a blob host that is not reachable from
+        # every environment, whereas annotations are served by the GitHub API, so
+        # this is what makes a CI failure diagnosable rather than a bare
+        # "exit code 1". The pytest exit code is preserved exactly.
+        shell: bash
+        run: |
+          set +e
+          pytest -p no:cacheprovider -rf 2>&1 | tee /tmp/pytest.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo "::error::pytest exited with code $code"
+            echo "::error title=Environment::python $(python -V 2>&1); runner $(uname -sr)"
+            grep -E "^(FAILED|ERROR) " /tmp/pytest.log | head -40 \
+              | while IFS= read -r line; do echo "::error::$line"; done
+            grep -E "^(E  |_{5,}|>{5,})" /tmp/pytest.log | head -60 \
+              | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$code"
         env:
           PYTHONPATH: src:.
 
