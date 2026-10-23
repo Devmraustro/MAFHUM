@@ -40,9 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from mafhum_api.services.research.grounding import Evidence, ground_answer
 
-DATASET = (
-    Path(__file__).resolve().parent.parent / "tests" / "evaluation" / "citation_grounding_v1.json"
-)
+EVAL_DIR = Path(__file__).resolve().parent.parent / "tests" / "evaluation"
+DATASET = EVAL_DIR / "citation_grounding_v1.json"
 
 # Categories where a human judged that the best available passage does NOT
 # support the claim, even though the engine may legitimately retrieve it.
@@ -106,6 +105,18 @@ def _evaluate_case(case: dict[str, Any]) -> dict[str, Any]:
 
     # Honest claim support. Only meaningful where a human label exists, and only
     # where the engine actually asserted grounding.
+    # Cost of conservatism: the engine refused even though the label says the
+    # passage does support the claim. Safe, but counted, so that a change which
+    # simply refuses everything cannot look like an improvement.
+    result["conservative_cost"] = bool(
+        case.get("conservative_cost") and answer.status != "grounded"
+    )
+    result["checks"]["not_over_refusing"] = not (
+        case.get("supports_claim") is True
+        and case.get("expected_status") == "grounded"
+        and answer.status != "grounded"
+    )
+
     if case["category"] in UNSUPPORTED_CATEGORIES:
         # A grounded status here means the engine asserted support a human denied.
         result["checks"]["claim_support_honest"] = (
@@ -125,9 +136,15 @@ def main() -> int:
         "--json", type=Path, default=None, help="Where to write the machine-readable report."
     )
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=DATASET,
+        help="Evaluation dataset to score. v1 is the preserved 24-case baseline.",
+    )
     args = parser.parse_args()
 
-    dataset = json.loads(DATASET.read_text(encoding="utf-8"))
+    dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
     results = [_evaluate_case(case) for case in dataset["cases"]]
 
     metric_names = [
@@ -136,6 +153,7 @@ def main() -> int:
         "quote_is_verbatim",
         "no_fabrication",
         "claim_support_honest",
+        "not_over_refusing",
     ]
     scores = {
         name: {
@@ -168,6 +186,7 @@ def main() -> int:
             for r in results
             if not all(v for k, v in r["checks"].items() if k != "claim_support_honest")
         ],
+        "conservative_cost": sum(1 for r in results if r.get("conservative_cost")),
         "known_limitations": [r for r in results if not r["checks"]["claim_support_honest"]],
         "results": results,
         "limitations": dataset["limitations"],
@@ -203,6 +222,11 @@ def main() -> int:
                 print(f"  - {failure['id']} ({failure['category']})")
             print("  Verbatim presence of a quotation is not proof that it supports the")
             print("  claim. Detecting this needs semantics the lexical scorer does not have.")
+
+        cost = report["conservative_cost"]
+        print(f"\nConservative refusals on cases a human judged supported: {cost}")
+        print("  Safe, but not free: refusing everything would also score 100% on")
+        print("  claim_support_honest, which is why not_over_refusing is tracked too.")
 
     return 1 if report["regressions"] else 0
 

@@ -111,7 +111,8 @@ class TestBlockedAddressClasses:
             "169.254.169.253",
             "169.254.169.255",
             "169.254.1.1",  # link-local
-            "0.0.0.0",  # unspecified
+            # Not a bind: a string asserted to be *refused* as a fetch target.
+            "0.0.0.0",  # noqa: S104
             "240.0.0.1",  # reserved
             "255.255.255.255",  # broadcast/reserved
             "224.0.0.1",  # multicast
@@ -683,7 +684,6 @@ class TestTransportDoesNotReResolve:
 
     def test_every_redirect_hop_adds_its_own_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hop validated but not pinned would re-resolve, reopening the race."""
-        seen_pins: list[dict[str, str]] = []
         allow_all(monkeypatch, "hop1.test", "hop2.test")
 
         live: list[dict[str, str]] = []
