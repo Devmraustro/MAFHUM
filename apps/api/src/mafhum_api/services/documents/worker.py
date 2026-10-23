@@ -58,6 +58,10 @@ from mafhum_api.services.documents.pipeline import (
 )
 from mafhum_api.services.documents.service import DocumentLimits
 from mafhum_api.services.documents.storage import DocumentStorage, StorageError
+from mafhum_api.services.documents.worker_lease import (
+    WorkerAlreadyRunningError,
+    WorkerLease,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,9 @@ class WorkerConfig:
 
 class JobClaimError(Exception):
     pass
+
+
+__all__ = ["JobClaimError", "ProcessingWorker", "WorkerAlreadyRunningError", "WorkerConfig"]
 
 
 class ProcessingWorker:
@@ -108,11 +115,17 @@ class ProcessingWorker:
         self._dispatcher: threading.Thread | None = None
         self._futures: set[Future[None]] = set()
         self._lock = threading.Lock()
+        self._lease = WorkerLease(database)
 
     # ------------------------------------------------------------------ start
     def start(self) -> None:
         if self._dispatcher is not None:
             return
+        # Take the single-writer lease before any thread starts, so an unsupported
+        # multi-process deployment fails here with an actionable error instead of
+        # running quietly in a configuration that was never reasoned about. The
+        # lease is taken first so that failing leaves no dispatcher thread behind.
+        self._lease.acquire()
         self._stop.clear()
         self._wake.clear()
         self._dispatcher = threading.Thread(
@@ -131,6 +144,9 @@ class ProcessingWorker:
             self._dispatcher.join(timeout=wait_seconds)
             self._dispatcher = None
         self._executor.shutdown(wait=False, cancel_futures=True)
+        # Released after the dispatcher has stopped, so the lease is never given
+        # up while this process could still claim work.
+        self._lease.release()
 
     @property
     def worker_id(self) -> str:

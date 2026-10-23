@@ -118,7 +118,10 @@ def create_app(settings: Settings | None = None, *, start_worker: bool = True) -
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if start_worker:
+        # A replica scales out by disabling its worker; the single-writer lease
+        # turns an accidental second worker into a startup failure rather than an
+        # unsupported running configuration.
+        if start_worker and settings.processing_worker_enabled:
             context.worker.start()
         logger.info("MAFHUM API started", extra={"event": "app_started"})
         try:

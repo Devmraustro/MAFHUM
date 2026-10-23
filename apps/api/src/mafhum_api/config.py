@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     max_segment_chars: int = 4000
 
     # --- processing pipeline --------------------------------------------------
+    # Set false on every replica except the one that should process documents.
+    # The single-writer lease makes running a second worker fail fast; this
+    # is the supported way to scale out instead.
+    processing_worker_enabled: bool = True
     processing_worker_count: int = 2
     processing_job_timeout_seconds: int = 120
     processing_stale_after_seconds: int = 300
