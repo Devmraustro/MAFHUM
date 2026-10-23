@@ -1,10 +1,10 @@
 # MAFHUM — Staging Acceptance Report
 
 Date: 2026-10-23
-Phase: Stage 3 — Enforce deployment safety and close staging gates
+Phase: Stage 4 — Staging readiness and external prerequisite closure
 Branch: `arena/1cb7b9d2-mafhum`
-Commit at phase start: `c130751` (verified, see §1)
-Latest commit: `4d05187`
+Commit at phase start: `c4bdcbb` (verified, see §1)
+Latest commit: see the final line of §1
 
 **Verdict: CONDITIONAL STAGING**
 
@@ -481,3 +481,110 @@ Backup and disaster recovery is the one workstream whose central requirement is
 genuinely satisfied by real evidence: a real restore into an isolated database and
 file store, with records, storage keys and checksums verified, and corrupted and
 tampered inputs correctly rejected.
+
+---
+
+## Stage 4 addendum — prerequisite closure attempt
+
+### Worker lease review: no production defect found, two test gaps closed
+
+The advisory-lock implementation was reviewed against six criteria. **No production
+code change was needed** — the lease was already correct on every point:
+
+| Criterion | Finding |
+| --- | --- |
+| Lock on a dedicated connection for the required lifetime | Correct — a non-pooled `engine.connect()` held until `stop()` |
+| Second process cannot start its dispatcher | Correct — `acquire()` runs before any thread is created |
+| Startup failure closes acquired resources | Correct — a refused acquire closes its connection before raising |
+| Normal shutdown releases resources | Correct — released after the dispatcher joins |
+| Connection loss / process death leaves no permanent lock | Correct — session-scoped locks die with the session |
+| Documentation describes the actual guarantees | Correct — `docs/DEPLOYMENT.md` |
+
+Two **test** gaps were real and are now closed (`tests/test_worker_lease.py`, 19
+tests total). The prior 17 acquired and refused *sequentially*, which proves a lock
+exists but not that arbitration is **atomic** — and atomicity is the only property
+that matters when two replicas boot at the same instant during a rolling deploy:
+
+- `test_exactly_one_of_many_racing_leases_wins` releases 8 threads from a shared
+  gate at one instant; exactly 1 acquires, 7 get `WorkerAlreadyRunningError`
+- `test_racing_workers_start_at_most_one_dispatcher` races 5 real
+  `ProcessingWorker.start()` calls and asserts **one dispatcher**, not one lock,
+  with no stray dispatcher left by the refused workers
+- `TestLockIsNeverPermanent` covers the failure mode that would make the guard
+  dangerous rather than merely strict: closing the holding connection the way a
+  network partition or PostgreSQL restart would lets a replacement acquire
+  immediately; a worker abandoned without `stop()` does not block the next
+  startup; and `release()` on a dead connection is a no-op rather than an
+  exception, so shutdown cannot hang on a database that is already going away
+
+These run against the real PostgreSQL that `conftest` provisions, so arbitration
+and session-scoped release are observed in the database, not simulated.
+
+### Reproducible closure procedure for the three blocked conditions
+
+The remaining conditions cannot be closed here because the infrastructure is
+absent, not because the code is untested. Rather than leave them as prose, they are
+now an executable procedure: **`tools/staging_verification.sh`**.
+
+It performs each check and prints `PASS` / `FAIL` / `BLOCKED` with evidence, and
+**exits non-zero when anything is BLOCKED** — so a sign-off that quietly skipped a
+control is impossible. It never substitutes a mock for the real thing: a missing
+engine reports BLOCKED with the install command, never a passing scan.
+
+- **A. Malware scanning** — checks `clamd` presence and version, the configured
+  socket, the signature database, then runs **EICAR** through `clamdscan` and
+  confirms the engine detects it. It then verifies the part that actually matters:
+  that the **application** rejects the EICAR upload with 422 when
+  `malware_scan_required=true`, and that `/limits` discloses
+  `malware_scanning_available: true`. A working engine the app ignores is not a
+  control, so engine-only success does not pass this section.
+- **B. Container** — detects `docker`/`podman`, builds `./apps/api`, records the
+  image digest, asserts the image runs **non-root**, checks `.dockerignore`
+  excludes `.env` and `.git`, starts against a throwaway database, polls the
+  readiness and liveness endpoints, and confirms graceful shutdown on SIGTERM.
+- **C. Live retrieval** — separates the **network layer** (DNS + TLS handshake per
+  source) from application behaviour, so a blocked egress is never mistaken for a
+  code defect. Only if a source is reachable does it drive the application's own
+  `HttpSourceFetcher`, keeping SSRF protections, redirect validation and
+  content-type checks in the path.
+
+Observed run in this environment — the honest result, and the reason the verdict
+does not change:
+
+```
+=== A. Malware scanning ===   BLOCKED clamd is not installed
+=== B. Container ===          BLOCKED no container runtime (docker/podman) present
+=== C. Live retrieval ===     BLOCKED www.joradp.dz: TLS handshake failed (network layer)
+                              BLOCKED www.asjp.cerist.dz: TLS handshake failed (network layer)
+Summary: 3 check(s) FAILED or BLOCKED — staging sign-off is not established   (exit 1)
+```
+
+`bash -n` passes and the `--only A|B|C` selector was exercised; both paths exit 1
+here.
+
+### Prerequisites re-measured this phase, not assumed
+
+```
+docker podman nerdctl buildah runc crun   all ABSENT     (no /var/run/docker.sock)
+clamd clamscan freshclam                  all ABSENT
+pypi.org                                  TLS OK  TLSv1.3   (control)
+www.joradp.dz                             FAIL  SSLZeroReturnError
+www.asjp.cerist.dz                        FAIL  SSLZeroReturnError
+```
+
+The allowlisted control host still completes TLS 1.3 while both `.dz` sources fail
+identically, which continues to locate the blocker in the sandbox's egress policy
+rather than in the sources, their certificates, or MAFHUM's TLS configuration.
+
+### Regression evidence for this phase
+
+| Check | Result |
+| --- | --- |
+| `pytest` (full suite) | **850 tests, 0 failures, 0 errors, 4 skipped**, 143.537s |
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 103 files already formatted |
+| `mypy src` | Success: no issues found in 59 source files |
+
+The 4 skips are the live-egress skips documented in §9. No test was skipped,
+weakened or deleted to obtain these results, and no fail-closed behaviour was
+relaxed.
