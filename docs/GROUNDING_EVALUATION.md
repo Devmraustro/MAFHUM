@@ -98,3 +98,36 @@ to delete the cases that expose it, and not to infer support from presence.
 * The `supports_claim` labels were written by one person reading both texts. They
   are not an independent annotation and carry no inter-rater reliability measure.
 * No paid evaluation service is used, and none is required.
+
+---
+
+## Update (2026-10-23): conflict detection, polar questions, and the v2 dataset
+
+The engine changed after the original measurement. The 24-case baseline file is **unchanged**
+(SHA-256 `ae55a569872deead615f35423f531cefba02a704dd05c85e093fb3d7c91aa02b`), so the original
+numbers stay reproducible.
+
+| Metric (24 cases) | Original | Now |
+|---|---|---|
+| status_correct | 24/24 | 20/24 |
+| **claim_support_honest** | **20/24 (83.3%)** | **24/24 (100%)** |
+| citation_resolves / quote_is_verbatim / no_fabrication | 24/24 | 24/24 |
+
+The `status_correct` drop is confined to `ar-06`, `ar-07`, `fr-05`, `fr-06`, each of which carried
+`expected_status="grounded"` together with `supports_claim=false` — the label recorded the defect.
+
+A new dataset, `tests/evaluation/citation_grounding_v2.json` (38 cases, 19 ar / 19 fr), corrects
+those four labels and adds topical-similarity, partial-evidence, contradiction, insufficient-evidence,
+polar-answerable and grounded controls. Run it with
+`python tools/evaluate_citation_grounding.py --dataset tests/evaluation/citation_grounding_v2.json`.
+
+Measured on v2: claim_support_honest **37/38 (97.4%)**, status_correct 33/38, no_fabrication 33/38,
+citation_resolves and quote_is_verbatim 38/38, not_over_refusing 38/38, conservative_cost 2.
+
+`not_over_refusing` and `conservative_cost` exist so that refusing more cannot be mistaken for
+improvement: the first proves grounded cases are still grounded, the second counts the polar
+questions the engine now declines.
+
+**Limitation, unchanged and still true:** the evaluator is lexical. It cannot establish semantic
+entailment, and neither verbatim quotation nor citation existence nor lexical overlap is treated as
+semantic support.
