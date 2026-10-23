@@ -109,8 +109,6 @@ jobs:
             -e MAFHUM_DATABASE_URL="$MAFHUM_DATABASE_URL" \
             -e MAFHUM_SESSION_SECRET="$MAFHUM_SESSION_SECRET" \
             -e MAFHUM_STORAGE_ROOT=/tmp/mafhum-store \
-            -e MAFHUM_HOST=127.0.0.1 \
-            -e MAFHUM_PORT=8123 \
             mafhum-api:acceptance)"
           echo "container ${cid:0:12}"
           echo "$cid" > /tmp/cid
@@ -121,7 +119,7 @@ jobs:
 
           ok=""
           for _ in $(seq 1 45); do
-            if curl -fsS http://127.0.0.1:8123/api/v1/health/ready >/dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:8000/api/v1/health/ready >/dev/null 2>&1; then
               ok=1; break
             fi
             sleep 1
@@ -130,7 +128,7 @@ jobs:
             echo "FAIL: readiness never became healthy"; docker logs --tail 40 "$cid"; exit 1
           fi
           echo "PASS: readiness endpoint healthy"
-          curl -fsS http://127.0.0.1:8123/api/v1/health/live >/dev/null
+          curl -fsS http://127.0.0.1:8000/api/v1/health/live >/dev/null
           echo "PASS: liveness endpoint responds"
 
       - name: Verify graceful shutdown by exit code, not by assumption
