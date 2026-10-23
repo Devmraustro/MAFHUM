@@ -13,6 +13,18 @@ name: Staging acceptance probes
 # here substitutes a mock for a real runtime or a real endpoint.
 
 on:
+  # workflow_dispatch is retained for future use, but GitHub only registers a
+  # dispatchable workflow from the default branch -- which this work must not
+  # modify. So the gates also run on push to the feature branch, where the file
+  # actually lives.
+  push:
+    branches: [arena/1cb7b9d2-mafhum]
+    paths:
+      - ".github/workflows/staging-acceptance.yml"
+      - "apps/api/Dockerfile"
+      - "apps/api/.dockerignore"
+      - "apps/api/entrypoint.sh"
+      - "tools/staging_verification.sh"
   workflow_dispatch:
     inputs:
       gates:
@@ -31,7 +43,7 @@ jobs:
   gate-b-container:
     name: "Gate B: container build and runtime"
     runs-on: ubuntu-latest
-    if: contains(inputs.gates, 'B')
+    if: contains(inputs.gates || 'BC', 'B')
     services:
       # A disposable database that exists only for this job. It is not a
       # production instance and cannot reach one: it is a service container on the
@@ -137,7 +149,7 @@ jobs:
   gate-c-external-tls:
     name: "Gate C: external TLS connectivity"
     runs-on: ubuntu-latest
-    if: contains(inputs.gates, 'C')
+    if: contains(inputs.gates || 'BC', 'C')
     steps:
       - uses: actions/checkout@v4
 
