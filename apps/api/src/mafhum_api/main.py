@@ -37,6 +37,7 @@ from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
 from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.service import ResearchService
+from mafhum_api.services.research.retrieval import HttpSourceFetcher
 from mafhum_api.services.sources.service import SourceService
 from mafhum_api.services.study.service import StudyService
 
@@ -78,15 +79,6 @@ def build_context(settings: Settings | None = None) -> AppContext:
     limits = document_limits(settings)
     worker = ProcessingWorker(database, storage, limits, worker_config(settings))
     scanner = build_scanner(settings)
-    research_fetcher = None
-    if settings.research_retrieval_enabled:
-        # External retrieval is optional. Keep its HTTP dependencies out of the
-        # import path when the feature is disabled so core API startup works
-        # without the optional research stack installed.
-        from mafhum_api.services.research.retrieval import HttpSourceFetcher
-
-        research_fetcher = HttpSourceFetcher()
-
     return AppContext(
         settings=settings,
         database=database,
@@ -101,7 +93,9 @@ def build_context(settings: Settings | None = None) -> AppContext:
         ),
         sources=SourceService(),
         deletion=DeletionService(storage),
-        research=ResearchService(research_fetcher),
+        research=ResearchService(
+            HttpSourceFetcher() if settings.research_retrieval_enabled else None
+        ),
         study=StudyService(),
         worker=worker,
         login_throttle=LoginThrottle(
