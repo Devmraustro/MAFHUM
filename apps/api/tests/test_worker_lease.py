@@ -201,6 +201,149 @@ class TestNonPostgresDialect:
             sqlite_db.engine.dispose()
 
 
+class TestConcurrentStartup:
+    """The lock must arbitrate a race, not merely a sequence.
+
+    Sequential acquire-then-refuse proves the lock exists. It does not prove the
+    arbitration is atomic, which is the only property that matters when two
+    replicas boot at the same instant during a deploy. So these tests race real
+    threads and assert on the outcome distribution.
+    """
+
+    def test_exactly_one_of_many_racing_leases_wins(self, database) -> None:
+        import threading
+
+        winners: list[WorkerLease] = []
+        losers: list[BaseException] = []
+        guard = threading.Lock()
+        gate = threading.Event()
+
+        def attempt() -> None:
+            lease = WorkerLease(database)
+            gate.wait()  # release every thread at the same instant
+            try:
+                lease.acquire()
+            except BaseException as exc:
+                with guard:
+                    losers.append(exc)
+            else:
+                with guard:
+                    winners.append(lease)
+
+        threads = [threading.Thread(target=attempt) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        gate.set()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        try:
+            assert len(winners) == 1, f"exactly one lease must win, got {len(winners)}"
+            assert len(losers) == 7
+            assert all(isinstance(exc, WorkerAlreadyRunningError) for exc in losers)
+        finally:
+            for lease in winners:
+                lease.release()
+
+    def test_racing_workers_start_at_most_one_dispatcher(self, app, database, tmp_path) -> None:
+        """The property operators care about: one dispatcher, not one lock."""
+        import threading
+
+        limits = _limits(app)
+        started: list[ProcessingWorker] = []
+        refused: list[BaseException] = []
+        guard = threading.Lock()
+        gate = threading.Event()
+
+        def attempt(index: int) -> None:
+            worker = ProcessingWorker(database, _storage(tmp_path / str(index)), limits, _config())
+            gate.wait()
+            try:
+                worker.start()
+            except BaseException as exc:
+                with guard:
+                    refused.append(exc)
+            else:
+                with guard:
+                    started.append(worker)
+
+        threads = [threading.Thread(target=attempt, args=(i,)) for i in range(5)]
+        for thread in threads:
+            thread.start()
+        gate.set()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        try:
+            assert len(started) == 1, f"exactly one worker may start, got {len(started)}"
+            assert len(refused) == 4
+            # A refused worker must have left no dispatcher thread behind.
+            assert all(w._dispatcher is None for w in started[1:]), "stray dispatcher"
+        finally:
+            for worker in started:
+                worker.stop(wait_seconds=1.0)
+
+
+class TestLockIsNeverPermanent:
+    """A lease must not outlive the thing that holds it.
+
+    This is the failure mode that would make the guard dangerous rather than
+    merely strict: if a crashed worker or a dropped connection left the lock
+    behind, every subsequent startup would be blocked until an operator
+    intervened by hand.
+    """
+
+    def test_connection_loss_releases_the_lock(self, database) -> None:
+        """Simulates the database dropping the holding connection."""
+        holder = WorkerLease(database)
+        holder.acquire()
+        assert holder.held is True
+
+        # Close the underlying connection the way a network partition or a
+        # PostgreSQL restart would. Session-scoped locks die with the session.
+        assert holder._connection is not None
+        holder._connection.close()
+
+        # Another process can now take the lease, so nothing is stuck.
+        replacement = WorkerLease(database)
+        replacement.acquire()
+        try:
+            assert replacement.held is True
+        finally:
+            replacement.release()
+        # Release on the dead holder must not raise.
+        holder.release()
+
+    def test_a_crashed_holder_does_not_block_the_next_startup(
+        self, app, database, tmp_path
+    ) -> None:
+        """The worker is abandoned without stop(), as a hard kill would."""
+        limits = _limits(app)
+        first = ProcessingWorker(database, _storage(tmp_path / "a"), limits, _config())
+        first.start()
+
+        # Simulate process death: drop the lease connection without stop().
+        assert first._lease._connection is not None
+        first._lease._connection.close()
+
+        second = ProcessingWorker(database, _storage(tmp_path / "b"), limits, _config())
+        second.start()
+        try:
+            assert second._lease.held is True
+        finally:
+            second.stop(wait_seconds=1.0)
+            first.stop(wait_seconds=1.0)
+
+    def test_release_after_a_dead_connection_does_not_raise(self, database) -> None:
+        """Shutdown must not hang or fail because the database already went away."""
+        lease = WorkerLease(database)
+        lease.acquire()
+        assert lease._connection is not None
+        lease._connection.close()
+        lease.release()  # must be a no-op rather than an exception
+        assert lease.held is False
+
+
 def _limits(app):
     """Reuse the application's real limits rather than inventing a variant."""
     return app.state.context.limits
