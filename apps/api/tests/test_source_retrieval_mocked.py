@@ -249,42 +249,81 @@ class TestCitationProvenance:
         assert miss.reason == "not_found"
 
 
+@pytest.mark.live_source
 class TestLiveRetrievalIsHonestlyUnverified:
-    """Records the measured blocker instead of silently skipping the question."""
+    """Records the measured egress condition instead of asserting one.
 
-    def test_the_blocker_is_the_sandbox_not_the_sources(self) -> None:
-        """Re-measures the diagnosis so the claim cannot go stale unnoticed.
+    My first version of this test *failed* when egress conditions differed,
+    asserting that a non-allowlisted host must fail its TLS handshake. That was
+    wrong and CI caught it: the GitHub runner has open egress, so example.com
+    succeeds there, and the test failed for a reason that has nothing to do with
+    MAFHUM. Reachability is a fact about the network the test happens to run on,
+    not a property of the code -- the same reasoning the existing live_source
+    tests already apply. So this measures and reports rather than fails.
+    """
 
-        An allowlisted host must still complete a TLS handshake while a
-        non-allowlisted one fails. If that stops holding -- if this environment
-        starts permitting general egress -- the test fails and the live tests
-        should be enabled rather than left skipped.
-        """
+    @staticmethod
+    def _tls_ok(host: str) -> bool:
         import ssl
 
-        def tls_ok(host: str) -> bool:
-            sock = socket.socket()
-            sock.settimeout(8)
-            try:
-                address = socket.getaddrinfo(host, 443, socket.AF_INET)[0][4][0]
-                sock.connect((address, 443))
-                context = ssl.create_default_context()
-                with context.wrap_socket(sock, server_hostname=host):
-                    return True
-            except Exception:  # any failure means "cannot reach"
-                return False
-            finally:
-                sock.close()
+        sock = socket.socket()
+        sock.settimeout(8)
+        try:
+            address = socket.getaddrinfo(host, 443, socket.AF_INET)[0][4][0]
+            sock.connect((address, 443))
+            with ssl.create_default_context().wrap_socket(sock, server_hostname=host):
+                return True
+        except Exception:  # any failure means "cannot reach from here"
+            return False
+        finally:
+            sock.close()
 
-        allowed_ok = tls_ok("pypi" + ".org")
-        blocked_fails = not tls_ok("example" + ".com")
+    def test_egress_condition_is_measured_and_recorded(self) -> None:
+        """Report what this network permits, and skip with that reason.
 
-        if allowed_ok and blocked_fails:
-            pytest.skip(
-                "confirmed: this sandbox terminates TLS to non-allowlisted hosts, "
-                "so live retrieval from JORADP/ASJP/SNDL cannot be exercised"
+        Never asserts a particular outcome, because no outcome is correct on every
+        network. The measurement is what keeps the unverified claim honest: it is
+        re-taken on every run instead of being a frozen statement.
+        """
+        import os
+
+        allowed_ok = self._tls_ok("pypi" + ".org")
+        control_ok = self._tls_ok("example" + ".com")
+
+        if allowed_ok and not control_ok:
+            reason = (
+                "this network permits only allowlisted hosts and terminates TLS to "
+                "others, so live retrieval from JORADP/ASJP/SNDL cannot be exercised here"
             )
+        elif allowed_ok and control_ok:
+            reason = (
+                "this network has general egress; live retrieval would be attempted "
+                "only with MAFHUM_LIVE_RESEARCH=1, which is deliberately off here"
+            )
+        else:
+            reason = "this network has no outbound TLS at all"
+
+        if os.environ.get("MAFHUM_LIVE_RESEARCH") != "1":
+            pytest.skip(reason)
         pytest.fail(
-            "egress conditions changed: live-source tests should now be enabled and "
-            "run for real instead of being reported as unverifiable"
+            "MAFHUM_LIVE_RESEARCH=1 is set but no live test ran here; enable the "
+            "TestLiveSourceIntegration tests in tests/test_research.py instead"
         )
+
+    def test_the_fetcher_never_disables_certificate_verification(self) -> None:
+        """The part that IS a property of the code, and must hold on any network.
+
+        Whatever a given network permits, the fetcher must not obtain success by
+        weakening TLS. This is stable across environments, unlike reachability, so
+        it can be asserted rather than reported.
+        """
+        import inspect
+
+        from mafhum_api.services.research import pinning, retrieval
+
+        for module in (retrieval, pinning):
+            source = inspect.getsource(module)
+            assert "verify=False" not in source, f"{module.__name__} disables TLS verification"
+            assert "CERT_NONE" not in source, f"{module.__name__} disables certificate checks"
+            assert "check_hostname = False" not in source
+            assert "check_hostname=False" not in source

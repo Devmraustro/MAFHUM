@@ -3,7 +3,7 @@
 Date: 2026-10-23
 Branch: `arena/1cb7b9d2-mafhum`
 Baseline at start of this work: `a7366df` (Phase 4/5 closeout)
-Final commit: `91a9aaa`
+Final commit: `4a820ce` (see §10 for a later CI-caught fix)
 
 **Verdict: CONDITIONAL STAGING**
 
@@ -226,7 +226,7 @@ services, not their certificates, not MAFHUM's TLS configuration, and not a code
 defect.** No SSRF control, allowlist entry, port restriction or certificate
 validation was weakened to chase a success that this environment cannot produce.
 
-**Evidence.** `tests/test_source_retrieval_mocked.py` — 15 tests driving the
+**Evidence.** `tests/test_source_retrieval_mocked.py` — 16 tests driving the
 **real** `HttpSourceFetcher.fetch` through its `client_factory` seam with a stub
 transport, so SSRF validation, address pinning, redirect handling, content-type
 rejection, decoded-body capping and timeout mapping are all exercised for real:
@@ -244,11 +244,24 @@ rejection, decoded-body capping and timeout mapping are all exercised for real:
 - `FixtureFetcher` reports a miss as `not_found` rather than synthesising one
 
 **The four honest skips.** `test_joradp_is_reachable`,
-`test_the_blocker_is_the_sandbox_not_the_sources`,
+`test_egress_condition_is_measured_and_recorded`,
 `test_outbound_egress_is_recorded_not_asserted`,
-`test_retrieval_of_a_real_source_is_reported`. The blocker test re-measures the
-egress condition and **fails** if it changes, so these cannot go stale unnoticed —
-if egress ever opens, CI says so and the live tests should be enabled.
+`test_retrieval_of_a_real_source_is_reported`. The egress test re-measures the
+condition on every run and skips **with the measured reason**, rather than freezing
+a statement about one network into the suite.
+
+**A flaw CI caught in that test, and what it taught.** My first version of the
+egress test *failed* when conditions differed, asserting that a non-allowlisted
+host must fail its TLS handshake. On the GitHub runner egress is open, so
+`example.com` succeeds and the test failed — on commit `4a820ce`, in run
+`39962768326`. The assertion was wrong: it treated a property of the network the
+test happened to run on as a property of the code, which is precisely the mistake
+the pre-existing `live_source` tests already warn against ("reachability from a
+given network is a fact about that network, not a property of the code"). It now
+measures and reports, and the environment-independent claim — that the fetcher
+never disables certificate verification — is asserted separately by grepping the
+`retrieval` and `pinning` modules for `verify=False`, `CERT_NONE` and
+`check_hostname=False`. That one can be asserted because it holds on any network.
 
 **Classification, kept separate as required:**
 
@@ -288,10 +301,10 @@ Run from `apps/api` on the final tree:
 | `ruff check .` | All checks passed |
 | `ruff format --check .` | 101 files already formatted |
 | `mypy src` | Success: no issues found in 58 source files |
-| `pytest` | **830 tests, 0 failures, 0 errors, 4 skipped, 134.843s**, exit 0 |
+| `pytest` | **831 tests, 0 failures, 0 errors, 4 skipped, 131.778s**, exit 0 |
 
 Suite growth across this work: 796 → 803 (Priority B) → 815 (Priority D) → **830**
-(Priority E). Every skipped test is a live-egress skip listed in §7.
+(Priority E, then 831 after the CI fix). Every skipped test is a live-egress skip listed in §7.
 
 Migrations `0006` and `0007` were verified UP → DOWN → UP → DOWN(base) → UP on
 PostgreSQL 16.2.
@@ -305,16 +318,22 @@ OK.
 
 | Run | Commit | Result |
 | --- | --- | --- |
-| `39961655378` | `91a9aaa` (**head**) | **success — all 4 jobs** |
+| `39962768326` | `4a820ce` | failure — backend `Tests against real PostgreSQL` |
+| `39961655378` | `91a9aaa` | success — all 4 jobs |
 | `39960572516` | `f239af2` | success |
 | `39960288025` | `aed7dc5` | cancelled |
 | `39958716550` | `276a34c` | failure |
 
-The `276a34c` failure was the `Ruff format check` step, identified from the
-runner's own job annotations rather than by guessing. It is not latent: the
-current head passes all four jobs. Recording it here because a green head does not
-mean every intermediate commit was green, and the difference is visible in the
-history.
+Both failures were identified from the runner's own job annotations and
+check-run annotations rather than by guessing, which matters because two earlier
+plausible CI diagnoses in this project turned out to be wrong.
+
+- `276a34c` — the `Ruff format check` step. Fixed in the following commit.
+- `4a820ce` — the egress test described in §7, which asserted a network property
+  as a code property. Fixed by measuring and reporting instead.
+
+Neither is latent. Recording them because a green head does not mean every
+intermediate commit was green, and the difference is visible in the history.
 
 ## 11. Security posture and remaining high-risk findings
 
