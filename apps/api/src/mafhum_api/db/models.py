@@ -758,3 +758,40 @@ class SavedResearch(TimestampMixin, Base):
     # Set when a duplicate save was detected, so the caller can tell the
     # difference between "saved" and "already there".
     deduplicated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class LoginAttempt(Base):
+    """A recorded login attempt, used to throttle credential guessing.
+
+    Stored in the database rather than in process memory for one reason: a
+    throttle kept in a module-level dictionary only counts the attempts that
+    reached *this* process. Behind a load balancer with N replicas an attacker
+    gets roughly N times the intended budget, and the limit silently stops
+    meaning what it says. Counting in the database makes the limit true
+    regardless of how many API processes are running, which is what ADR 0004
+    named as the precondition for scaling out.
+
+    Rows are short-lived: they are only meaningful inside the throttle window and
+    are pruned as part of recording a new attempt, so the table stays bounded
+    instead of accumulating one row per address the service has ever seen.
+
+    ``client_key`` holds a hashed identifier rather than a raw IP address. The
+    throttle only ever needs to compare keys for equality, so the plaintext is
+    never needed and is not stored.
+    """
+
+    __tablename__ = "login_attempts"
+    __table_args__ = (
+        Index("ix_login_attempts_key_time", "client_key", "attempted_at"),
+        Index("ix_login_attempts_time", "attempted_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    client_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Whether the attempt succeeded. Kept so an operator can tell a throttle
+    # triggered by one confused user from one triggered by guessing, without
+    # having to correlate against the sessions table.
+    succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

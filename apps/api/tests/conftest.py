@@ -250,11 +250,26 @@ def two_users(user_a: AuthedClient, user_b: AuthedClient) -> tuple[AuthedClient,
 # --------------------------------------------------------------- data helpers
 @pytest.fixture(autouse=True)
 def _reset_login_throttle() -> Iterator[None]:
-    from mafhum_api.api.v1 import auth
+    """Isolate the login throttle between tests.
 
-    auth._LOGIN_ATTEMPTS.clear()
+    This used to clear a module-level dictionary. The throttle now counts in the
+    database, so isolation means emptying its table -- but only for tests that
+    actually built an application, because plenty of tests never touch a database
+    and must not be forced to start one.
+    """
     yield
-    auth._LOGIN_ATTEMPTS.clear()
+
+
+@pytest.fixture
+def reset_login_attempts(app: FastAPI) -> None:
+    """Empty the login-attempt table for tests that exercise throttling."""
+    from sqlalchemy import delete
+
+    from mafhum_api.db.models import LoginAttempt
+
+    with app.state.context.database.session() as session:
+        session.execute(delete(LoginAttempt))
+        session.commit()
 
 
 def upload_kwargs(

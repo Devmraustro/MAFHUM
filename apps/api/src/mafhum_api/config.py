@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     csrf_header_name: str = "X-CSRF-Token"
     session_ttl_minutes: int = 60 * 24 * 7
     cookie_secure: bool = False
+    # Login throttle. Counted in the database, so the limit holds across every
+    # API process rather than per worker.
+    login_throttle_window_seconds: int = 60
+    login_throttle_max_attempts: int = 10
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     # --- upload limits (server-authoritative) ---------------------------------

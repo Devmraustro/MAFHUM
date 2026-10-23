@@ -12,29 +12,10 @@ from mafhum_api.api.schemas import (
     SessionResponse,
     UserResponse,
 )
-from mafhum_api.core.errors import RateLimitedError
 from mafhum_api.core.security import generate_csrf_token
 from mafhum_api.db.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-# Simple in-process throttle. It is deliberately process-local and documented as
-# such: it slows opportunistic abuse but is not a distributed rate limiter.
-_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
-_LOGIN_WINDOW_SECONDS = 60.0
-_LOGIN_MAX_ATTEMPTS = 10
-
-
-def _throttle_login(key: str) -> None:
-    import time
-
-    now = time.monotonic()
-    bucket = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
-    if len(bucket) >= _LOGIN_MAX_ATTEMPTS:
-        _LOGIN_ATTEMPTS[key] = bucket
-        raise RateLimitedError("محاولات تسجيل دخول كثيرة. انتظر قليلًا ثم أعد المحاولة.")
-    bucket.append(now)
-    _LOGIN_ATTEMPTS[key] = bucket
 
 
 def _client_key(request: Request) -> str:
@@ -112,8 +93,18 @@ def login(
     context: Context,
     db: DbSession,
 ) -> SessionResponse:
-    _throttle_login(_client_key(request))
-    user = context.identity.authenticate(db, email=payload.email, password=payload.password)
+    key = _client_key(request)
+    # Counted in the database, so the configured limit is the real limit across
+    # every API process rather than per worker.
+    context.login_throttle.check(key)
+    try:
+        user = context.identity.authenticate(db, email=payload.email, password=payload.password)
+    except Exception:
+        # Recorded on its own connection, not the request's: this session is about
+        # to be discarded, and the attempts worth counting are the failed ones.
+        context.login_throttle.record(key, succeeded=False)
+        raise
+    context.login_throttle.record(key, succeeded=True)
     issued = context.identity.issue_session(db, user, user_agent=request.headers.get("user-agent"))
     db.commit()
     csrf = generate_csrf_token()

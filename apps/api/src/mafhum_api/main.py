@@ -33,6 +33,7 @@ from mafhum_api.services.documents.service import DocumentService
 from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
+from mafhum_api.services.identity.throttle import LoginThrottle
 from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.retrieval import HttpSourceFetcher
 from mafhum_api.services.research.service import ResearchService
@@ -90,6 +91,12 @@ def build_context(settings: Settings | None = None) -> AppContext:
         ),
         study=StudyService(),
         worker=worker,
+        login_throttle=LoginThrottle(
+            database,
+            window_seconds=settings.login_throttle_window_seconds,
+            max_attempts=settings.login_throttle_max_attempts,
+            pepper=settings.session_secret,
+        ),
     )
 
 
