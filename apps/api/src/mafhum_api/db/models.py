@@ -286,6 +286,12 @@ class Document(TimestampMixin, Base):
     )
     language_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
     is_scanned: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # What the malware scanner concluded about these bytes, if anything ran.
+    # NULL means "never asked", which is different from "clean": a document must
+    # not look vouched-for because no engine was configured. The value is one of
+    # ScanVerdict, recorded as-is so an audit can tell an unscanned file from a
+    # scanned-and-clean one.
+    scan_verdict: Mapped[str | None] = mapped_column(String(24), nullable=True)
     parser_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     parser_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)

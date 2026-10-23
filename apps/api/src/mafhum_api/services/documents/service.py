@@ -54,6 +54,12 @@ from mafhum_api.db.models import (
     User,
 )
 from mafhum_api.services.documents import validators
+from mafhum_api.services.documents.scanning import (
+    MalwareScanner,
+    NullScanner,
+    ScanVerdict,
+    requires_clean,
+)
 from mafhum_api.services.documents.storage import (
     DocumentStorage,
     StorageError,
@@ -117,10 +123,29 @@ class DocumentService:
         limits: DocumentLimits,
         *,
         row_locking: bool = True,
+        scanner: MalwareScanner | None = None,
+        scan_required: bool = False,
     ) -> None:
         self._storage = storage
         self._limits = limits
         self._row_locking = row_locking
+        self._scanner = scanner or NullScanner()
+        self._scan_required = scan_required
+
+    @property
+    def scanner(self) -> MalwareScanner:
+        """The scanner this service actually applies to uploads.
+
+        Exposed so the API's capability disclosure is read from the same object
+        that does the work. A separate module-level scanner would let the
+        advertised state drift from the real one.
+        """
+        return self._scanner
+
+    @property
+    def scan_required(self) -> bool:
+        """Whether an upload is rejected unless an engine vouches for it."""
+        return self._scan_required
 
     # ------------------------------------------------------------------ upload
     def upload(
@@ -181,6 +206,11 @@ class DocumentService:
             elif detected == DocumentFormat.PDF.value:
                 self._validate_pdf_page_count(storage_key)
 
+            # Content scanning, on the stored bytes. Structural validation above
+            # is NOT scanning: it rejects malformed and abusive files but detects
+            # no malicious content, so it cannot stand in for this step.
+            verdict = self._scan_bytes(storage_key, display_name)
+
             document = Document(
                 id=uuid.uuid4(),
                 owner_id=owner_id,
@@ -192,6 +222,9 @@ class DocumentService:
                 content_sha256=digest,
                 status=DocumentStatus.PENDING.value,
                 language_hint=(language_hint or None),
+                # NULL would mean "never asked"; recording the real verdict is
+                # what lets an audit tell a scanned file from an unscanned one.
+                scan_verdict=verdict.value,
             )
             try:
                 self._enforce_quota(db, owner_id, size_bytes)
@@ -563,6 +596,56 @@ class DocumentService:
         if total_bytes + additional_bytes > self._limits.max_total_bytes_per_user:
             raise QuotaExceededError("رفع هذا الملف سيتجاوز الحد الأقصى لمساحة التخزين المخصصة لك.")
 
+    def _scan_bytes(self, storage_key: str, filename: str) -> ScanVerdict:
+        """Scan the stored blob and apply the configured policy.
+
+        Outcomes are kept strictly distinct, because conflating them is how an
+        unscanned file ends up looking safe:
+
+        * ``CLEAN`` -- a real engine examined the bytes and found nothing.
+        * ``INFECTED`` -- a real engine matched a signature. Rejected.
+        * ``ERROR`` -- an engine was configured but could not answer. Not a pass.
+        * ``NOT_SCANNED`` -- no engine is configured. Also not a pass.
+
+        Only ``CLEAN`` counts as vouched for. With ``malware_scan_required`` on,
+        the other three reject the upload, so an unreachable daemon blocks uploads
+        instead of waving them through.
+        """
+        verdict = self._scan_stored(storage_key, filename)
+        if verdict is ScanVerdict.INFECTED:
+            raise FileRejectedError(
+                "تم رفض الملف: تم رصد محتوى ضار.",
+                details={"reason": "malware_detected"},
+            )
+        if self._scan_required and not requires_clean(verdict):
+            raise FileRejectedError(
+                "تعذّر فحص الملف، والفحص مطلوب. حاول مرة أخرى لاحقًا.",
+                details={"reason": f"scan_{verdict.value}"},
+            )
+        return verdict
+
+    def _scan_stored(self, storage_key: str, filename: str) -> ScanVerdict:
+        """Stream the stored blob through the scanner without buffering it.
+
+        Storage yields chunks rather than a file handle, so the chunks are wrapped
+        in a minimal ``read()`` adapter. That keeps scanning off the "hold the
+        whole upload in memory a second time" path -- the blob is already on disk
+        and the daemon wants a stream anyway.
+        """
+        scanner = self._scanner
+        try:
+            chunks = self._storage.open_read(storage_key)
+            scan_stream = getattr(scanner, "scan_stream", None)
+            if scan_stream is not None:
+                return ScanVerdict(
+                    scan_stream(_ChunkStream(chunks), filename=filename, size=0).value
+                )
+            data = b"".join(chunks)
+        except StorageError:
+            # The blob could not be read, so nothing examined it.
+            return ScanVerdict.ERROR
+        return scanner.scan(data, filename)
+
     def _next_generation(self, db: Session, document_id: uuid.UUID) -> int:
         current = db.scalar(
             select(func.coalesce(func.max(DocumentProcessingJob.generation), 0)).where(
@@ -644,6 +727,32 @@ class BinaryReader(Protocol):
     """Minimal synchronous file-like reader accepted by ``upload``."""
 
     def read(self, size: int = -1, /) -> bytes: ...
+
+
+class _ChunkStream:
+    """Adapt an iterator of byte chunks to the ``read(n)`` a scanner expects.
+
+    Deliberately minimal: no seek, no tell. Scanning reads forward exactly once.
+    """
+
+    def __init__(self, chunks: Iterable[bytes]) -> None:
+        self._chunks = iter(chunks)
+        self._buffer = b""
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            parts = [self._buffer, *self._chunks]
+            self._buffer = b""
+            return b"".join(parts)
+        while len(self._buffer) < size:
+            try:
+                chunk = next(self._chunks)
+            except StopIteration:
+                break
+            if chunk:
+                self._buffer += chunk
+        out, self._buffer = self._buffer[:size], self._buffer[size:]
+        return out
 
 
 class _ChunkReader(Iterable[bytes]):

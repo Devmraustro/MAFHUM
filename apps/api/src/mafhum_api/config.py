@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     # no outbound network at all; enabling it does not enable any paid service.
     research_retrieval_enabled: bool = False
 
+    # --- malware scanning ------------------------------------------------------
+    # No engine ships with MAFHUM. Point these at a running clamd daemon to turn
+    # scanning on; leaving them empty keeps the disclosed "not scanning" state.
+    clamd_unix_path: str | None = None
+    clamd_host: str | None = None
+    clamd_port: int = 3310
+    clamd_timeout_seconds: float = 10.0
+    # When true, an upload is REJECTED unless a real engine vouches for it. This
+    # is the fail-closed switch: with it on, an unreachable daemon blocks uploads
+    # rather than letting unscanned files into the processing path.
+    malware_scan_required: bool = False
+
     @field_validator("max_upload_mb", "max_docx_uncompressed_mb", "max_total_bytes_per_user_mb")
     @classmethod
     def _positive_mb(cls, v: int) -> int:

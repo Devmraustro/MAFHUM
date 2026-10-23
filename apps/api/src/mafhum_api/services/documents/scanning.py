@@ -84,3 +84,29 @@ def requires_clean(verdict: ScanVerdict) -> bool:
     mean "no engine vouched for this", which is not the same as "safe".
     """
     return verdict is ScanVerdict.CLEAN
+
+
+def build_scanner(settings: object) -> MalwareScanner:
+    """Return the scanner the configured settings call for.
+
+    The single place that decides whether uploads are scanned. With no ``clamd``
+    address configured this returns :class:`NullScanner`, whose ``available`` is
+    ``False`` and which can only ever answer ``NOT_SCANNED`` -- so the disclosed
+    capability and the actual behaviour come from one object and cannot drift
+    apart.
+
+    ``settings`` is typed loosely to avoid importing the config module here, which
+    would make this leaf module depend on application configuration.
+    """
+    from mafhum_api.services.documents.clamd import ClamdScanner
+
+    unix_path = getattr(settings, "clamd_unix_path", None)
+    host = getattr(settings, "clamd_host", None)
+    if not unix_path and not host:
+        return NullScanner()
+    return ClamdScanner(
+        unix_path=unix_path,
+        host=host,
+        port=int(getattr(settings, "clamd_port", 3310)),
+        timeout_seconds=float(getattr(settings, "clamd_timeout_seconds", 10.0)),
+    )

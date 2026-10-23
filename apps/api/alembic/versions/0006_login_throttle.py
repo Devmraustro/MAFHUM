@@ -50,9 +50,7 @@ def upgrade() -> None:
         sa.Column("succeeded", sa.Boolean(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_login_attempts_key_time", "login_attempts", ["client_key", "attempted_at"]
-    )
+    op.create_index("ix_login_attempts_key_time", "login_attempts", ["client_key", "attempted_at"])
     op.create_index("ix_login_attempts_time", "login_attempts", ["attempted_at"])
 
 

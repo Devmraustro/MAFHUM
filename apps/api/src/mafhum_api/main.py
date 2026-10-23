@@ -29,6 +29,7 @@ from mafhum_api.core.logging_setup import configure_logging
 from mafhum_api.core.request_context import REQUEST_ID_HEADER, RequestIdMiddleware, get_request_id
 from mafhum_api.db.base import Database
 from mafhum_api.services.deletion.service import DeletionService
+from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
 from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
 from mafhum_api.services.documents.worker import ProcessingWorker
@@ -77,13 +78,20 @@ def build_context(settings: Settings | None = None) -> AppContext:
     )
     limits = document_limits(settings)
     worker = ProcessingWorker(database, storage, limits, worker_config(settings))
+    scanner = build_scanner(settings)
     return AppContext(
         settings=settings,
         database=database,
         storage=storage,
         identity=IdentityService(session_ttl_minutes=settings.session_ttl_minutes),
         projects=ProjectService(),
-        documents=DocumentService(storage, limits, row_locking=database.supports_row_locking),
+        documents=DocumentService(
+            storage,
+            limits,
+            row_locking=database.supports_row_locking,
+            scanner=scanner,
+            scan_required=settings.malware_scan_required,
+        ),
         sources=SourceService(),
         deletion=DeletionService(storage),
         research=ResearchService(
