@@ -118,10 +118,20 @@ class TestScriptIntegrity:
         """An engine with stale or absent signatures reports everything clean."""
         script = SCRIPT.read_text()
         assert "*.cvd" in script, "must look for actual signature database files"
-        assert "-mtime +7" in script, "must check database freshness"
         assert "clamdtop --version >/dev/null 2>&1 &&" not in script, (
             "testing whether clamdtop is installed says nothing about the database"
         )
+
+        # Assert the POLICY, not one implementation of it. A `.cdb` is an
+        # auxiliary file and cannot satisfy the core-database requirement, and
+        # freshness must come from the NEWEST core database -- counting every file
+        # older than the threshold fails wrongly when a fresh database coexists
+        # with an old one.
+        assert "604800" in script, "the seven-day threshold must be explicit (7*86400)"
+        assert "*.cld" in script, "a .cld must also count as a core database"
+        assert "core_db_count" in script, "must require a core database specifically"
+        assert "newest_db_mtime" in script, "freshness must use the newest core database"
+        assert "sort -nr" in script, "must select the newest, not any, database"
 
     def test_signature_freshness_uses_newest_core_database(self) -> None:
         """An old auxiliary file must not make a fresh core database fail."""
