@@ -10,10 +10,22 @@ Sandbox: Debian 12, Python 3.11.2, Node v22.22.3, PostgreSQL 16.2 (via
 
 ---
 
-## 1. Malware scanning — NOT IMPLEMENTED
+## 1. Malware scanning — INTEGRATION IMPLEMENTED, DETECTION UNVERIFIED
 
-**MAFHUM does not scan uploads for malware. No document has ever been
-virus-checked by this system.**
+**No document has ever been virus-checked by this system, and no test has ever
+confirmed that a real malicious file is detected.** That statement is the load-bearing
+one and it remains true.
+
+What changed on 2026-10-23: the code can now scan. `services/documents/clamd.py`
+speaks the clamd `zINSTREAM` socket protocol, so an operator who points
+`clamd_unix_path` or `clamd_host` at a running `clamd` gets real scanning, with the
+verdict persisted on the document and `malware_scan_required` able to fail the
+upload closed. A default install still configures no engine and still scans nothing.
+
+The distinction to hold on to: **the fail-closed policy and the protocol are
+verified; detection is not.** No ClamAV engine or signature database was installable
+in this environment, so "this deployment detects malware" is a claim only the
+operator who configures and verifies an engine may make.
 
 ### What the system actually does
 
@@ -45,9 +57,13 @@ The absence is stated by the code, not merely implied by a gap:
   derived from the live scanner object rather than a literal, so the disclosure
   cannot drift from the behaviour.
 - The upload card renders that limitation in Arabic and French.
-- `tests/test_malware_scanning.py` (12 tests) asserts an unscanned upload can
+- `tests/test_malware_scanning.py` (19 tests) asserts an unscanned upload can
   never be reported clean, and that `requires_clean()` rejects `NOT_SCANNED` and
-  `ERROR` as firmly as `INFECTED`.
+  `ERROR` as firmly as `INFECTED`. The tests drive a stub `clamd` over a real Unix
+  socket, so the protocol implementation is exercised for real: clean, infected,
+  daemon error, an unrecognised reply, an unreachable daemon, a hung daemon and a
+  daemon that vanishes mid-scan are each asserted to map to the right verdict, and
+  the two that must not be read as "clean" are asserted not to be.
 
 ### Options evaluated
 
@@ -214,11 +230,21 @@ claim — five advisories remain open in the dev tree.
 
 These are properties of the current design, not bugs:
 
-- **Quotas, rate limits and the worker pool are process-local.** They are correct
-  for a single API process and **wrong** for two or more: each process enforces
-  its own copy, so N processes admit roughly N times the intended quota. Do not
-  run more than one API process until this state moves to the database or a
-  shared store.
+- **Quotas and the login rate limit are now database-enforced and safe across
+  processes.** This entry previously warned that they were process-local and would
+  admit roughly N times the intended quota under N workers. That was measured and
+  found to be wrong, and the warning was removed rather than left to mislead:
+  quotas are enforced in a transaction with `SELECT ... FOR UPDATE`
+  (`_enforce_quota`), and the login throttle moved to a `login_attempts` table with
+  an HMAC-derived `client_key` so no raw client identifier is stored.
+  `tests/test_multi_instance_state.py` (9 tests) runs two independent application
+  instances against one database and asserts exactly 5 uploads are admitted against
+  a limit of 5 — not ~10 — that the login limit blocks exactly 6 attempts rather
+  than 6 per replica, and that pruning expires old rows.
+- **The document processing worker pool is still per-process.** That one is a real
+  remaining constraint: each process runs its own bounded worker, so throughput
+  scales with replicas but job claims must stay contention-safe. Do not assume the
+  worker is shared.
 - **No horizontal scaling.** The bounded in-process worker (ADR 0004) claims jobs
   with `FOR UPDATE SKIP LOCKED`, which is multi-process safe for *job claiming*,
   but the surrounding limits are not.

@@ -112,10 +112,14 @@ internals.
 
 These are limitations, stated so nobody has to guess:
 
-1. **No malware scanning.** Uploads are checked by magic bytes, real parser
-   behaviour, archive shape, entry counts, decompressed-size limits and page
-   limits. That is not antivirus. A malicious file that is also a valid PDF will
-   be stored.
+1. **No malware scanning in a default install.** Uploads are checked by magic
+   bytes, real parser behaviour, archive shape, entry counts, decompressed-size
+   limits and page limits. That is not antivirus. A malicious file that is also a
+   valid PDF will be stored, and its `scan_verdict` is recorded as `not_scanned`.
+   An operator can connect an external `clamd` and require a clean verdict, in
+   which case anything other than a confirmed-clean result rejects the upload.
+   Detection itself has not been verified here — no engine was available — so do
+   not read the presence of the setting as evidence that scanning works.
 2. **No OCR.** Scanned or image-only PDFs are detected and reported; no text is
    extracted from them.
 3. **No URL ingestion.** MAFHUM never fetches a document from a URL, so it cannot
