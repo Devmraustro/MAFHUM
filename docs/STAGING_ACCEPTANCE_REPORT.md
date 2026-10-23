@@ -1,9 +1,10 @@
 # MAFHUM — Staging Acceptance Report
 
 Date: 2026-10-23
-Phase: Stage 2 — Staging acceptance and owner-action closure
+Phase: Stage 3 — Enforce deployment safety and close staging gates
 Branch: `arena/1cb7b9d2-mafhum`
-Commit at phase start: `d69e297` (verified, see §1)
+Commit at phase start: `c130751` (verified, see §1)
+Latest commit: `4d05187`
 
 **Verdict: CONDITIONAL STAGING**
 
@@ -72,7 +73,7 @@ the tree. §6 records what was re-verified.
 | 3.7 | Document recovery steps, dependencies, limitations | **VERIFIED** | §7 |
 | 4.1 | Login throttle under concurrency and independent instances | **VERIFIED** | §8 |
 | 4.2 | Identify remaining shared-coordination needs | **VERIFIED — one remains** | §8 |
-| 4.3 | Enforce/document single-process restriction where it applies | **PARTIAL — documented, not enforced** | §8 |
+| 4.3 | Enforce/document single-process restriction where it applies | **VERIFIED — enforced in software** | §8 |
 | 4.4 | Test genuinely independent workers sharing infrastructure | **VERIFIED for throttle/quotas** | §8 |
 | 4.5 | Avoid unnecessary infrastructure | **VERIFIED — none added** | §8 |
 | 5.1 | Test each configured source independently | **BLOCKED** | §9 |
@@ -230,7 +231,7 @@ have failed the build on its first `COPY`.
 verified in Phase 1 or is a measurement of the environment. Consequently:
 
 - The Phase 1 regression results still describe the tree at `d69e297`
-  (831 tests / 0 failures / 0 errors / 4 skipped; ruff, format and mypy clean).
+  (845 tests / 0 failures / 0 errors / 4 skipped; ruff, format and mypy clean).
 - **CI run `39967433618` on `7eb5cf7` (the commit carrying this report): success,
   all four jobs** — `Repository baseline`, `Backend — lint, types, tests`,
   `Migrations — upgrade and downgrade`, `Frontend — lint, types, tests, build`.
@@ -317,15 +318,50 @@ an operator, and no shared store was introduced for a problem that did not exist
 still per-process. Throughput scales with replicas, but each process runs its own
 bounded worker.
 
-**Requirement 4.3 is only partially met, and this is the one actionable gap this
-phase identified.** The single-process restriction for the worker is *documented*
-(in `docker-compose.yml` and `docs/ADR/0004`) but **not enforced in code** — an
-operator can start N replicas with the worker enabled and nothing objects. Two
-acceptable closures: assert a single active worker at startup when the worker is
-enabled, or gate the worker behind an explicit configuration flag that defaults off
-so replicas cannot enable it accidentally. This is a small change and is recorded
-as an owner action rather than implemented here, to keep this phase a verification
-phase with no production code change.
+**Requirement 4.3 is now enforced in software** (Stage 3, commit `4d05187`).
+Previously the restriction was only documented, so an operator could start N
+replicas with the worker enabled and nothing would object.
+
+`services/documents/worker_lease.py` takes `pg_try_advisory_lock` on a fixed key
+before any dispatcher thread starts. A second process attempting to start a worker
+fails at startup with `WorkerAlreadyRunningError`, whose message names the fix
+(`MAFHUM_PROCESSING_WORKER_ENABLED=false`) rather than only the failure. Replicas
+scale out through that new setting, which the lifespan honours.
+
+An advisory lock rather than a lock file or a `held_by` column because it cannot be
+left behind: PostgreSQL releases a session-scoped lock when the connection closes,
+including on a kill, whereas a file or row survives a crash and blocks every future
+startup until someone cleans it up by hand. And rather than Redis, because the
+PostgreSQL the application already requires can express the constraint — a new
+service would add a dependency and a failure mode for no gain.
+
+The lock is held on a dedicated non-pooled connection for the worker's lifetime;
+borrowing a pooled session would release it the moment that session returned to the
+pool, silently defeating the mechanism while appearing to work. It is released
+after the dispatcher stops, so it is never given up while the process could still
+claim work.
+
+**Worker semantics are unchanged.** Nothing was disabled or weakened to make the
+check pass, and all previously passing tests still pass.
+
+**Test evidence** — `tests/test_worker_lease.py`, 17 tests against the real
+PostgreSQL that `conftest` provisions, so actual `pg_try_advisory_lock`
+arbitration is exercised rather than a double:
+
+- single lease acquires; a second on the same database is **refused**
+- reacquire after release succeeds, so restarts and rolling deploys are not blocked
+- release is idempotent and safe when never held; context manager releases
+- a refused acquire leaves **no connection and no lock** behind
+- the error message names `MAFHUM_PROCESSING_WORKER_ENABLED=false` and `docs/DEPLOYMENT.md`
+- a second worker cannot start and leaves **no dispatcher thread**
+- a worker can start again after the first stops
+- SQLite is permitted **with a warning**, not a fake lock — asserted on the module
+  logger directly rather than via `caplog`, so the test does not depend on log
+  propagation being configured a particular way
+- the lease key is stable and inside int32 range
+
+`docs/DEPLOYMENT.md` was added to document the process model, scale-out
+configuration, migration ordering and production settings.
 
 ## 9. Workstream 5 — live academic-source retrieval: still blocked, re-measured
 
