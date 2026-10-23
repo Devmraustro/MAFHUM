@@ -231,9 +231,12 @@ verified in Phase 1 or is a measurement of the environment. Consequently:
 
 - The Phase 1 regression results still describe the tree at `d69e297`
   (831 tests / 0 failures / 0 errors / 4 skipped; ruff, format and mypy clean).
-- **No new CI run was triggered by this phase**, because no commit changed code.
-  The last observed run against this commit is `39964947594`, all four jobs
-  success. This is stated as carried-forward evidence, not as a run performed now.
+- **CI run `39967433618` on `7eb5cf7` (the commit carrying this report): success,
+  all four jobs** — `Repository baseline`, `Backend — lint, types, tests`,
+  `Migrations — upgrade and downgrade`, `Frontend — lint, types, tests, build`.
+  Observed to completion, so the passing run covers exactly the tree being
+  reported rather than an ancestor of it. The preceding run on `d69e297`,
+  `39964947594`, was likewise all four jobs success.
 - Diff review: the working tree is clean and `git status --porcelain` is empty, so
   there is no uncommitted change to review and no possibility of an accidental
   edit, a weakened assertion, or an exposed secret entering unnoticed.
