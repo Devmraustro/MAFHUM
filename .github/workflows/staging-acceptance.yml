@@ -1,0 +1,196 @@
+name: Staging acceptance probes
+
+# Runs the acceptance gates that cannot run in a restricted development sandbox:
+# building and starting the real container image, and testing outbound TLS to the
+# configured external sources. GitHub-hosted runners have a container runtime and
+# general egress, which is exactly what these gates need -- so they are executed
+# here rather than being left permanently BLOCKED on a workstation.
+#
+# This is dispatched manually rather than run on every push: it builds an image and
+# makes real outbound connections, neither of which belongs in the fast PR loop.
+#
+# Honesty rule: a gate that cannot run reports BLOCKED and fails the job. Nothing
+# here substitutes a mock for a real runtime or a real endpoint.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gates:
+        description: "Gates to run (B, C, or BC)"
+        required: true
+        default: "BC"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate-b-container:
+    name: "Gate B: container build and runtime"
+    runs-on: ubuntu-latest
+    if: contains(inputs.gates, 'B')
+    services:
+      # A disposable database that exists only for this job. It is not a
+      # production instance and cannot reach one: it is a service container on the
+      # runner's own network, torn down when the job ends.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mafhum
+          POSTGRES_PASSWORD: staging-only-not-a-secret
+          POSTGRES_DB: mafhum_staging
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mafhum"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm a real container runtime exists
+        run: |
+          set -euo pipefail
+          docker version --format 'client {{.Client.Version}} / server {{.Server.Version}}'
+          docker info --format 'storage driver: {{.Driver}}'
+
+      - name: Verify the build context excludes secrets and git metadata
+        run: |
+          set -euo pipefail
+          test -f apps/api/.dockerignore
+          grep -qx '\.env' apps/api/.dockerignore
+          grep -qx '\.git' apps/api/.dockerignore
+          echo "PASS: .dockerignore excludes .env and .git"
+
+      - name: Build the image from the repository Dockerfile
+        run: |
+          set -euo pipefail
+          docker build -t mafhum-api:acceptance ./apps/api 2>&1 | tee /tmp/build.log
+          echo "PASS: image built"
+          docker image inspect mafhum-api:acceptance --format 'image id {{.Id}}'
+
+      - name: Verify the image runs as a non-root user
+        run: |
+          set -euo pipefail
+          user="$(docker image inspect mafhum-api:acceptance --format '{{.Config.User}}')"
+          echo "declared user: '${user}'"
+          if [ -z "$user" ] || [ "$user" = "0" ]; then
+            echo "FAIL: image would run as root"; exit 1
+          fi
+          echo "PASS: non-root user ${user}"
+
+      - name: Verify the runtime uid and that the app starts and serves health
+        env:
+          MAFHUM_DATABASE_URL: postgresql+psycopg://mafhum:staging-only-not-a-secret@localhost:5432/mafhum_staging
+          MAFHUM_SESSION_SECRET: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # A staging-only secret. It is a job-scoped token that expires when the
+          # job ends and grants nothing outside this workflow; no project secret
+          # and no production credential is used or printed.
+          cid="$(docker run -d --network host \
+            -e MAFHUM_APP_ENV=development \
+            -e MAFHUM_DATABASE_URL="$MAFHUM_DATABASE_URL" \
+            -e MAFHUM_SESSION_SECRET="$MAFHUM_SESSION_SECRET" \
+            -e MAFHUM_STORAGE_ROOT=/tmp/mafhum-store \
+            -e MAFHUM_HOST=127.0.0.1 \
+            -e MAFHUM_PORT=8123 \
+            mafhum-api:acceptance)"
+          echo "container ${cid:0:12}"
+          echo "$cid" > /tmp/cid
+
+          echo "runtime uid: $(docker exec "$cid" id -u)"
+          test "$(docker exec "$cid" id -u)" != "0" || { echo "FAIL: running as root"; exit 1; }
+          echo "PASS: process is not root"
+
+          ok=""
+          for _ in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8123/api/v1/health/ready >/dev/null 2>&1; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "FAIL: readiness never became healthy"; docker logs --tail 40 "$cid"; exit 1
+          fi
+          echo "PASS: readiness endpoint healthy"
+          curl -fsS http://127.0.0.1:8123/api/v1/health/live >/dev/null
+          echo "PASS: liveness endpoint responds"
+
+      - name: Verify graceful shutdown by exit code, not by assumption
+        run: |
+          set -euo pipefail
+          cid="$(cat /tmp/cid)"
+          docker stop -t 20 "$cid" >/dev/null
+          code="$(docker inspect "$cid" --format '{{.State.ExitCode}}')"
+          oom="$(docker inspect "$cid" --format '{{.State.OOMKilled}}')"
+          echo "exit code: $code  oom: $oom"
+          [ "$oom" = "false" ] || { echo "FAIL: OOM killed"; exit 1; }
+          [ "$code" = "0" ] || { echo "FAIL: exit $code, not graceful"; docker logs --tail 30 "$cid"; exit 1; }
+          echo "PASS: graceful shutdown (exit 0)"
+          docker rm -f "$cid" >/dev/null
+
+  gate-c-external-tls:
+    name: "Gate C: external TLS connectivity"
+    runs-on: ubuntu-latest
+    if: contains(inputs.gates, 'C')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve and connect to the configured sources, layer by layer
+        run: |
+          set -uo pipefail
+          python3 - <<'PY'
+          import socket, ssl, sys
+
+          HOSTS = ["www.joradp.dz", "www.asjp.cerist.dz"]
+          ok = 0
+          for host in HOSTS:
+              # Separate the layers so a network restriction is never mistaken for
+              # an application defect.
+              try:
+                  infos = socket.getaddrinfo(host, 443, socket.AF_INET)
+                  addrs = sorted({i[4][0] for i in infos})
+              except OSError as exc:
+                  print(f"{host}: DNS FAILED ({type(exc).__name__})")
+                  continue
+              print(f"{host}: DNS -> {addrs}")
+
+              # A resolver can hand back a private address; note it rather than
+              # silently connecting to something that is not the real host.
+              private = [a for a in addrs if a.startswith(("10.", "192.168.", "172."))]
+              if private:
+                  print(f"  WARNING: resolver returned private-looking address(es) {private}")
+
+              sock = socket.socket()
+              sock.settimeout(15)
+              try:
+                  sock.connect((addrs[0], 443))
+              except OSError as exc:
+                  print(f"  TCP 443 FAILED ({type(exc).__name__})")
+                  sock.close()
+                  continue
+              print("  TCP 443 connected")
+
+              try:
+                  # Certificate verification stays ON. No insecure context here.
+                  ctx = ssl.create_default_context()
+                  with ctx.wrap_socket(sock, server_hostname=host) as tls:
+                      cert = tls.getpeercert()
+                      print(f"  TLS OK {tls.version()} cipher={tls.cipher()[0]}")
+                      print(f"  certificate subject={cert.get('subject')}")
+                      ok += 1
+              except ssl.SSLCertVerificationError as exc:
+                  print(f"  TLS CERTIFICATE VALIDATION FAILED: {exc}")
+              except Exception as exc:
+                  print(f"  TLS HANDSHAKE FAILED ({type(exc).__name__}): {str(exc)[:120]}")
+              finally:
+                  sock.close()
+
+          print(f"\n{ok}/{len(HOSTS)} hosts completed a verified TLS handshake")
+          sys.exit(0 if ok else 1)
+          PY
