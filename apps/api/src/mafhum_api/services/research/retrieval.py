@@ -22,10 +22,14 @@ outcome rather than substituting plausible text.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+import httpx
+
+from mafhum_api.services.research.pinning import pinned_client
 from mafhum_api.services.research.sanitize import neutralize
 from mafhum_api.services.research.ssrf import SsrfError, validate_url
 
@@ -48,6 +52,9 @@ TEXT_CONTENT_TYPES = frozenset(
         "text/xml",
     }
 )
+
+
+ClientFactory = Callable[[dict[str, str]], "httpx.Client"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,11 +161,18 @@ class HttpSourceFetcher:
         max_bytes: int = MAX_RESPONSE_BYTES,
         max_redirects: int = MAX_REDIRECTS,
         user_agent: str = "MAFHUM/0.3 (academic research; respects source terms)",
+        client_factory: ClientFactory | None = None,
     ) -> None:
         self._timeout = timeout_seconds
         self._max_bytes = max_bytes
         self._max_redirects = max_redirects
         self._user_agent = user_agent
+        # A seam for tests, so response handling (redirects, size, content type,
+        # timeouts) can be exercised against httpx.MockTransport without opening
+        # a socket. It replaces the *transport only*: URL validation, per-hop
+        # re-validation and the redirect cap still run unchanged. Nothing in the
+        # application constructs a fetcher with this argument.
+        self._client_factory = client_factory
 
     def fetch(self, url: str) -> RetrievedPage:
         # Imported lazily so an install without httpx still starts: retrieval is
@@ -176,18 +190,20 @@ class HttpSourceFetcher:
             )
             return RetrievedPage(url=url, ok=False, reason=f"blocked:{exc.reason}")
 
+        # Every host we are about to contact is pinned to the address that was
+        # validated. Without this the client resolves the name a second time and
+        # the answer it gets -- not the one we checked -- is what it connects to.
+        pins: dict[str, str] = {target.host: target.address}
+
+        factory = self._client_factory or (
+            lambda active: pinned_client(active, timeout=self._timeout, user_agent=self._user_agent)
+        )
         try:
-            # Redirects are followed by hand so every hop is re-validated; the
-            # built-in follower would happily chase a public URL into the private
-            # network.
-            with httpx.Client(
-                timeout=self._timeout,
-                follow_redirects=False,
-                headers={"User-Agent": self._user_agent},
-            ) as client:
+            with factory(pins) as client:
                 current = target.url
                 for _ in range(self._max_redirects + 1):
-                    response = client.get(current)
+                    # stream() so the body is capped while it arrives.
+                    response = client.send(client.build_request("GET", current), stream=True)
                     if response.status_code in (301, 302, 303, 307, 308):
                         location = response.headers.get("location")
                         if not location:
@@ -196,13 +212,16 @@ class HttpSourceFetcher:
                             )
                         current = str(httpx.URL(current).join(location))
                         try:
-                            validate_url(current)
+                            # The return value is not optional: it carries the
+                            # address this hop must be pinned to.
+                            hop = validate_url(current)
                         except SsrfError as exc:
                             logger.warning(
                                 "refused redirect target",
                                 extra={"event": "ssrf_blocked", "reason": exc.reason},
                             )
                             return RetrievedPage(url=url, ok=False, reason="blocked_redirect")
+                        pins[hop.host] = hop.address
                         continue
 
                     return self._build_page(url, current, response)
@@ -210,6 +229,8 @@ class HttpSourceFetcher:
         except httpx.TimeoutException:
             return RetrievedPage(url=url, ok=False, reason="timeout")
         except httpx.HTTPError as exc:
+            # Only the exception class name. httpx messages embed the URL and
+            # host, and those must not reach a log or an API response.
             return RetrievedPage(url=url, ok=False, reason=f"http_error:{type(exc).__name__}")
 
     def _build_page(self, original_url: str, final_url: str, response: object) -> RetrievedPage:
@@ -239,15 +260,34 @@ class HttpSourceFetcher:
                 final_url=final_url,
             )
 
-        raw = response.content[: self._max_bytes]
-        truncated = len(response.content) > self._max_bytes
+        # Read the decoded body in chunks and stop at the cap. response.content
+        # would buffer the whole thing first, so a small gzip that expands to
+        # gigabytes -- or simply a very large page -- would be decompressed and
+        # held in memory before any limit could apply. Capping the *decoded*
+        # stream bounds both the download and the decompression.
+        chunks: list[bytes] = []
+        total = 0
+        truncated = False
+        for chunk in response.iter_bytes():
+            remaining = self._max_bytes - total
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(chunk) > remaining:
+                chunks.append(chunk[:remaining])
+                total = self._max_bytes
+                truncated = True
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+
         return RetrievedPage(
             url=original_url,
             ok=True,
             status_code=status,
             content_type=content_type,
             final_url=final_url,
-            text=neutralize(raw.decode("utf-8", errors="replace")),
+            text=neutralize(b"".join(chunks).decode("utf-8", errors="replace")),
             retrieved_at=datetime.now(UTC),
             truncated=truncated,
         )

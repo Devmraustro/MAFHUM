@@ -64,27 +64,53 @@ class SafeTarget:
     address: str
 
 
+# IANA special-purpose ranges that ``ipaddress`` still reports as ``is_global``.
+# Deny-by-default cannot catch these on its own, so they are named.
+EXTRA_BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    # 6to4 relay anycast. Deprecated (RFC 7526) and routable to infrastructure.
+    ipaddress.ip_network("192.88.99.0/24"),
+    # NOTE: ``::ffff:0:0/96`` is deliberately absent. IPv4-mapped addresses are
+    # unwrapped at the top of ``_is_unsafe_address`` and judged as the IPv4
+    # address they carry, so a mapped loopback is blocked and a mapped public
+    # address is allowed -- the same verdict the bare IPv4 would get. Listing the
+    # range here would be unreachable code, because the unwrap returns first.
+)
+
+
 def _is_unsafe_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True for any address that must not be reached from a user-supplied URL."""
-    return (
+    """True for any address that must not be reached from a user-supplied URL.
+
+    The test is **deny-by-default**: an address is acceptable only if it is
+    globally routable *and* not in a special-purpose range. Enumerating the bad
+    ranges is not enough -- Python's ``is_private`` omits RFC 6598 shared address
+    space (``100.64.0.0/10``), which is carrier infrastructure and exactly the
+    kind of target this guard exists to keep out. Asking "is this definitely
+    public?" fails closed when the answer is unknown.
+    """
+    # IPv4-mapped IPv6 (::ffff:127.0.0.1) is unwrapped first, so the embedded
+    # IPv4 address is judged on its own merits rather than as an IPv6 literal.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return _is_unsafe_address(ip.ipv4_mapped)
+
+    if not ip.is_global:
+        return True
+
+    for network in EXTRA_BLOCKED_NETWORKS:
+        if ip.version == network.version and ip in network:
+            return True
+
+    # Named explicitly so the intent survives a future change above, and so the
+    # cloud metadata endpoint is blocked even if its classification ever shifts.
+    explicit = (
         ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified
-        # Cloud metadata. 169.254.169.254 is link-local and already covered, but
-        # the whole metadata range is named explicitly so the intent survives a
-        # future change to the link-local test.
         or ip in ipaddress.ip_network("169.254.169.252/30")
-        # IPv4-mapped IPv6 (::ffff:127.0.0.1) would otherwise slip past the
-        # IPv4 checks above.
-        or (
-            isinstance(ip, ipaddress.IPv6Address)
-            and ip.ipv4_mapped is not None
-            and _is_unsafe_address(ip.ipv4_mapped)
-        )
     )
+    return explicit
 
 
 def validate_url(url: str, *, resolver: object | None = None) -> SafeTarget:
@@ -122,7 +148,14 @@ def validate_url(url: str, *, resolver: object | None = None) -> SafeTarget:
     if host in BLOCKED_HOSTNAMES or host.endswith(".local") or host.endswith(".internal"):
         raise SsrfError("host_not_allowed")
 
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        # `parts.port or default` would turn ":0" into 80, silently fetching a
+        # different port than the URL asked for.
+        port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
+    except ValueError as exc:
+        # urlsplit raises for ":0" and out-of-range ports. Without this the
+        # caller would see an unhandled ValueError rather than a clean refusal.
+        raise SsrfError("port_not_allowed") from exc
     if port not in ALLOWED_PORTS:
         raise SsrfError("port_not_allowed")
 
