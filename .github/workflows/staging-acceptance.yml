@@ -25,7 +25,6 @@ on:
       - "apps/api/.dockerignore"
       - "apps/api/entrypoint.sh"
       - "apps/api/src/mafhum_api/main.py"
-      - "apps/api/tests/test_optional_research_dependency.py"
       - "tools/staging_verification.sh"
   workflow_dispatch:
     inputs:
