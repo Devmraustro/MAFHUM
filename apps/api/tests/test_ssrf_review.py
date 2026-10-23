@@ -794,13 +794,14 @@ class TestLiveNetworkGaps:
         for host in self.SOURCES:
             assert host not in source, f"{host} appears verbatim; keep hostnames split"
 
-    def test_public_sources_resolve_but_are_not_reachable(self) -> None:
-        """DNS answers are real; connections are not. Both halves are recorded.
+    def test_public_sources_resolve_to_non_private_addresses(self) -> None:
+        """A real DNS answer for a real publisher must not be a private address.
 
-        This is a live-DNS test. It performs no HTTP request and touches no
-        internal service. If a future environment gains TCP egress, the connect
-        assertion will fail and the live tier should be implemented rather than
-        left as a stale claim of unreachability.
+        Live-DNS test, performed with no HTTP request and no internal target.
+        What is asserted here holds in any environment that can resolve a name:
+        the answer is public. Whether the host is *reachable* is a property of
+        the environment, not of this code, so it is deliberately not asserted --
+        see ``test_outbound_egress_is_recorded_not_asserted``.
         """
         for host in self.SOURCES:
             try:
@@ -813,47 +814,62 @@ class TestLiveNetworkGaps:
                     f"{host} resolved to a private address {address}"
                 )
 
-            # TCP connects, but the handshake does not survive. Measured here:
-            # the sandbox accepts the connection and then closes it during TLS
-            # (SSLZeroReturnError), so no byte of a real page can be retrieved.
-            # That is what makes live-source retrieval BLOCKED rather than merely
-            # untested -- and the distinction matters, because a passing TCP
-            # connect could otherwise be mistaken for working egress.
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            probe.settimeout(5.0)
-            try:
-                probe.connect((addresses[0], 443))
-                context = ssl.create_default_context()
-                with context.wrap_socket(probe, server_hostname=host):
-                    tls_ok = True
-            except OSError:
-                tls_ok = False
-            except ssl.SSLError:
-                tls_ok = False
-            finally:
-                probe.close()
-            assert tls_ok is False, (
-                f"TLS to {host} succeeded -- real live retrieval should be implemented"
-            )
+    @pytest.mark.live_source
+    @pytest.mark.skipif(
+        __import__("os").environ.get("MAFHUM_LIVE_RESEARCH") != "1",
+        reason="outbound egress check needs a real network and MAFHUM_LIVE_RESEARCH=1",
+    )
+    def test_outbound_egress_is_recorded_not_asserted(self) -> None:
+        """Measure whether this environment can complete TLS, and say so.
 
-    def test_retrieval_of_a_real_source_fails_at_tls(self) -> None:
-        """The exact failure mode, recorded so it cannot be re-diagnosed wrongly."""
+        Recorded as an observation rather than an assertion on purpose. An
+        earlier version of this file asserted that the TLS handshake *fails*,
+        because it fails in the sandbox where it was written. That was wrong:
+        it made a property of one network a requirement of the code, so the test
+        failed on every runner with working egress. Nothing here is weakened by
+        removing it -- the SSRF policy is enforced and tested by the fixtures
+        above, which do not depend on egress at all.
+
+        Skipped unless explicitly enabled, so a skipped run is never reported as
+        a passing live integration test.
+        """
+        host = self.SOURCES[0]
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(10.0)
+        tls_ok = False
+        error = ""
+        try:
+            probe.connect((socket.getaddrinfo(host, 443)[0][4][0], 443))
+            with ssl.create_default_context().wrap_socket(probe, server_hostname=host):
+                tls_ok = True
+        except (OSError, ssl.SSLError) as exc:
+            error = type(exc).__name__
+        finally:
+            probe.close()
+        # A record, not a pass/fail condition on the code under test.
+        print(f"live egress: host={host} tls_completed={tls_ok} error={error or 'none'}")
+
+    @pytest.mark.live_source
+    @pytest.mark.skipif(
+        __import__("os").environ.get("MAFHUM_LIVE_RESEARCH") != "1",
+        reason="live fetch check needs a real network and MAFHUM_LIVE_RESEARCH=1",
+    )
+    def test_retrieval_of_a_real_source_is_reported(self) -> None:
+        """Attempt one real fetch and report the outcome, without demanding one.
+
+        Opt-in and network-dependent, so it never runs in the default suite.
+        Whether it succeeds is a property of the runner; asserting a particular
+        outcome here would fail on any machine whose egress differs, which is
+        what happened when this asserted that TLS must fail.
+        """
         import httpx
 
         host = self.SOURCES[0]
         try:
-            socket.getaddrinfo(host, 443)
-        except OSError:
-            pytest.skip("no DNS in this environment")
-
-        try:
-            httpx.get(f"https://{host}/", timeout=15)
-        except httpx.ConnectError as exc:
-            assert "SSL" in str(exc) or "TLS" in str(exc), str(exc)
-            return
-        except httpx.HTTPError:
-            return
-        pytest.fail(f"https://{host}/ succeeded -- live retrieval should be implemented")
+            response = httpx.get(f"https://{host}/", timeout=20)
+            print(f"live fetch: host={host} status={response.status_code}")
+        except httpx.HTTPError as exc:
+            print(f"live fetch: host={host} failed_with={type(exc).__name__}")
 
     def test_validation_of_a_real_resolving_public_host(self) -> None:
         """The guard against a genuinely resolved public name, no fixtures.
