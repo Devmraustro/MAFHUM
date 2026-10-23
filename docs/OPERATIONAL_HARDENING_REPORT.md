@@ -3,7 +3,7 @@
 Date: 2026-10-23
 Branch: `arena/1cb7b9d2-mafhum`
 Baseline at start of this work: `a7366df` (Phase 4/5 closeout)
-Final commit: `4a820ce` (see §10 for a later CI-caught fix)
+Final commit: `65ee619` — **CI run `39963770200`: success, all 4 jobs**
 
 **Verdict: CONDITIONAL STAGING**
 
@@ -43,9 +43,12 @@ remained open. This work closed three of them and diagnosed the fourth.
 | `aed7dc5` | B | Real clamd malware scanning with a fail-closed policy |
 | `f239af2` | C | Reproducible hardened container build |
 | `91a9aaa` | D | Backup and restore, verified by an actual restore test |
+| `4a820ce` | E + docs | Mocked retrieval tests, hardening report, stale-claim corrections |
+| `65ee619` | E | Fix a test that asserted a network property as a code property |
 
-Priority E produced tests and a diagnosis but no source change, because the
-investigation established the blocker was environmental.
+Priority E produced tests and a diagnosis but no source change to the
+application, because the investigation established the blocker was environmental.
+`65ee619` then corrected one of those tests after CI showed it was wrong.
 
 ## 3. Priority A — unsafe process-local state
 
@@ -318,6 +321,7 @@ OK.
 
 | Run | Commit | Result |
 | --- | --- | --- |
+| `39963770200` | `65ee619` (**head**) | **success — all 4 jobs** |
 | `39962768326` | `4a820ce` | failure — backend `Tests against real PostgreSQL` |
 | `39961655378` | `91a9aaa` | success — all 4 jobs |
 | `39960572516` | `f239af2` | success |
@@ -332,8 +336,11 @@ plausible CI diagnoses in this project turned out to be wrong.
 - `4a820ce` — the egress test described in §7, which asserted a network property
   as a code property. Fixed by measuring and reporting instead.
 
-Neither is latent. Recording them because a green head does not mean every
-intermediate commit was green, and the difference is visible in the history.
+Neither is latent. **The run that matters is `39963770200` on the final commit
+`65ee619`, which passed all four jobs** — so CI has been observed green on exactly
+the code being reported, not merely on an ancestor. Recording the two failures
+because a green head does not mean every intermediate commit was green, and the
+difference is visible in the history.
 
 ## 11. Security posture and remaining high-risk findings
 
