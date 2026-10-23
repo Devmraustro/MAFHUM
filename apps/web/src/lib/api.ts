@@ -463,6 +463,26 @@ export interface StudyPlan {
   }[];
 }
 
+/** A research result the student chose to keep, as the backend stores it. */
+export type SavedResearch = {
+  id: string;
+  topic_id: string;
+  question: string;
+  answer: string | null;
+  status: ResearchStatus;
+  evidence_sufficient: boolean;
+  coverage: number;
+  citations: ResearchCitation[];
+  source_document_ids: string[];
+  /** Recomputed on read: a deleted source must not still look available. */
+  sources_available: boolean;
+  missing_document_ids: string[];
+  present_document_ids: string[];
+  retrieved_at: string | null;
+  saved_at: string;
+  deduplicated: boolean;
+};
+
 export const study = {
   listTopics(): Promise<{ topics: StudyTopic[] }> {
     return request("/study/topics");
@@ -557,6 +577,33 @@ export const study = {
 
   plan(topicId: string): Promise<StudyPlan> {
     return request(`/study/topics/${topicId}/plan`);
+  },
+
+  /** Save a research result into a topic, with its provenance. */
+  saveResearch(
+    topicId: string,
+    payload: {
+      question: string;
+      answer: string | null;
+      status: ResearchStatus;
+      evidence_sufficient: boolean;
+      coverage: number;
+      citations: ResearchCitation[];
+      source_document_ids: string[];
+    }
+  ): Promise<SavedResearch> {
+    return request(`/study/topics/${topicId}/research`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  savedResearch(topicId: string): Promise<{ items: SavedResearch[] }> {
+    return request(`/study/topics/${topicId}/research`);
+  },
+
+  savedResearchById(savedId: string): Promise<SavedResearch> {
+    return request(`/study/research/${savedId}`);
   },
 
   addPlanItem(topicId: string, payload: { objective: string; scheduledFor: string }): Promise<{ id: string }> {

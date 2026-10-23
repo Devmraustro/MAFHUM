@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
 import { ErrorAlert, InfoAlert } from "@/components/alerts";
-import { ApiError, research } from "@/lib/api";
-import type { KnownSourceList, ResearchAnswer } from "@/lib/api";
+import { ApiError, research, study } from "@/lib/api";
+import type { KnownSourceList, ResearchAnswer, StudyTopic } from "@/lib/api";
 import { useLocale } from "@/lib/locale-context";
 
 /**
@@ -26,6 +26,54 @@ export default function ResearchPage() {
   const [loading, setLoading] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
   const [sources, setSources] = useState<KnownSourceList | null>(null);
+  const [topics, setTopics] = useState<StudyTopic[]>([]);
+  const [topicId, setTopicId] = useState("");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "duplicate" | "error">(
+    "idle"
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    // An anonymous visitor simply gets no topics, so the save control stays
+    // hidden rather than offering a request that would be rejected.
+    void study
+      .listTopics()
+      .then((response: { topics: StudyTopic[] }) => {
+        if (!cancelled) setTopics(response.topics);
+      })
+      .catch(() => {
+        if (!cancelled) setTopics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // All three conditions, or the button would render enabled while doing
+  // nothing: an inert control is worse than a hidden one, because it reads as a
+  // working affordance that silently discards the student's choice.
+  const canSave = answer?.status === "grounded" && topics.length > 0 && topicId !== "";
+
+  const onSave = useCallback(async () => {
+    if (!answer || !topicId) return;
+    setSaveState("saving");
+    try {
+      const saved = await study.saveResearch(topicId, {
+        question: answer.question,
+        answer: null,
+        status: answer.status,
+        evidence_sufficient: answer.evidence_sufficient,
+        coverage: answer.coverage,
+        citations: answer.citations,
+        source_document_ids: answer.citations
+          .map((citation) => citation.document_id)
+          .filter((id): id is string => id !== null && id !== undefined),
+      });
+      setSaveState(saved.deduplicated ? "duplicate" : "saved");
+    } catch {
+      setSaveState("error");
+    }
+  }, [answer, topicId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,6 +168,49 @@ export default function ResearchPage() {
               ))}
             </ol>
           )}
+
+          <div className="save-panel" data-testid="save-panel">
+            {answer.status !== "grounded" ? (
+              <p className="hint" data-testid="save-blocked">
+                {t("research.unsupportedStatus")}
+              </p>
+            ) : topics.length === 0 ? (
+              <p className="hint">{t("research.chooseTopic")}</p>
+            ) : (
+              <>
+                <label htmlFor="save-topic">{t("research.saveToTopic")}</label>
+                <select
+                  id="save-topic"
+                  value={topicId}
+                  onChange={(event) => {
+                    setTopicId(event.target.value);
+                    setSaveState("idle");
+                  }}
+                >
+                  <option value="">{t("research.chooseTopic")}</option>
+                  {topics.map((topic) => (
+                    <option key={topic.id} value={topic.id}>
+                      {topic.title}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void onSave()}
+                  disabled={!canSave || saveState === "saving"}
+                >
+                  {t("research.save")}
+                </button>
+              </>
+            )}
+            {saveState === "saved" ? <p data-testid="save-ok">{t("research.saved")}</p> : null}
+            {saveState === "duplicate" ? (
+              <p data-testid="save-duplicate">{t("research.saveDuplicate")}</p>
+            ) : null}
+            {saveState === "error" ? (
+              <ErrorAlert message={t("research.saveError")} onClose={() => setSaveState("idle")} />
+            ) : null}
+          </div>
         </section>
       ) : null}
 
