@@ -357,6 +357,35 @@ def mock_fetcher(handler: Callable[[httpx.Request], httpx.Response], **kwargs: o
     return HttpSourceFetcher(client_factory=factory, **kwargs)  # type: ignore[arg-type]
 
 
+def resolve_public_or_skip(host: str) -> list[str]:
+    """Resolve a real host, or explain why no live-DNS assertion can be made.
+
+    Added after a CI run resolved a real publisher name (SOURCES below) to a
+    private address in the 192.168.0.0/16 range. That is not a defect in the
+    guard; the guard refused it, correctly. It is a property of the runner's
+    resolver, which sits behind NAT or a filtering proxy. An assertion that a
+    public name resolves to a public address therefore cannot hold in every
+    environment, so the case is skipped with the reason recorded rather than
+    passed silently.
+
+    Hostnames stay out of this docstring on purpose: a test in this class scans
+    this file's own source and would match its own literals.
+    """
+    try:
+        addresses = sorted({str(i[4][0]) for i in socket.getaddrinfo(host, 443)})
+    except OSError:
+        pytest.skip(f"{host} did not resolve; no DNS in this environment")
+    if not addresses:
+        pytest.skip(f"{host} resolved to nothing")
+    private = [a for a in addresses if ipaddress.ip_address(a).is_private]
+    if private:
+        pytest.skip(
+            f"{host} resolved to {private}: this environment's resolver returns "
+            "private addresses, so it cannot stand in for public DNS"
+        )
+    return addresses
+
+
 def block_egress(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every outbound TCP connect fail instantly, in any environment.
 
@@ -834,11 +863,7 @@ class TestLiveNetworkGaps:
         see ``test_outbound_egress_is_recorded_not_asserted``.
         """
         for host in self.SOURCES:
-            try:
-                addresses = sorted({str(i[4][0]) for i in socket.getaddrinfo(host, 443)})
-            except OSError:
-                pytest.skip(f"{host} did not resolve; no DNS in this environment")
-            assert addresses, f"{host} resolved to nothing"
+            addresses = resolve_public_or_skip(host)
             for address in addresses:
                 assert not ipaddress.ip_address(address).is_private, (
                     f"{host} resolved to a private address {address}"
@@ -913,6 +938,15 @@ class TestLiveNetworkGaps:
             except SsrfError as exc:
                 if exc.reason == "dns_resolution_failed":
                     pytest.skip(f"{host} did not resolve")
+                if exc.reason == "resolves_to_blocked_address":
+                    # Observed on a CI runner whose resolver answered with a
+                    # private address. Refusing is the correct outcome, so assert
+                    # it rather than treating the environment as a failure.
+                    addresses = {str(i[4][0]) for i in socket.getaddrinfo(host, 443)}
+                    assert any(not ipaddress.ip_address(a).is_global for a in addresses), (
+                        f"{host} was refused but every answer is public: {sorted(addresses)}"
+                    )
+                    continue
                 raise
             assert target.host == host
             assert ipaddress.ip_address(target.address).is_global

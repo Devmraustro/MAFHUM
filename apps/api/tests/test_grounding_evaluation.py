@@ -110,17 +110,39 @@ class TestDatasetShape:
 class TestBaselineIsPreservedNotEdited:
     """v1 stays byte-identical so the original numbers remain reproducible."""
 
+    # Recorded digest of citation_grounding_v1.json as committed at 0f1c654.
+    # Embedded so the baseline can be verified in a shallow clone, where the
+    # original commit is not present -- a CI checkout uses depth 1, and a test
+    # that shells out to `git show <sha>` fails there with exit 128.
+    V1_SHA256 = "ae55a569872deead615f35423f531cefba02a704dd05c85e093fb3d7c91aa02b"
+
     def test_v1_is_unchanged_since_it_was_committed(self) -> None:
+        """The 24-case baseline must still be byte-for-byte what was measured."""
+        import hashlib
+
+        content = V1.read_bytes()
+        assert hashlib.sha256(content).hexdigest() == self.V1_SHA256, (
+            "citation_grounding_v1.json has been modified. The published baseline "
+            "(20/24 claim_support_honest) is only meaningful against the original "
+            "file, so editing it is not a way to change the score."
+        )
+
+    def test_v1_matches_the_committed_blob_when_history_is_available(self) -> None:
+        """Cross-check against git, where the clone has enough history."""
         import subprocess as sp
 
-        committed = sp.run(
+        result = sp.run(
             ["git", "show", "0f1c654:apps/api/tests/evaluation/citation_grounding_v1.json"],
             capture_output=True,
             text=True,
-            check=True,
             cwd=Path(__file__).resolve().parents[3],
-        ).stdout
-        assert V1.read_text(encoding="utf-8") == committed
+        )
+        if result.returncode != 0:
+            pytest.skip(
+                "commit 0f1c654 is not in this clone (shallow checkout); "
+                "the digest test above covers the same guarantee"
+            )
+        assert V1.read_text(encoding="utf-8") == result.stdout
 
     def test_v1_claim_support_improved_from_the_original_measurement(
         self, baseline_report: dict[str, object]
