@@ -253,8 +253,11 @@ class TestAddressRepresentationAttacks:
 
 
 class TestDnsRebinding:
-    def test_the_validated_address_is_the_one_connected_to(self) -> None:
+    def test_the_validated_address_is_the_one_connected_to(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The core pinning guarantee, observed at the socket call."""
+        block_egress(monkeypatch)
         backend = PinnedNetworkBackend({"rebind.test": PUBLIC})
         stream = None
         try:
@@ -266,8 +269,9 @@ class TestDnsRebinding:
                 stream.close()
         assert backend.connected_to == [("rebind.test", 80, PUBLIC)]
 
-    def test_unpinned_hosts_are_left_alone(self) -> None:
+    def test_unpinned_hosts_are_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Pinning must not silently alter unrelated traffic."""
+        block_egress(monkeypatch)
         backend = PinnedNetworkBackend({"other.test": PUBLIC})
         stream = None
         try:
@@ -299,13 +303,15 @@ class TestDnsRebinding:
             return real(str(host), *args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(socket, "getaddrinfo", counting)
+        block_egress(monkeypatch)
         page = HttpSourceFetcher(timeout_seconds=1.0).fetch("http://rebind.test/")
 
         assert len(queries) == 1, (
             f"expected exactly one resolution, got {len(queries)}; a second lookup means "
             "validation and connection can disagree"
         )
-        assert page.ok is False  # no such host in reality; only the count matters
+        # Fails because egress is refused, not because the host is fictional.
+        assert page.ok is False
 
     def test_a_rebinding_answer_is_not_obeyed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Answers public for validation, then loopback for the connection.
@@ -328,6 +334,7 @@ class TestDnsRebinding:
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
 
         monkeypatch.setattr(socket, "getaddrinfo", rebinding)
+        block_egress(monkeypatch)
         HttpSourceFetcher(timeout_seconds=1.0).fetch("http://rebind.test/")
 
         assert state["calls"] == 1, "the transport must not resolve a second time"
@@ -348,6 +355,28 @@ def mock_fetcher(handler: Callable[[httpx.Request], httpx.Response], **kwargs: o
         return httpx.Client(transport=transport, follow_redirects=False)
 
     return HttpSourceFetcher(client_factory=factory, **kwargs)  # type: ignore[arg-type]
+
+
+def block_egress(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every outbound TCP connect fail instantly, in any environment.
+
+    Several tests here need the *real* pinning transport so that what it dials
+    can be observed. They must not therefore depend on what the machine running
+    them can reach: ``PUBLIC`` is example.com's address, which answers on port 80
+    anywhere with egress, so an unpinned fetch would succeed there and fail the
+    assertion that it does not.
+
+    Refusing the connect keeps the observation intact -- ``connected_to`` is
+    recorded before the connection is attempted -- while removing the dependency
+    on the runner's network. This is why these tests pass identically in a
+    sandbox with no egress and on a CI runner with working egress.
+    """
+
+    def refused(self: object, *args: object, **kwargs: object) -> None:
+        raise ConnectionRefusedError("egress is disabled for this test")
+
+    monkeypatch.setattr(socket.socket, "connect", refused)
+    monkeypatch.setattr(socket.socket, "connect_ex", refused)
 
 
 def allow_all(monkeypatch: pytest.MonkeyPatch, *hosts: str) -> None:
@@ -666,8 +695,9 @@ class TestResponseLimits:
 
 
 class TestTransportDoesNotReResolve:
-    def test_pinned_client_dials_the_pinned_address(self) -> None:
+    def test_pinned_client_dials_the_pinned_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """End-to-end through httpx: build the real client and observe the dial."""
+        block_egress(monkeypatch)
         pins = {"dial.test": PUBLIC}
         client = pinned_client(pins, timeout=0.5, user_agent="test")
         try:
