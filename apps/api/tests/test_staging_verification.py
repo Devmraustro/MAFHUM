@@ -123,6 +123,28 @@ class TestScriptIntegrity:
             "testing whether clamdtop is installed says nothing about the database"
         )
 
+    def test_signature_freshness_uses_newest_core_database(self) -> None:
+        """An old auxiliary file must not make a fresh core database fail."""
+        script = SCRIPT.read_text()
+        assert "core_db_count" in script, "must require a core .cvd/.cld database"
+        assert "sort -nr" in script, "must assess the newest database timestamp"
+        assert "604800" in script, "seven-day freshness threshold must be explicit"
+        assert "-mtime +7" not in script, (
+            "counting every old file can fail even when a fresh database exists"
+        )
+
+    def test_missing_container_secrets_are_reported_as_blocked(self) -> None:
+        """Missing config must not terminate before the structured summary."""
+        script = SCRIPT.read_text()
+        assert 'if [ -z "${MAFHUM_STAGING_DATABASE_URL:-}" ]' in script
+        assert "staging database URL or session secret is not configured" in script
+        assert "${MAFHUM_STAGING_DATABASE_URL:?" not in script
+        assert "${MAFHUM_STAGING_SESSION_SECRET:?" not in script
+
+    def test_eicar_probe_is_generated_once(self) -> None:
+        script = SCRIPT.read_text()
+        assert script.count('pass "built a structurally valid PDF carrying the EICAR string"') == 1
+
     def test_the_script_never_disables_tls_verification(self) -> None:
         script = SCRIPT.read_text()
         assert "verify=False" not in script
