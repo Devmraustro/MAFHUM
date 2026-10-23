@@ -53,12 +53,28 @@ check_scanner() {
   fi
   pass "clamd socket reachable at $sock"
 
-  # Signature database must be present or detection is vacuous.
-  if ! clamdtop --version >/dev/null 2>&1 && [ ! -d /var/lib/clamav ]; then
-    blocked "no signature database found" "run freshclam and wait for it to complete"
+  # Signature database must be present AND fresh, or detection is vacuous: an
+  # engine with no signatures reports "no threats" for everything, which would
+  # make every scan look like a pass. The previous check tested whether clamdtop
+  # was installed, which says nothing about the database, so it could pass on a
+  # host with no signatures at all.
+  local dbdir="${CLAMAV_DB_DIR:-/var/lib/clamav}"
+  local dbfiles
+  dbfiles="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' -o -name '*.cdb' \) 2>/dev/null | wc -l)"
+  if [ "$dbfiles" -eq 0 ]; then
+    blocked "no signature database in $dbdir" "run freshclam and wait for it to complete"
     return
   fi
-  pass "signature database directory present"
+  pass "signature database present ($dbfiles database file(s) in $dbdir)"
+
+  # Freshness: warn as a failure if the newest signature file is older than 7 days.
+  local newest_age_days
+  newest_age_days="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' \) -mtime +7 2>/dev/null | wc -l)"
+  if [ "$newest_age_days" -gt 0 ]; then
+    fail "signature database is older than 7 days — run freshclam"
+  else
+    pass "signature database is fresher than 7 days"
+  fi
 
   # EICAR: the published, non-malicious antivirus test string. Using anything
   # else would mean handling real malware, which this procedure forbids.
@@ -75,6 +91,32 @@ check_scanner() {
     return
   fi
 
+  # The application validates extension, MIME type and magic bytes BEFORE it
+  # scans, so uploading a bare eicar.com as application/pdf would be rejected by
+  # validation and never reach the scanner. Asserting only "HTTP 422" would then
+  # report a passing scan on an engine that was never consulted. So the probe is
+  # a structurally valid PDF with the EICAR string embedded in its content, which
+  # passes validation and can only be rejected by the scanner.
+  local eicar_pdf="$EVIDENCE/eicar-probe.pdf"
+  # Shared with the test suite so the probe used in staging is exactly the probe
+  # under test, and the two cannot drift apart.
+  # tools/ here is apps/api/tools, which is on the test PYTHONPATH, so the module
+  # under test and the probe used in staging are literally the same file.
+  python3 "$(dirname "$0")/../apps/api/tools/eicar_probe.py" "$eicar_pdf" \
+    >/dev/null 2>"$EVIDENCE/probe.err"
+  if [ ! -s "$eicar_pdf" ]; then
+    fail "could not build the EICAR PDF probe"
+    sed 's/^/         /' "$EVIDENCE/probe.err" | head -5
+    return
+  fi
+  pass "built a structurally valid PDF carrying the EICAR string"
+
+  if [ ! -s "$eicar_pdf" ]; then
+    fail "could not build the EICAR PDF probe"
+    return
+  fi
+  pass "built a structurally valid PDF carrying the EICAR string"
+
   # Now the part that matters: does the APPLICATION reject it, with scanning
   # required? A working engine the app ignores is not a control.
   if [ "${MAFHUM_MALWARE_SCAN_REQUIRED:-}" != "true" ]; then
@@ -83,18 +125,34 @@ check_scanner() {
     return
   fi
 
+  if [ -z "${MAFHUM_CSRF_TOKEN:-}" ] || [ -z "${MAFHUM_COOKIE:-}" ]; then
+    blocked "MAFHUM_CSRF_TOKEN / MAFHUM_COOKIE not set" \
+      "supply authorized staging session credentials; they are never printed by this script"
+    return
+  fi
+
   local code
   code="$(curl -s -o "$EVIDENCE/resp.json" -w '%{http_code}' \
     -X POST "$API_URL/api/v1/documents" \
-    -H "X-CSRF-Token: ${MAFHUM_CSRF_TOKEN:-}" \
-    -H "Cookie: ${MAFHUM_COOKIE:-}" \
-    -F "file=@$eicar;type=application/pdf" 2>/dev/null)"
-  if [ "$code" = "422" ]; then
-    pass "upload of EICAR rejected by the API with 422"
-    grep -o '"scan_verdict":"[a-z_]*"' "$EVIDENCE/resp.json" 2>/dev/null \
-      | sed 's/^/         /' || true
-  else
+    -H "X-CSRF-Token: ${MAFHUM_CSRF_TOKEN}" \
+    -H "Cookie: ${MAFHUM_COOKIE}" \
+    -F "file=@$eicar_pdf;type=application/pdf" 2>/dev/null)"
+
+  if [ "$code" != "422" ]; then
     fail "EICAR upload was NOT rejected (HTTP $code) — fail-closed is not in effect"
+    printf '         response: %s\n' "$(head -c 200 "$EVIDENCE/resp.json" 2>/dev/null)"
+    return
+  fi
+
+  # 422 alone is not evidence: validation rejects also return 422. Only the
+  # scanner sets reason=malware_detected, so that is what is asserted.
+  if grep -q '"reason":"malware_detected"' "$EVIDENCE/resp.json" 2>/dev/null; then
+    pass "EICAR rejected by the SCANNER (reason=malware_detected, HTTP 422)"
+  elif grep -q '"reason":"scan_' "$EVIDENCE/resp.json" 2>/dev/null; then
+    fail "rejected because scanning could not complete, not because EICAR was detected"
+    printf '         response: %s\n' "$(head -c 200 "$EVIDENCE/resp.json" 2>/dev/null)"
+  else
+    fail "422 did not come from the scanner — validation rejected the probe first"
     printf '         response: %s\n' "$(head -c 200 "$EVIDENCE/resp.json" 2>/dev/null)"
   fi
 
@@ -154,7 +212,10 @@ check_container() {
 
   # Start against a throwaway database and watch the health endpoints.
   local cid
-  cid="$($runtime run -d --rm \
+  # No --rm: the container must survive long enough for its exit state to be
+  # inspected, which is the only way to tell a graceful shutdown from a kill.
+  # It is removed explicitly at the end of this function.
+  cid="$($runtime run -d \
     -e MAFHUM_APP_ENV=development \
     -e MAFHUM_DATABASE_URL="${MAFHUM_STAGING_DATABASE_URL:?set MAFHUM_STAGING_DATABASE_URL}" \
     -e MAFHUM_SESSION_SECRET="${MAFHUM_STAGING_SESSION_SECRET:?set MAFHUM_STAGING_SESSION_SECRET}" \
@@ -181,9 +242,31 @@ check_container() {
     $runtime logs --tail 25 "$cid" 2>&1 | sed 's/^/         /'
   fi
 
-  # Graceful shutdown: SIGTERM must exit 0, not be killed.
-  $runtime stop -t 15 "$cid" >/dev/null 2>&1
-  pass "container stopped on SIGTERM within the grace period"
+  # Graceful shutdown. The previous version printed PASS unconditionally, so a
+  # container that ignored SIGTERM and was SIGKILLed after the grace period would
+  # have reported a clean shutdown. Both the stop command's own exit status and
+  # the container's recorded exit state are now checked.
+  if $runtime stop -t 15 "$cid" >"$EVIDENCE/stop.log" 2>&1; then
+    pass "stop command succeeded"
+  else
+    fail "stop command FAILED (exit $?)"
+    sed 's/^/         /' "$EVIDENCE/stop.log" | head -5
+  fi
+
+  local exit_code oom
+  exit_code="$($runtime inspect "$cid" --format '{{.State.ExitCode}}' 2>/dev/null)"
+  oom="$($runtime inspect "$cid" --format '{{.State.OOMKilled}}' 2>/dev/null)"
+  if [ "$exit_code" = "0" ]; then
+    pass "container exited 0 on SIGTERM (graceful, not killed)"
+  else
+    fail "container exited $exit_code, not 0 — shutdown was not graceful"
+    $runtime logs --tail 15 "$cid" 2>&1 | sed 's/^/         /'
+  fi
+  if [ "$oom" = "true" ]; then
+    fail "container was OOM-killed"
+  fi
+
+  $runtime rm -f "$cid" >/dev/null 2>&1
 }
 
 # --------------------------------------------------------------------------- C
