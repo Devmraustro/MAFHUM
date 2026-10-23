@@ -707,3 +707,54 @@ class StudyPlanItem(TimestampMixin, Base):
     # Recorded so a plan item can say "the material behind this is gone" instead
     # of silently looking actionable.
     material_note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class SavedResearch(TimestampMixin, Base):
+    """A research result saved into a study topic.
+
+    **Both** a snapshot and references, deliberately:
+
+    * The snapshot (``question``, ``answer``, ``citations``) is what the student
+      saw when they saved it. Keeping it means the material still reads correctly
+      after the source document is deleted, which is the point of saving it.
+    * ``source_document_ids`` records where that text came from, so availability
+      can be checked later.
+
+    Holding only a reference would make saved study material vanish when a source
+    did. Holding only a snapshot would be worse: a quotation would keep looking
+    citable after its source was gone, which is precisely the failure this must
+    not have. So the snapshot is kept *and* ``sources_available`` is recomputed on
+    read, never stored as a permanent truth.
+    """
+
+    __tablename__ = "saved_research"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('grounded', 'insufficient_evidence', 'no_evidence_available')",
+            name="ck_saved_research_status",
+        ),
+        Index("ix_saved_research_topic", "topic_id", "created_at"),
+        Index("ix_saved_research_owner", "owner_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    topic_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("study_topics.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_sufficient: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    coverage: Mapped[float] = mapped_column(sa_Float, nullable=False, default=0.0)
+    citations: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False, default=list)
+    # Provenance: which documents the citations came from at save time.
+    source_document_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # Where the answer came from, so a research failure is never laundered into
+    # study material: a result saved with insufficient evidence says so forever.
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a duplicate save was detected, so the caller can tell the
+    # difference between "saved" and "already there".
+    deduplicated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

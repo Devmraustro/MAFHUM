@@ -30,6 +30,7 @@ from mafhum_api.db.models import (
     DocumentTextSegment,
     Flashcard,
     FlashcardReview,
+    SavedResearch,
     SourceRecord,
     StudyPlanItem,
     StudyQuestion,
@@ -637,6 +638,134 @@ class StudyService:
                 }
                 for i in items
             ],
+        }
+
+    # -- saved research (Phase 5 <-> Phase 4 integration) --------------
+
+    def save_research(
+        self,
+        db: Session,
+        *,
+        owner_id: uuid.UUID,
+        topic_id: uuid.UUID,
+        question: str,
+        answer: str | None,
+        status: str,
+        evidence_sufficient: bool,
+        coverage: float,
+        citations: list[dict[str, object]],
+        source_document_ids: list[str],
+    ) -> SavedResearch:
+        """Persist a research result into a topic, with its provenance.
+
+        Duplicate saves of the same question into the same topic return the
+        existing row rather than adding another, and say so via
+        ``deduplicated``. A retried request is not an error and must not quietly
+        multiply the student's saved material.
+        """
+        topic = self.get_topic(db, owner_id=owner_id, topic_id=topic_id)
+        if not question or not question.strip():
+            raise StudyError("السؤال مطلوب.", code="question_required")
+        if status not in ("grounded", "insufficient_evidence", "no_evidence_available"):
+            raise StudyError("حالة النتيجة غير مدعومة.", code="unsupported_status")
+
+        normalized = question.strip()
+        existing = db.scalar(
+            select(SavedResearch).where(
+                SavedResearch.topic_id == topic.id,
+                SavedResearch.owner_id == owner_id,
+                SavedResearch.question == normalized,
+            )
+        )
+        if existing is not None:
+            existing.deduplicated = True
+            db.flush()
+            return existing
+
+        record = SavedResearch(
+            id=uuid.uuid4(),
+            topic_id=topic.id,
+            owner_id=owner_id,
+            question=normalized,
+            answer=answer,
+            status=status,
+            evidence_sufficient=evidence_sufficient,
+            coverage=coverage,
+            citations=citations,
+            source_document_ids=sorted(set(source_document_ids)),
+            retrieved_at=datetime.now(UTC),
+            deduplicated=False,
+        )
+        db.add(record)
+        db.flush()
+        return record
+
+    def list_saved_research(
+        self, db: Session, *, owner_id: uuid.UUID, topic_id: uuid.UUID
+    ) -> list[dict[str, object]]:
+        """Saved results for a topic, each with its current source availability.
+
+        Availability is computed here, on read, rather than stored. A row written
+        when the source existed must not keep claiming the source exists after it
+        has been deleted -- a stale ``True`` is exactly the "broken reference
+        that looks valid" failure this must avoid.
+        """
+        topic = self.get_topic(db, owner_id=owner_id, topic_id=topic_id)
+        records = list(
+            db.scalars(
+                select(SavedResearch)
+                .where(SavedResearch.topic_id == topic.id, SavedResearch.owner_id == owner_id)
+                .order_by(SavedResearch.created_at.desc())
+            )
+        )
+        return [self._saved_research_view(db, r) for r in records]
+
+    def get_saved_research(
+        self, db: Session, *, owner_id: uuid.UUID, saved_id: uuid.UUID
+    ) -> dict[str, object]:
+        record = db.scalar(
+            select(SavedResearch).where(
+                SavedResearch.id == saved_id, SavedResearch.owner_id == owner_id
+            )
+        )
+        if record is None:
+            raise NotFoundError("المادة المحفوظة")
+        return self._saved_research_view(db, record)
+
+    def _saved_research_view(self, db: Session, record: SavedResearch) -> dict[str, object]:
+        """Render one saved result, resolving which sources still exist."""
+        missing: list[str] = []
+        present: list[str] = []
+        for document_id in record.source_document_ids or []:
+            try:
+                parsed = uuid.UUID(str(document_id))
+            except (ValueError, AttributeError):
+                missing.append(str(document_id))
+                continue
+            # db.get would report a deleted row as present from a stale identity
+            # map; a direct scalar select asks the database.
+            exists = db.scalar(select(Document.id).where(Document.id == parsed))
+            (present if exists is not None else missing).append(str(document_id))
+
+        available = not missing
+        return {
+            "id": str(record.id),
+            "topic_id": str(record.topic_id),
+            "question": record.question,
+            "answer": record.answer,
+            "status": record.status,
+            "evidence_sufficient": record.evidence_sufficient,
+            "coverage": record.coverage,
+            "citations": record.citations,
+            "source_document_ids": list(record.source_document_ids or []),
+            "sources_available": available,
+            "missing_document_ids": missing,
+            "present_document_ids": present,
+            "retrieved_at": record.retrieved_at.isoformat() if record.retrieved_at else None,
+            "saved_at": record.created_at.isoformat(),
+            # Surfaced so the client can tell "saved" from "was already there"
+            # instead of silently showing a duplicate as a new save.
+            "deduplicated": bool(record.deduplicated),
         }
 
     def refresh_material_availability(

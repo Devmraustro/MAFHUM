@@ -65,6 +65,25 @@ class PlanItemCreate(BaseModel):
     scheduled_for: str = Field(min_length=10, max_length=10)
 
 
+class SaveResearchRequest(BaseModel):
+    """A research result the student chose to keep.
+
+    The payload is the shape the research endpoint already returns, so saving
+    copies what was seen rather than re-running it: a result is stored as it was,
+    including ``status`` and ``evidence_sufficient``. Re-running on save could
+    produce different evidence and silently upgrade a weak result into study
+    material that looks better supported than it was.
+    """
+
+    question: str = Field(min_length=1, max_length=4000)
+    answer: str | None = Field(default=None, max_length=20000)
+    status: Literal["grounded", "insufficient_evidence", "no_evidence_available"]
+    evidence_sufficient: bool = False
+    coverage: float = 0.0
+    citations: list[dict[str, object]] = Field(default_factory=list)
+    source_document_ids: list[str] = Field(default_factory=list)
+
+
 class PlanStateRequest(BaseModel):
     state: Literal["not_started", "in_progress", "completed", "blocked"]
 
@@ -466,3 +485,73 @@ def delete_topic(
         _guard(exc)
         raise
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# -- saved research: Phase 4 results kept in a Phase 5 workspace ------------
+
+
+@router.post(
+    "/topics/{topic_id}/research",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[CsrfGuard],
+)
+def save_research(
+    topic_id: uuid.UUID,
+    user: CurrentUser,
+    context: Context,
+    db: DbSession,
+    payload: SaveResearchRequest,
+) -> dict[str, object]:
+    """Save a research result into a topic, with its provenance.
+
+    Topic ownership is enforced inside the service, not here. The result is a
+    database row, so it survives a restart -- nothing about this is
+    frontend-only persistence.
+    """
+    try:
+        record = context.study.save_research(
+            db,
+            owner_id=user.id,
+            topic_id=topic_id,
+            question=payload.question,
+            answer=payload.answer,
+            status=payload.status,
+            evidence_sufficient=payload.evidence_sufficient,
+            coverage=payload.coverage,
+            citations=payload.citations,
+            source_document_ids=payload.source_document_ids,
+        )
+        db.commit()
+        view = context.study.get_saved_research(db, owner_id=user.id, saved_id=record.id)
+    except StudyError as exc:
+        _guard(exc)
+        raise
+    return view
+
+
+@router.get("/topics/{topic_id}/research", status_code=status.HTTP_200_OK)
+def list_saved_research(
+    topic_id: uuid.UUID, user: CurrentUser, context: Context, db: DbSession
+) -> dict[str, object]:
+    """Saved results for a topic, each with current source availability."""
+    try:
+        return {"items": context.study.list_saved_research(db, owner_id=user.id, topic_id=topic_id)}
+    except StudyError as exc:
+        _guard(exc)
+        raise
+
+
+@router.get("/research/{saved_id}", status_code=status.HTTP_200_OK)
+def get_saved_research(
+    saved_id: uuid.UUID, user: CurrentUser, context: Context, db: DbSession
+) -> dict[str, object]:
+    """Reopen one saved result, including whether its sources still exist.
+
+    Scoped by owner in the query: another user's saved result is a 404, not a
+    403, so the id cannot be used to confirm the row exists.
+    """
+    try:
+        return context.study.get_saved_research(db, owner_id=user.id, saved_id=saved_id)
+    except StudyError as exc:
+        _guard(exc)
+        raise
