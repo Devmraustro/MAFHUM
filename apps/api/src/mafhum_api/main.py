@@ -36,8 +36,8 @@ from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
 from mafhum_api.services.projects.service import ProjectService
-from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.research.retrieval import HttpSourceFetcher
+from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.sources.service import SourceService
 from mafhum_api.services.study.service import StudyService
 
