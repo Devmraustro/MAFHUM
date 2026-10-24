@@ -82,6 +82,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
     return AppContext(
         settings=settings,
         database=database,
+        storage=storage,
         identity=IdentityService(session_ttl_minutes=settings.session_ttl_minutes),
         projects=ProjectService(),
         documents=DocumentService(
