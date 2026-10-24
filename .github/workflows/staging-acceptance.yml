@@ -99,8 +99,8 @@ jobs:
 
       - name: Verify the runtime uid and that the app starts and serves health
         env:
-          MAFHUM_DATABASE_URL: postgresql+psycopg://mafhum:staging-only-not-a-secret@localhost:5432/mafhum_staging
-          MAFHUM_SESSION_SECRET: ${{ secrets.GITHUB_TOKEN }}
+          DATABASE_URL: postgresql+psycopg://mafhum:staging-only-not-a-secret@localhost:5432/mafhum_staging
+          SESSION_SECRET: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # A staging-only secret. It is a job-scoped token that expires when the
@@ -108,9 +108,9 @@ jobs:
           # and no production credential is used or printed.
           cid="$(docker run -d --network host \
             -e MAFHUM_APP_ENV=development \
-            -e MAFHUM_DATABASE_URL="$MAFHUM_DATABASE_URL" \
-            -e MAFHUM_SESSION_SECRET="$MAFHUM_SESSION_SECRET" \
-            -e MAFHUM_STORAGE_ROOT=/tmp/mafhum-store \
+            -e MAFHUM_DATABASE_URL="$DATABASE_URL" \
+            -e MAFHUM_SESSION_SECRET="$SESSION_SECRET" \
+            -e STORAGE_ROOT=/tmp/mafhum-store \
             mafhum-api:acceptance)"
           echo "container ${cid:0:12}"
           echo "$cid" > /tmp/cid
