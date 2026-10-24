@@ -107,9 +107,9 @@ jobs:
           # job ends and grants nothing outside this workflow; no project secret
           # and no production credential is used or printed.
           cid="$(docker run -d --network host \
-            -e MAFHUM_APP_ENV=development \
-            -e MAFHUM_DATABASE_URL="$DATABASE_URL" \
-            -e MAFHUM_SESSION_SECRET="$SESSION_SECRET" \
+            -e APP_ENV=development \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e SESSION_SECRET="$SESSION_SECRET" \
             -e STORAGE_ROOT=/tmp/mafhum-store \
             mafhum-api:acceptance)"
           echo "container ${cid:0:12}"
