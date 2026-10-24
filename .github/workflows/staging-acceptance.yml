@@ -30,9 +30,9 @@ on:
   workflow_dispatch:
     inputs:
       gates:
-        description: "Gates to run (B, C, or BC)"
+        description: "Gates to run (A, B, C, or ABC)"
         required: true
-        default: "BC"
+        default: "ABC"
 
 permissions:
   contents: read
@@ -42,10 +42,129 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate-a-clamav-eicar:
+    name: "Gate A: real ClamAV EICAR rejection"
+    runs-on: ubuntu-latest
+    if: contains(inputs.gates || 'ABC', 'A')
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mafhum
+          POSTGRES_PASSWORD: staging-only-not-a-secret
+          POSTGRES_DB: mafhum_staging
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mafhum"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ClamAV and refresh real signatures
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clamav clamav-daemon
+          sudo freshclam
+          dbdir=/var/lib/clamav
+          core_db_count="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' \) -type f | wc -l)"
+          test "$core_db_count" -gt 0
+          newest="$(find "$dbdir" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' \) -type f -printf '%T@\n' | sort -nr | head -1)"
+          test -n "$newest"
+          test "$(( $(date +%s) - ${newest%.*} ))" -lt 604800
+          echo "PASS: fresh ClamAV core signature database exists"
+
+      - name: Start a real local ClamAV daemon and verify EICAR detection
+        run: |
+          set -euo pipefail
+          sudo sed -i 's/^Example/#Example/' /etc/clamav/clamd.conf
+          if grep -q '^#*TCPSocket ' /etc/clamav/clamd.conf; then
+            sudo sed -i 's/^#*TCPSocket .*/TCPSocket 3310/' /etc/clamav/clamd.conf
+          else
+            echo 'TCPSocket 3310' | sudo tee -a /etc/clamav/clamd.conf >/dev/null
+          fi
+          if grep -q '^#*TCPAddr ' /etc/clamav/clamd.conf; then
+            sudo sed -i 's/^#*TCPAddr .*/TCPAddr 127.0.0.1/' /etc/clamav/clamd.conf
+          else
+            echo 'TCPAddr 127.0.0.1' | sudo tee -a /etc/clamav/clamd.conf >/dev/null
+          fi
+          sudo systemctl start clamav-daemon
+          for _ in $(seq 1 45); do
+            if timeout 2 bash -c '</dev/tcp/127.0.0.1/3310' 2>/dev/null; then break; fi
+            sleep 1
+          done
+          timeout 2 bash -c '</dev/tcp/127.0.0.1/3310'
+          printf '%s' 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.com
+          set +e
+          verdict="$(clamdscan --no-summary /tmp/eicar.com 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$verdict"
+          printf '%s' "$verdict" | grep -qi 'Eicar.*FOUND'
+          test "$rc" -eq 1
+          echo "PASS: real clamd detects EICAR"
+
+      - name: Build API image and start fail-closed app against disposable services
+        env:
+          DATABASE_URL: postgresql+psycopg://mafhum:staging-only-not-a-secret@localhost:5432/mafhum_staging
+          SESSION_SECRET: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          docker build -t mafhum-api:gate-a ./apps/api
+          cid="$(docker run -d --network host
+            -e APP_ENV=development
+            -e DATABASE_URL="$DATABASE_URL"
+            -e SESSION_SECRET="$SESSION_SECRET"
+            -e STORAGE_ROOT=/tmp/mafhum-gate-a-store
+            -e CLAMD_HOST=127.0.0.1
+            -e CLAMD_PORT=3310
+            -e MALWARE_SCAN_REQUIRED=true
+            mafhum-api:gate-a)"
+          echo "$cid" > /tmp/gate-a-cid
+          ok=""
+          for _ in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8000/api/v1/health/ready >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then docker logs --tail 60 "$cid"; exit 1; fi
+          echo "PASS: API is ready with malware scanning required"
+
+      - name: Upload valid EICAR PDF through authenticated API and assert scanner rejection
+        run: |
+          set -euo pipefail
+          cookiejar=/tmp/gate-a-cookies.txt
+          curl -fsS -c "$cookiejar" -H 'Origin: http://localhost:3000' \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"gate-a-acceptance@example.test","password":"staging-test-password-123","display_name":"Gate A Acceptance"}' \
+            http://127.0.0.1:8000/api/v1/auth/register >/tmp/gate-a-register.json
+          csrf="$(awk '$6 == "mafhum_csrf" {print $7}' "$cookiejar")"
+          test -n "$csrf"
+          python3 apps/api/tools/eicar_probe.py /tmp/eicar-probe.pdf
+          code="$(curl -sS -o /tmp/gate-a-response.json -w '%{http_code}' \
+            -b "$cookiejar" -H 'Origin: http://localhost:3000' \
+            -H "X-CSRF-Token: $csrf" \
+            -F 'file=@/tmp/eicar-probe.pdf;type=application/pdf' \
+            http://127.0.0.1:8000/api/v1/documents)"
+          echo "upload HTTP status: $code"
+          cat /tmp/gate-a-response.json
+          test "$code" = "422"
+          grep -q '"reason":"malware_detected"' /tmp/gate-a-response.json
+          limits="$(curl -fsS http://127.0.0.1:8000/api/v1/documents/limits)"
+          printf '%s' "$limits" | grep -q '"malware_scanning_available":true'
+          echo "PASS: API rejected structurally valid EICAR PDF due to malware_detected and discloses scanner availability"
+
+      - name: Stop acceptance API
+        if: always()
+        run: |
+          if [ -f /tmp/gate-a-cid ]; then docker rm -f "$(cat /tmp/gate-a-cid)" >/dev/null 2>&1 || true; fi
+
   gate-b-container:
     name: "Gate B: container build and runtime"
     runs-on: ubuntu-latest
-    if: contains(inputs.gates || 'BC', 'B')
+    if: contains(inputs.gates || 'ABC', 'B')
     services:
       # A disposable database that exists only for this job. It is not a
       # production instance and cannot reach one: it is a service container on the
