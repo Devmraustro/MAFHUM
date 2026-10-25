@@ -377,12 +377,18 @@ class DocumentService:
         # it now holds says 'pending', and every concurrent retry queues its own
         # duplicate job.
         document = self.get_owned(db, owner_id, document_id)
-        document = db.execute(
+        locked = db.execute(
             select(Document)
             .where(Document.id == document.id, Document.owner_id == owner_id)
             .with_for_update()
             .execution_options(populate_existing=True)
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if locked is None:
+            # Deleted between the ownership check and the lock (a concurrent
+            # delete won the race). Same answer the ownership check gives,
+            # just observed later -- not an escaped 500.
+            raise AuthorizationError()
+        document = locked
 
         if document.status == DocumentStatus.READY.value:
             raise ConflictError("المستند تمت معالجته بالفعل.")
@@ -439,6 +445,21 @@ class DocumentService:
         """
         document = self.get_owned(db, owner_id, document_id)
         storage_key = document.storage_key
+
+        # Lock the parent row before touching children. A concurrent retry
+        # serialises on this same lock; without it, retry could pass its own
+        # lock, queue a job and commit after the child deletes below had run,
+        # leaving a job whose document no longer exists. A document that
+        # vanishes before the lock is the usual 404, not a 500.
+        if self._row_locking:
+            locked = db.execute(
+                select(Document)
+                .where(Document.id == document.id, Document.owner_id == owner_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if locked is None:
+                raise AuthorizationError()
 
         db.execute(
             delete(DocumentTextSegment).where(DocumentTextSegment.document_id == document.id)
