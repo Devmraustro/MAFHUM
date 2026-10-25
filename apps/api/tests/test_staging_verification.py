@@ -64,8 +64,23 @@ class TestThePdfProbeReachesTheScanner:
         data = probe.read_bytes()
 
         assert data.startswith(b"%PDF-"), "must satisfy the PDF magic-byte check"
-        assert data.rstrip().endswith(b"%%EOF")
+        assert b"%%EOF" in data
         assert EICAR.encode("latin-1") in data, "the payload must be in the bytes"
+
+    def test_the_payload_appears_after_eof_in_raw_form(self, tmp_path: Path) -> None:
+        """The placement a real engine actually detects.
+
+        Live acceptance evidence (2026-10-25, job 121322493802): ClamAV returned
+        CLEAN for the EICAR string embedded in a PDF content stream while the
+        same daemon detects a bare EICAR file. The payload must therefore also
+        sit after %%EOF, outside any PDF structure, in the exact contiguous
+        byte form the engine is known to flag.
+        """
+        probe = build_eicar_pdf(tmp_path / "probe.pdf")
+        data = probe.read_bytes()
+        eof = data.index(b"%%EOF")
+        trailing = data[eof:]
+        assert EICAR.encode("latin-1") in trailing
 
     def test_the_probe_passes_every_structural_validation(self, tmp_path: Path) -> None:
         """If any of these raised, the scanner would again never be consulted."""

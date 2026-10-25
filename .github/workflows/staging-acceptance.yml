@@ -195,6 +195,21 @@ jobs:
           csrf="$(awk '$6 == "mafhum_csrf" {print $7}' "$cookiejar")"
           test -n "$csrf"
           python3 apps/api/tools/eicar_probe.py /tmp/eicar-probe.pdf
+          # Engine-level acceptance of the exact artifact about to be uploaded.
+          # Live evidence (run on c72ff67, 2026-10-25): the daemon detected a
+          # bare EICAR file yet returned CLEAN for the same string embedded in
+          # a PDF content stream, and the API consequently ACCEPTED the probe
+          # (201). The probe now carries the payload after %%EOF as well, and
+          # the gate refuses to proceed unless the engine flags the artifact
+          # itself -- an app-level rejection of a file the engine cannot see
+          # would be meaningless.
+          set +e
+          engine_verdict="$(clamdscan --no-summary /tmp/eicar-probe.pdf 2>&1)"
+          engine_rc=$?
+          set -e
+          echo "engine verdict on the probe artifact: $engine_verdict"
+          printf '%s' "$engine_verdict" | grep -qi 'Eicar.*FOUND'
+          test "$engine_rc" -eq 1
           code="$(curl -sS -o /tmp/gate-a-response.json -w '%{http_code}' \
             -b "$cookiejar" -H 'Origin: http://localhost:3000' \
             -H "X-CSRF-Token: $csrf" \
