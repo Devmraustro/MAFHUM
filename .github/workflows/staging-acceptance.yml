@@ -153,14 +153,14 @@ jobs:
         run: |
           set -euo pipefail
           docker build -t mafhum-api:gate-a ./apps/api
-          cid="$(docker run -d --network host
-            -e APP_ENV=development
-            -e DATABASE_URL="$DATABASE_URL"
-            -e SESSION_SECRET="$SESSION_SECRET"
-            -e STORAGE_ROOT=/tmp/mafhum-gate-a-store
-            -e CLAMD_HOST=127.0.0.1
-            -e CLAMD_PORT=3310
-            -e MALWARE_SCAN_REQUIRED=true
+          cid="$(docker run -d --network host \
+            -e APP_ENV=development \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e SESSION_SECRET="$SESSION_SECRET" \
+            -e STORAGE_ROOT=/tmp/mafhum-gate-a-store \
+            -e CLAMD_HOST=127.0.0.1 \
+            -e CLAMD_PORT=3310 \
+            -e MALWARE_SCAN_REQUIRED=true \
             mafhum-api:gate-a)"
           echo "$cid" > /tmp/gate-a-cid
           ok=""
