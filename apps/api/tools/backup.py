@@ -75,6 +75,18 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _tool_in(bindir: Path, name: str) -> str | None:
+    """Return the first existing spelling of ``name`` in ``bindir``.
+
+    Windows names the executables ``pg_dump.exe``; a bare-name check would
+    miss tools that are actually installed.
+    """
+    for candidate in (bindir / name, bindir / f"{name}.exe"):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def find_pg_tools(database_url: str) -> tuple[str, str]:
     """Locate ``pg_dump``/``pg_restore``.
 
@@ -93,10 +105,10 @@ def find_pg_tools(database_url: str) -> tuple[str, str]:
         pgserver = None
     if pgserver is not None:
         bindir = Path(pgserver.__file__).parent / "pginstall" / "bin"
-        candidate_dump = bindir / "pg_dump"
-        candidate_restore = bindir / "pg_restore"
-        if candidate_dump.exists() and candidate_restore.exists():
-            return str(candidate_dump), str(candidate_restore)
+        bundled_dump = _tool_in(bindir, "pg_dump")
+        bundled_restore = _tool_in(bindir, "pg_restore")
+        if bundled_dump and bundled_restore:
+            return bundled_dump, bundled_restore
     raise SystemExit(
         "pg_dump/pg_restore not found. Install the PostgreSQL client tools, or "
         "install pgserver (which bundles them)."
