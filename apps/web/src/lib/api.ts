@@ -119,7 +119,7 @@ export interface UploadLimits {
   max_total_bytes_per_user_mb: number;
   allowed_extensions: string[];
   ocr_available: boolean;
-  /** False while MAFHUM ships no antivirus engine; uploads are not virus-checked. */
+  /** True only while a real clamd daemon answers; disclosed by the server, never guessed. */
   malware_scanning_available: boolean;
 }
 

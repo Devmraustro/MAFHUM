@@ -29,9 +29,11 @@ French is secondary.
 | Quotas, rate limits, cross-user isolation | Implemented, tested |
 | Account and document deletion with cleanup | Implemented, tested |
 | Web UI: Arabic-first RTL, French locale, document workspace | Implemented, tested |
+| Grounded research: lexical retrieval, verbatim citations, insufficient-evidence status | Implemented, tested — no language model; `docs/GROUNDING_EVALUATION.md` |
+| Tutor and TD tools: topics, questions, SM-2 flashcards, plans | Implemented, tested |
+| Malware scanning: `clamd` socket integration, fail-closed policy | Integration implemented, tested (stub protocol tests + real ClamAV/EICAR staging gate); **no engine ships** — see limitations |
 | OCR for scanned documents | **Not implemented** — see limitations |
-| Malware scanning | **Not implemented** — see limitations |
-| Research / answer generation | **Not implemented** (gateway flag exists, disabled) |
+| AI answer generation beyond grounded extraction | **Not implemented** (`ENABLE_AI_GATEWAY` exists, disabled) |
 
 Read [`docs/ROADMAP.md`](docs/ROADMAP.md) for phase status and
 [`docs/PROJECT_ARCHITECTURE.md`](docs/PROJECT_ARCHITECTURE.md) for the design.
@@ -121,9 +123,14 @@ HTTP — not mocks:
    no text is extracted. OCRmyPDF was evaluated and rejected for the default
    install because it requires the `tesseract` binary plus language packs —
    see [`docs/OSS_REUSE_REGISTER.md`](docs/OSS_REUSE_REGISTER.md).
-2. **No malware scanning.** Uploads are validated by magic bytes, real parser
-   behaviour, archive shape and size limits, but **no antivirus engine is
-   integrated**. Do not describe MAFHUM as scanning for malware.
+2. **No antivirus engine ships.** MAFHUM integrates the ClamAV `clamd` daemon
+   over its socket protocol (`CLAMD_UNIX_PATH` or `CLAMD_HOST`/`CLAMD_PORT`),
+   with a fail-closed switch (`MALWARE_SCAN_REQUIRED=true` rejects uploads when
+   no engine vouches for them). But no engine or signature database is bundled:
+   until an operator provisions `clamd` and the staging acceptance gate (Gate A)
+   passes against it with the EICAR test file, **do not describe MAFHUM as
+   scanning for malware**. `GET /api/v1/documents/limits` discloses the live
+   `malware_scanning_available` state.
 3. **Quotas and the worker are process-local.** There is no distributed queue.
    Run a single API process, or move enforcement into the database before
    scaling horizontally.

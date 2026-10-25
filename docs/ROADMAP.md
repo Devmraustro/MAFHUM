@@ -10,10 +10,10 @@ for what remains a residual risk.
 | 1 — Runnable local skeleton | Done |
 | 2 — Secure identity and workspace | Done |
 | 3 — Documents and source catalog | Done, with documented limitations |
-| 4 — Grounded research | Not started |
-| 5 — Tutor and TD tools | Not started |
+| 4 — Grounded research | Done, with documented limitations |
+| 5 — Tutor and TD tools | Done, with documented limitations |
 | 6 — Editable presentations | Not started |
-| 7 — Admin and deployment rehearsal | Not started |
+| 7 — Admin and deployment rehearsal | Partially done — backup/restore tooling implemented; no admin role, no deployment rehearsal |
 
 ---
 
@@ -65,23 +65,49 @@ Arabic and French PDF/DOCX extraction, deletion propagation, source provenance.
   PDFs are *detected and reported*; no text is extracted. Claiming a benchmark
   for a capability that does not exist would be false.
 
-**Known limitations carried forward:** no OCR, no malware scanning, no URL
-ingestion, quotas and worker are process-local, and mixed Arabic/Latin lines may
-not round-trip through PDF text extraction.
+**Known limitations carried forward:** no OCR, no URL ingestion, quotas and
+worker are process-local, and mixed Arabic/Latin lines may not round-trip
+through PDF text extraction. Malware scanning has an engine integration
+(`clamd` over its socket protocol) but no engine ships with the product —
+see the malware-scanning note under Phase 4's era in
+`docs/SECURITY_ASSESSMENTS.md`.
 
 ## Phase 4 — Grounded research
 
 **Exit:** approved source adapters, lexical retrieval baseline, evidence pack,
 citation resolver, unsupported-claim warnings, golden Arabic/French evaluations.
 
-**Not started.** `ENABLE_AI_GATEWAY` exists and defaults to `false`. No source
-adapter, retrieval or citation code exists. No paid provider is required and none
-is wired up.
+**Done, with documented limitations.** Answers are **selections from real
+`DocumentTextSegment` rows, never generations** — there is no language model on
+the grounded path, so every citation is a verbatim quotation carrying the
+document, page and ordinal it came from. Retrieval is lexical and
+language-aware (Arabic diacritics and alef/ya/ta-marbuta folded before
+matching); "insufficient evidence" is a first-class answer. External source
+retrieval (JORADP/ASJP/SNDL) is opt-in (`RESEARCH_RETRIEVAL_ENABLED=false` by
+default) and SSRF-reviewed — see `docs/SSRF_REVIEW.md`. Golden Arabic/French
+grounding evaluations run in CI (`tests/test_grounding_evaluation.py`,
+`tools/evaluate_citation_grounding.py`, `docs/GROUNDING_EVALUATION.md`).
+
+**Limitations:** lexical matching, not semantic — a paraphrase that shares no
+content words finds nothing, and the engine says so rather than guessing. No
+paid provider is required and none is wired up; `ENABLE_AI_GATEWAY` remains a
+disabled flag.
 
 ## Phase 5 — Tutor and TD tools
 
-**Not started.** This must not be built on mock data; it depends on Phase 4
-retrieval so that explanations can be tied to real source passages.
+**Exit:** study workspaces over grounded material; question generation with
+feedback; flashcards with spaced repetition; study plans.
+
+**Done, with documented limitations.** Topics attach documents (and, once
+retrieval is enabled, sources); every artifact stores its provenance and a
+deleted source is reported as unavailable rather than silently dropped
+(`SET NULL`, not `CASCADE`). Grounding reuses the Phase 4 engine over real
+segments — there is no second retrieval path. Question feedback is a lexical
+comparison that reports itself as such (`graded_semantically` is always
+`false`). Flashcards schedule with the published SM-2 algorithm
+(`services/study/scheduling.py`), tested at its boundaries; no learning-outcome
+claim is made. Saved research keeps its citations and re-derives availability
+on read.
 
 ## Phase 6 — Editable presentations
 
@@ -89,9 +115,12 @@ retrieval so that explanations can be tied to real source passages.
 
 ## Phase 7 — Admin and deployment rehearsal
 
-**Not started.** No admin role, audit events, backup/restore tooling, or
-deployment rehearsal. `assert_production_ready()` guards the most dangerous
-misconfigurations, but no deployment has been performed or verified.
+**Partially done.** Backup and restore tooling exists and is tested
+(`apps/api/tools/backup.py`, `tests/test_backup_restore.py`). Container build,
+non-root runtime, readiness and graceful shutdown are exercised by the staging
+acceptance workflow (`.github/workflows/staging-acceptance.yml`, Gate B) —
+those gates are the deployment rehearsal evidence. Still not started: an admin
+role and audit events. No deployment has been performed on real infrastructure.
 
 ---
 
