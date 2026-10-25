@@ -27,7 +27,7 @@ from tools.eicar_probe import EICAR, build_eicar_pdf
 from mafhum_api.config import Settings
 from mafhum_api.main import create_app
 from tests.conftest import _register, upload_kwargs
-from tests.test_malware_scanning import FakeClamd
+from tests.test_malware_scanning import UNIX_SOCKET_ONLY, FakeClamd
 
 PDF_MIME = "application/pdf"
 
@@ -37,6 +37,7 @@ SCRIPT_ASSERTION = '"reason":"malware_detected"'
 
 
 class TestEicarApiContract:
+    @UNIX_SOCKET_ONLY
     def test_an_eicar_pdf_upload_reports_reason_malware_detected(
         self, settings, tmp_path: Path
     ) -> None:
@@ -94,6 +95,7 @@ class TestEicarApiContract:
             daemon.stop()
             application.state.context.database.engine.dispose()
 
+    @UNIX_SOCKET_ONLY
     def test_an_unscannable_upload_reports_a_distinct_reason(
         self, settings, tmp_path: Path
     ) -> None:
@@ -128,6 +130,7 @@ class TestEicarApiContract:
         finally:
             application.state.context.database.engine.dispose()
 
+    @UNIX_SOCKET_ONLY
     def test_a_clean_upload_is_accepted(self, settings, tmp_path: Path) -> None:
         """The control: the same probe without a FOUND verdict must be stored.
 

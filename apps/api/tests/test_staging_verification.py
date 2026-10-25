@@ -15,6 +15,7 @@ survives validation and can therefore only be rejected by the scanner.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,14 @@ SCRIPT = Path(__file__).resolve().parents[3] / "tools" / "staging_verification.s
 
 
 class TestTheFalsePositiveWasReal:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "the machine's own antivirus quarantines a bare EICAR file on disk "
+            "between the write and the read-back; the property stays asserted "
+            "on POSIX (CI runs on Linux)"
+        ),
+    )
     def test_a_bare_eicar_file_is_rejected_by_validation_before_scanning(
         self, tmp_path: Path
     ) -> None:

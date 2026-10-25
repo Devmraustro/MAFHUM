@@ -1,8 +1,9 @@
 """Synthetic PDF fixture builder.
 
-Writes small, valid PDFs with a real embedded TrueType font (a subset of the
-system's DejaVu Sans) using ``Identity-H`` CID encoding plus a ``ToUnicode``
-CMap. That means the produced files:
+Writes small, valid PDFs with a real embedded TrueType font (a subset of a
+system font with Arabic and Latin coverage, DejaVu Sans where available) using
+``Identity-H`` CID encoding plus a ``ToUnicode`` CMap. That means the produced
+files:
 
 * extract correct Arabic **and** French text through a standard parser,
 * render correctly in a viewer,
@@ -24,7 +25,32 @@ from fontTools.ttLib import TTFont
 # fontTools logs dropped optional tables (FFTM etc.) at WARNING; irrelevant here.
 logging.getLogger("fontTools.subset").setLevel(logging.ERROR)
 
-DEJAVU_SANS = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+# Candidate fonts across platforms, in preference order. DejaVu Sans is the
+# reference font on Linux CI; the Windows/macOS fallbacks are system fonts with
+# the same Arabic + Latin coverage the fixtures need. Only the subsetter and the
+# factory's own ToUnicode CMap determine extraction, so any TTF covering the
+# fixture text produces equivalent files.
+_FONT_CANDIDATES = (
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    Path("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf"),
+    Path("C:/Windows/Fonts/segoeui.ttf"),
+    Path("C:/Windows/Fonts/tahoma.ttf"),
+    Path("C:/Windows/Fonts/arial.ttf"),
+    Path("/Library/Fonts/Arial Unicode.ttf"),
+)
+
+
+def _font_path() -> Path:
+    for candidate in _FONT_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    raise PdfBuildError(
+        "no usable TrueType font found for fixture generation; looked at: "
+        + ", ".join(str(p) for p in _FONT_CANDIDATES)
+    )
+
+
 PAGE_WIDTH = 595  # A4 points
 PAGE_HEIGHT = 842
 FONT_SIZE = 12
@@ -39,9 +65,8 @@ class PdfBuildError(RuntimeError):
 
 def _subset_font(text: str) -> tuple[bytes, dict[int, int], dict[int, int], int]:
     """Return (ttf_bytes, unicode->gid, unicode->width1000, units_per_em)."""
-    if not DEJAVU_SANS.is_file():
-        raise PdfBuildError("DejaVuSans.ttf not available for fixture generation")
-    font = TTFont(str(DEJAVU_SANS))
+    font_file = _font_path()
+    font = TTFont(str(font_file))
     subsetter = Subsetter()
     subsetter.populate(text=text)
     subsetter.subset(font)

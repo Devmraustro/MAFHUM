@@ -22,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import ssl
+import sys
 from collections.abc import Callable, Sequence
 
 import httpx
@@ -225,11 +226,25 @@ class TestAddressRepresentationAttacks:
         "host", ["2130706433", "0x7f000001", "127.1", "0177.0.0.1", "017700000001"]
     )
     def test_unusual_integer_and_octal_spellings_of_loopback(self, host: str) -> None:
-        """glibc resolves these to 127.0.0.1; the resolved address is what is
-        checked, so they are refused. Verified against the real resolver."""
+        """These spellings must never reach an HTTP request, on any platform.
+
+        glibc resolves them to 127.0.0.1, and the resolved address is what is
+        checked, so there the reason is ``resolves_to_blocked_address``
+        (verified against the real resolver). The Windows resolver refuses the
+        spellings outright, which surfaces as ``dns_resolution_failed``. Both
+        outcomes refuse the request, which is the invariant under test; the
+        specific reason is only asserted where the resolver behaviour is
+        known and verified.
+        """
         with pytest.raises(SsrfError) as excinfo:
             validate_url(f"http://{host}/")
-        assert excinfo.value.reason == "resolves_to_blocked_address"
+        if sys.platform == "win32":
+            assert excinfo.value.reason in {
+                "resolves_to_blocked_address",
+                "dns_resolution_failed",
+            }, excinfo.value.reason
+        else:
+            assert excinfo.value.reason == "resolves_to_blocked_address"
 
     def test_unparseable_dns_answer_is_refused(self) -> None:
         resolver = Resolver({"weird.test": ["not-an-address"]})

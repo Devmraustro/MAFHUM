@@ -7,8 +7,10 @@ overwrite, restrictive permissions and orphan reconciliation.
 
 from __future__ import annotations
 
+import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -128,11 +130,22 @@ class TestWriteRead:
             storage.read_bytes(key, max_bytes=100)
 
 
+# POSIX permission bits cannot be represented on NTFS: os.chmod there only
+# toggles a read-only flag, and st_mode always reports 0o777. These properties
+# stay asserted on every POSIX platform (CI runs on Linux).
+POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32" or os.name == "nt",
+    reason="POSIX mode bits are not representable on Windows filesystems",
+)
+
+
 class TestPermissions:
+    @POSIX_ONLY
     def test_root_is_private(self, storage: LocalFileStorage) -> None:
         mode = stat.S_IMODE(storage.root.stat().st_mode)
         assert mode == 0o700
 
+    @POSIX_ONLY
     def test_objects_are_owner_only(self, storage: LocalFileStorage) -> None:
         key = storage.generate_key()
         storage.write(key, iter([b"data"]), max_bytes=1024)
@@ -140,12 +153,14 @@ class TestPermissions:
         assert file_mode_is_restrictive(path, 0o600)
         assert not (stat.S_IMODE(path.stat().st_mode) & 0o077)
 
+    @POSIX_ONLY
     def test_shard_directories_are_private(self, storage: LocalFileStorage) -> None:
         key = storage.generate_key()
         storage.write(key, iter([b"data"]), max_bytes=1024)
         shard_dir = storage.resolve(key).parent
         assert stat.S_IMODE(shard_dir.stat().st_mode) == 0o700
 
+    @POSIX_ONLY
     def test_root_removed_at_runtime_is_recreated_private(self, storage: LocalFileStorage) -> None:
         """Regression: `mkdir(parents=True)` recreates a missing root with the
         process umask (0o755 under 0o022), and only the shard directory used to

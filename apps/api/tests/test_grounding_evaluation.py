@@ -117,10 +117,16 @@ class TestBaselineIsPreservedNotEdited:
     V1_SHA256 = "ae55a569872deead615f35423f531cefba02a704dd05c85e093fb3d7c91aa02b"
 
     def test_v1_is_unchanged_since_it_was_committed(self) -> None:
-        """The 24-case baseline must still be byte-for-byte what was measured."""
+        """The 24-case baseline must still be what was measured.
+
+        The digest is of the committed (LF) bytes. A checkout with
+        ``core.autocrlf`` puts CRLF on disk without any edit having happened,
+        so the comparison normalises line endings first; any real content
+        change still changes the digest.
+        """
         import hashlib
 
-        content = V1.read_bytes()
+        content = V1.read_bytes().replace(b"\r\n", b"\n")
         assert hashlib.sha256(content).hexdigest() == self.V1_SHA256, (
             "citation_grounding_v1.json has been modified. The published baseline "
             "(20/24 claim_support_honest) is only meaningful against the original "

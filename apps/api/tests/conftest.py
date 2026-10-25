@@ -58,7 +58,15 @@ def postgres_url() -> Iterator[str]:
             connection.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
     engine.dispose()
 
-    yield admin_uri.replace("/postgres?", f"/{TEST_DB_NAME}?")
+    # Rename the target database in the admin URI. The URI shape differs by
+    # platform: pgserver yields a unix-socket URL with a query string on
+    # POSIX (`.../postgres?host=...`) and a plain TCP URL on Windows
+    # (`.../postgres`). Rewriting only `/postgres?` silently failed on the
+    # latter, leaving the whole suite pointed at the `postgres` database.
+    head, sep, query = admin_uri.partition("?")
+    if head.endswith("/postgres"):
+        head = head[: -len("/postgres")] + f"/{TEST_DB_NAME}"
+    yield head + sep + query
 
     shutil.rmtree(data_dir, ignore_errors=True)
 
