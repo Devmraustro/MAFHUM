@@ -95,25 +95,31 @@ jobs:
       - name: Start a real local ClamAV daemon and verify EICAR detection
         run: |
           set -euo pipefail
-          # Socket activation would hand clamd pre-opened file descriptors and
-          # it would then not open the TCP listener configured below. Stop the
-          # socket unit so the daemon reads its own configuration.
+          # Ubuntu's packaged clamd is systemd socket-activated and ships a
+          # config with BOTH LocalSocket and TCPSocket active once TCP is
+          # enabled here -- a combination upstream documents as breaking
+          # clamd's socket handling (Cisco-Talos/clamav#1326); observed on
+          # these runners as a daemon that starts, prints its limits and
+          # features, and then never loads the database nor listens. So the
+          # packaged units are disabled and clamd is run directly with a
+          # minimal TCP-only config instead: same engine, same real
+          # signatures, no packaging layers.
           sudo systemctl stop clamav-daemon.socket clamav-daemon.service >/dev/null 2>&1 || true
-          sudo sed -i 's/^Example/#Example/' /etc/clamav/clamd.conf
-          if grep -q '^#*TCPSocket ' /etc/clamav/clamd.conf; then
-            sudo sed -i 's/^#*TCPSocket .*/TCPSocket 3310/' /etc/clamav/clamd.conf
-          else
-            echo 'TCPSocket 3310' | sudo tee -a /etc/clamav/clamd.conf >/dev/null
-          fi
-          if grep -q '^#*TCPAddr ' /etc/clamav/clamd.conf; then
-            sudo sed -i 's/^#*TCPAddr .*/TCPAddr 127.0.0.1/' /etc/clamav/clamd.conf
-          else
-            echo 'TCPAddr 127.0.0.1' | sudo tee -a /etc/clamav/clamd.conf >/dev/null
-          fi
-          sudo systemctl start clamav-daemon
-          # clamd opens its TCP listener only AFTER loading the signature set,
-          # which takes minutes on a two-core runner (observed >3min with the
-          # freshly downloaded CVDs). Poll generously and say where it is.
+          sudo systemctl disable clamav-daemon.socket clamav-daemon.service >/dev/null 2>&1 || true
+          sudo tee /etc/clamav/clamd.conf >/dev/null <<'CONF'
+          DatabaseDirectory /var/lib/clamav
+          TemporaryDirectory /tmp
+          TCPSocket 3310
+          TCPAddr 127.0.0.1
+          Foreground true
+          LogFile /tmp/clamd-gate.log
+          LogTime yes
+          LogFileMaxSize 0
+          CONF
+          sudo -u clamav nohup clamd --config-file=/etc/clamav/clamd.conf \
+            >/tmp/clamd-gate.out 2>&1 &
+          # The TCP listener opens only after the signature set finishes
+          # loading, which takes minutes on a two-core runner.
           up=""
           for i in $(seq 1 210); do
             if timeout 2 bash -c '</dev/tcp/127.0.0.1/3310' 2>/dev/null; then up=1; break; fi
@@ -124,9 +130,9 @@ jobs:
           done
           if [ -z "$up" ]; then
             echo "FAIL: clamd never listened on TCP 3310"
-            systemctl status clamav-daemon --no-pager -l || true
-            journalctl -u clamav-daemon -n 80 --no-pager || true
-            grep -nE '^#?(TCPSocket|TCPAddr|LocalSocket|Example|DatabaseDirectory)' /etc/clamav/clamd.conf || true
+            echo "--- /tmp/clamd-gate.out ---"; cat /tmp/clamd-gate.out || true
+            echo "--- /tmp/clamd-gate.log (tail) ---"; tail -40 /tmp/clamd-gate.log || true
+            echo "--- processes ---"; ps aux | grep -v grep | grep clamd || true
             exit 1
           fi
           echo "clamd is listening on TCP 3310"
