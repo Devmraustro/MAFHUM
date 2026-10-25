@@ -263,7 +263,10 @@ class LocalFileStorage:
             if not path.is_file() or path.name.startswith(".tmp-"):
                 continue
             try:
-                key = str(path.relative_to(self._root))
+                # Keys are POSIX-separated by contract (new_storage_key); str()
+                # would use the OS separator and on Windows every live blob
+                # would then look orphaned.
+                key = path.relative_to(self._root).as_posix()
             except ValueError:
                 continue
             if key not in live:
