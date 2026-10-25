@@ -177,10 +177,21 @@ jobs:
         run: |
           set -euo pipefail
           cookiejar=/tmp/gate-a-cookies.txt
-          curl -fsS -c "$cookiejar" -H 'Origin: http://localhost:3000' \
+          # example.com, not example.test: the API's email validation
+          # (email-validator) rejects special-use TLDs, so a .test address
+          # fails registration with 422. The app's own test suite registers
+          # @example.com addresses.
+          code="$(curl -sS -o /tmp/gate-a-register.json -w '%{http_code}' \
+            -c "$cookiejar" -H 'Origin: http://localhost:3000' \
             -H 'Content-Type: application/json' \
-            -d '{"email":"gate-a-acceptance@example.test","password":"staging-test-password-123","display_name":"Gate A Acceptance"}' \
-            http://127.0.0.1:8000/api/v1/auth/register >/tmp/gate-a-register.json
+            -d '{"email":"gate-a-acceptance@example.com","password":"staging-test-password-123","display_name":"Gate A Acceptance"}' \
+            http://127.0.0.1:8000/api/v1/auth/register)"
+          echo "register HTTP status: $code"
+          cat /tmp/gate-a-register.json
+          case "$code" in
+            2*) ;;
+            *) echo "FAIL: registration did not succeed"; exit 1 ;;
+          esac
           csrf="$(awk '$6 == "mafhum_csrf" {print $7}' "$cookiejar")"
           test -n "$csrf"
           python3 apps/api/tools/eicar_probe.py /tmp/eicar-probe.pdf
