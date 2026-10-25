@@ -124,7 +124,7 @@ class WorkerLease:
                 "another MAFHUM process is already running the document processing "
                 "worker against this database. Only one worker may run while worker "
                 "state is process-local. Start this instance with the worker "
-                "disabled (MAFHUM_PROCESSING_WORKER_ENABLED=false) and let the "
+                "disabled (PROCESSING_WORKER_ENABLED=false) and let the "
                 "existing worker process documents, or stop the other process "
                 "first. See docs/DEPLOYMENT.md."
             )

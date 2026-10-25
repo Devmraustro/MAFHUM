@@ -19,10 +19,10 @@ Start exactly one instance with the worker enabled, and disable it everywhere el
 
 ```bash
 # the single processing instance
-MAFHUM_PROCESSING_WORKER_ENABLED=true   # default
+PROCESSING_WORKER_ENABLED=true   # default
 
 # every other replica
-MAFHUM_PROCESSING_WORKER_ENABLED=false
+PROCESSING_WORKER_ENABLED=false
 ```
 
 Replicas still serve all HTTP traffic, including uploads. Only document processing
@@ -53,7 +53,7 @@ The entrypoint runs `alembic upgrade head` before serving. With multiple replica
 run migrations on only one:
 
 ```bash
-MAFHUM_RUN_MIGRATIONS=false   # on every replica except the one that migrates
+MAFHUM_RUN_MIGRATIONS=false   # read by the entrypoint, not by the app; on every replica except the one that migrates
 ```
 
 ## Production configuration
@@ -65,8 +65,8 @@ the database URL is not localhost. Configure these before starting.
 ## Malware scanning
 
 No engine is bundled. To enable scanning, run `clamd` and point the application at
-it with `MAFHUM_CLAMD_UNIX_PATH` or `MAFHUM_CLAMD_HOST`. Set
-`MAFHUM_MALWARE_SCAN_REQUIRED=true` to reject uploads unless the scanner returns a
+it with `CLAMD_UNIX_PATH` or `CLAMD_HOST`. Set
+`MALWARE_SCAN_REQUIRED=true` to reject uploads unless the scanner returns a
 clean verdict — with that flag, an unavailable or erroring scanner rejects uploads
 rather than admitting them.
 

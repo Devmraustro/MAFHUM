@@ -61,8 +61,11 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    # Fail fast rather than buffering logs in a container.
-    MAFHUM_STORAGE_ROOT=/var/lib/mafhum/storage
+    # Fail fast rather than buffering logs in a container. Unprefixed: the
+    # application has no env_prefix (see .env.example), so MAFHUM_STORAGE_ROOT
+    # would be read by nothing and uploads would fall back to ./data relative
+    # to /app, outside the declared volume.
+    STORAGE_ROOT=/var/lib/mafhum/storage
 
 # psycopg needs the client library at runtime. No build tools, no pip cache.
 RUN apt-get update \
@@ -97,9 +100,10 @@ EXPOSE 8000
 
 # Liveness, not readiness: this only proves the process is serving. Readiness
 # (database reachable, storage writable, worker alive) is /health/ready, which the
-# orchestrator should use for traffic gating.
+# orchestrator should use for traffic gating. Both are mounted at the root,
+# without the /api/v1 prefix.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl --fail --silent http://127.0.0.1:8000/api/v1/health/live || exit 1
+    CMD curl --fail --silent http://127.0.0.1:8000/health/live || exit 1
 
 # exec so uvicorn receives SIGTERM directly and can shut down gracefully,
 # draining in-flight requests instead of being killed after a timeout.

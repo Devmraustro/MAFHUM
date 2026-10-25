@@ -228,9 +228,9 @@ check_container() {
   # inspected, which is the only way to tell a graceful shutdown from a kill.
   # It is removed explicitly at the end of this function.
   cid="$($runtime run -d \
-    -e MAFHUM_APP_ENV=development \
-    -e MAFHUM_DATABASE_URL="$MAFHUM_STAGING_DATABASE_URL" \
-    -e MAFHUM_SESSION_SECRET="$MAFHUM_STAGING_SESSION_SECRET" \
+    -e APP_ENV=development \
+    -e DATABASE_URL="$MAFHUM_STAGING_DATABASE_URL" \
+    -e SESSION_SECRET="$MAFHUM_STAGING_SESSION_SECRET" \
     -p 18000:8000 "$image" 2>/dev/null)"
   if [ -z "$cid" ]; then
     fail "container did not start"
@@ -240,14 +240,15 @@ check_container() {
 
   local ok=""
   for _ in $(seq 1 30); do
-    if curl -fsS "http://localhost:18000/api/v1/health/ready" >/dev/null 2>&1; then
+    # Health endpoints are mounted at the root, without the /api/v1 prefix.
+    if curl -fsS "http://localhost:18000/health/ready" >/dev/null 2>&1; then
       ok=1; break
     fi
     sleep 1
   done
   if [ -n "$ok" ]; then
     pass "readiness endpoint became healthy"
-    curl -fsS "http://localhost:18000/api/v1/health/live" >/dev/null 2>&1 \
+    curl -fsS "http://localhost:18000/health/live" >/dev/null 2>&1 \
       && pass "liveness endpoint responds" || fail "liveness endpoint failed"
   else
     fail "readiness endpoint never became healthy"

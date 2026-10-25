@@ -10,7 +10,8 @@
 # where this was written, so `docker compose up` has not been observed to start
 # this stack. What IS verified: the PostgreSQL 16 migrations run cleanly
 # up->down->up against a real PostgreSQL 16.2, and the API boots and serves
-# /api/v1/health/* when run directly. See docs/OPERATIONAL_HARDENING_REPORT.md.
+# /health/live and /health/ready when run directly. See
+# docs/OPERATIONAL_HARDENING_REPORT.md.
 # ---------------------------------------------------------------------------
 #
 # Scaling note
@@ -56,18 +57,26 @@ services:
       db:
         condition: service_healthy
     environment:
-      APP_ENV: ${APP_ENV:-staging}
+      # app_env is a strict Literal of development|test|production
+      # (apps/api/src/mafhum_api/config.py); "staging" is not a valid value and
+      # would abort the boot with a pydantic validation error. A staging box
+      # runs the same image as production minus the production-only guarantees;
+      # configure it with APP_ENV=development or production accordingly.
+      APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mafhum}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-mafhum}
       # Required in production; see Settings.assert_production_ready().
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      MAFHUM_STORAGE_ROOT: /var/lib/mafhum/storage
+      # Unprefixed: the application has no env_prefix, so MAFHUM_STORAGE_ROOT
+      # would be read by nothing and uploads would land outside the volume.
+      STORAGE_ROOT: /var/lib/mafhum/storage
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
       # Malware scanning is OFF unless a clamd daemon is provided. With
       # MALWARE_SCAN_REQUIRED=true the API rejects uploads when no engine can
       # vouch for them, so do not enable it without also enabling clamd.
       CLAMD_UNIX_PATH: ${CLAMD_UNIX_PATH:-}
       MALWARE_SCAN_REQUIRED: ${MALWARE_SCAN_REQUIRED:-false}
+      # Read by the entrypoint itself (not by the application settings).
       MAFHUM_RUN_MIGRATIONS: ${MAFHUM_RUN_MIGRATIONS:-true}
     volumes:
       - storage:/var/lib/mafhum/storage
@@ -82,7 +91,7 @@ services:
           "curl",
           "--fail",
           "--silent",
-          "http://127.0.0.1:8000/api/v1/health/ready",
+          "http://127.0.0.1:8000/health/ready",
         ]
       interval: 30s
       timeout: 5s

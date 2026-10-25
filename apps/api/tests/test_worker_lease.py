@@ -112,7 +112,7 @@ class TestLeaseAcquisition:
 
         message = str(excinfo.value)
         assert "another MAFHUM process" in message
-        assert "MAFHUM_PROCESSING_WORKER_ENABLED=false" in message
+        assert "PROCESSING_WORKER_ENABLED=false" in message
         assert "docs/DEPLOYMENT.md" in message
 
 
