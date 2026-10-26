@@ -26,6 +26,10 @@ on:
       - "apps/api/entrypoint.sh"
       - "apps/api/src/mafhum_api/main.py"
       - "apps/api/pyproject.toml"
+      # The acceptance gate uploads the artifact this module generates; a probe
+      # change must re-run the gates or the next real change would silently
+      # validate against a different probe.
+      - "apps/api/tools/eicar_probe.py"
       - "tools/staging_verification.sh"
   workflow_dispatch:
     inputs:
