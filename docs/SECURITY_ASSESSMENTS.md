@@ -10,11 +10,18 @@ Sandbox: Debian 12, Python 3.11.2, Node v22.22.3, PostgreSQL 16.2 (via
 
 ---
 
-## 1. Malware scanning — INTEGRATION IMPLEMENTED, DETECTION UNVERIFIED
+## 1. Malware scanning — INTEGRATION IMPLEMENTED, DETECTION VERIFIED IN ACCEPTANCE
 
-**No document has ever been virus-checked by this system, and no test has ever
-confirmed that a real malicious file is detected.** That statement is the load-bearing
-one and it remains true.
+**Status change, 2026-10-26:** the staging acceptance gate (Gate A) ran against a
+real ClamAV daemon with fresh signatures on GitHub's runners and the real engine
+detected the EICAR test payload inside an uploaded document, which the API — with
+`MALWARE_SCAN_REQUIRED=true` — rejected with `422 {"reason":"malware_detected"}`.
+Evidence: staging run 40377229156 on `3589dc8` (all three gates green), including
+the engine-level `clamdscan` verdict on the exact artifact uploaded. What is
+verified is the acceptance environment: a real engine, fresh signatures, real
+rejection. What is still true: **a default install configures no engine and scans
+nothing** — `malware_scanning_available` discloses the live state, and detection
+remains the operator's claim once they provision their own `clamd`.
 
 What changed on 2026-10-23: the code can now scan. `services/documents/clamd.py`
 speaks the clamd `zINSTREAM` socket protocol, so an operator who points

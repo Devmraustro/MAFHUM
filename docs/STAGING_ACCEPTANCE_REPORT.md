@@ -588,3 +588,56 @@ rather than in the sources, their certificates, or MAFHUM's TLS configuration.
 The 4 skips are the live-egress skips documented in §9. No test was skipped,
 weakened or deleted to obtain these results, and no fail-closed behaviour was
 relaxed.
+
+## Gates executed for real — all three green (2026-10-26)
+
+Every gate in `.github/workflows/staging-acceptance.yml` has now run to
+completion on GitHub-hosted runners and passed, on branch
+`arena/1cb7b9d2-mafhum`:
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| A — real ClamAV + EICAR rejection | **PASS** | staging run 40377229156 on `3589dc8`, job 121363464488 |
+| B — container build and runtime | **PASS** | same run; build, non-root, readiness, graceful shutdown |
+| C — external TLS connectivity | **PASS** | same run; DNS/TCP/verified TLS to both configured sources |
+
+Gate A's evidence chain, in the order the gate establishes it: fresh
+signature database (mtime < 7 days, verified by the freshness check); a
+real `clamd` listening on TCP (the packaged Ubuntu daemon is bypassed —
+see the workflow comment on socket activation and Cisco-Talos/clamav#1326);
+`clamdscan` flags a bare EICAR file; `clamdscan` flags the **exact DOCX
+artifact** the gate then uploads; the API, running fail-closed
+(`MALWARE_SCAN_REQUIRED=true`) against that daemon, rejects the
+authenticated upload with `422 {"reason":"malware_detected"}`; and
+`GET /api/v1/documents/limits` discloses `malware_scanning_available: true`.
+
+### What it took to get Gate A honest
+
+The first acceptance-worthy finding was that the original probe was
+undetectable by design: ClamAV does **not** match EICAR embedded in other
+files' bytes — live runs returned CLEAN for a PDF carrying the canonical
+68-byte string verbatim in an uncompressed content stream, and again for
+the raw string appended after `%%EOF`, on the same daemon that flags the
+bare file seconds earlier (runs on `c72ff67` and `ea712e8`, 2026-10-25).
+This is documented upstream behaviour, not a defect
+(Cisco-Talos/clamav#1277): EICAR is detected as the file itself, or inside
+an archive type the engine unwraps. The probe is therefore a valid DOCX —
+a ZIP, one of MAFHUM's two accepted formats — carrying the EICAR string as
+a stored (uncompressed) archive member, built by
+`apps/api/tools/eicar_probe.py` from the standard library alone, and the
+gate asserts the engine's FOUND verdict on the exact artifact **before**
+the API-level upload. The acceptance checks gained, not lost, strength on
+the way: `bash -n` now guards every workflow run block, and the
+registration/email, health-path and environment-name defects the early
+runs exposed were fixed at the source.
+
+### CI on the same branch
+
+`MAFHUM CI` (4 jobs: baseline, backend, migrations round-trip, frontend)
+is green on `ae765f3` — run 40392960391. One runner-image drift was
+absorbed on the way: the image gained PostgreSQL 17 client tools in PATH
+and `pg_restore` 17 failed against the pgserver-bundled 16.x test server
+on its own `SET transaction_timeout = 0;`; `tools/backup.py` now selects
+pg tools whose major version matches the target server
+(`find_pg_tools`), which also hardens real restores against mixed-version
+operations.
