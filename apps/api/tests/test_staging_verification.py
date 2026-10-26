@@ -19,16 +19,28 @@ import sys
 from pathlib import Path
 
 import pytest
-from tools.eicar_probe import EICAR, build_eicar_pdf
+from tools.eicar_probe import EICAR, PAYLOAD_MEMBER, build_eicar_docx
 
 from mafhum_api.core.errors import FileRejectedError
 from mafhum_api.db.models import DocumentFormat
 from mafhum_api.services.documents import validators
 
 PDF_MIME = "application/pdf"
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 # The script lives at the repository root, while tests run from apps/api.
 SCRIPT = Path(__file__).resolve().parents[3] / "tools" / "staging_verification.sh"
+
+
+def _limits() -> validators.ValidationLimits:
+    """The application's default document limits, for structural validation."""
+    return validators.ValidationLimits(
+        max_upload_bytes=20 * 1024 * 1024,
+        max_pdf_pages=200,
+        max_docx_entries=400,
+        max_docx_uncompressed_bytes=60 * 1024 * 1024,
+        max_archive_compression_ratio=100.0,
+    )
 
 
 class TestTheFalsePositiveWasReal:
@@ -58,62 +70,80 @@ class TestTheFalsePositiveWasReal:
             validators.check_signature(head, DocumentFormat.PDF.value)
 
 
-class TestThePdfProbeReachesTheScanner:
-    def test_the_probe_is_a_valid_pdf_carrying_eicar(self, tmp_path: Path) -> None:
-        probe = build_eicar_pdf(tmp_path / "probe.pdf")
+class TestTheDocxProbeReachesTheScanner:
+    """The probe is a DOCX because ClamAV, by design, does not match EICAR
+    embedded inside other files' bytes — only the file itself, or a payload
+    inside an archive it unwraps. A DOCX is a ZIP, which the engine unwraps;
+    see tools/eicar_probe.py for the acceptance evidence behind this.
+    """
+
+    def test_the_probe_is_a_valid_docx_carrying_eicar(self, tmp_path: Path) -> None:
+        import zipfile
+
+        probe = build_eicar_docx(tmp_path / "probe.docx")
         data = probe.read_bytes()
 
-        assert data.startswith(b"%PDF-"), "must satisfy the PDF magic-byte check"
-        assert b"%%EOF" in data
-        assert EICAR.encode("latin-1") in data, "the payload must be in the bytes"
+        assert data.startswith(b"PK\x03\x04"), "must satisfy the ZIP magic-byte check"
+        with zipfile.ZipFile(probe) as archive:
+            names = set(archive.namelist())
+            assert {"[Content_Types].xml", "word/document.xml", PAYLOAD_MEMBER} <= names
+            assert archive.read(PAYLOAD_MEMBER) == EICAR.encode("latin-1")
 
-    def test_the_payload_appears_after_eof_in_raw_form(self, tmp_path: Path) -> None:
-        """The placement a real engine actually detects.
+    def test_the_payload_member_is_stored_uncompressed(self, tmp_path: Path) -> None:
+        """The detectable placement: raw payload bytes inside the archive.
 
-        Live acceptance evidence (2026-10-25, job 121322493802): ClamAV returned
-        CLEAN for the EICAR string embedded in a PDF content stream while the
-        same daemon detects a bare EICAR file. The payload must therefore also
-        sit after %%EOF, outside any PDF structure, in the exact contiguous
-        byte form the engine is known to flag.
+        ClamAV returned CLEAN for the same string embedded in a PDF content
+        stream AND appended raw after %%EOF (runs on c72ff67 / ea712e8,
+        2026-10-25) while detecting a bare EICAR file. It detects payloads
+        inside archives it unwraps, so the member must carry the exact
+        contiguous bytes, stored (not deflated).
         """
-        probe = build_eicar_pdf(tmp_path / "probe.pdf")
-        data = probe.read_bytes()
-        eof = data.index(b"%%EOF")
-        trailing = data[eof:]
-        assert EICAR.encode("latin-1") in trailing
+        import zipfile
+
+        probe = build_eicar_docx(tmp_path / "probe.docx")
+        with zipfile.ZipFile(probe) as archive:
+            info = archive.getinfo(PAYLOAD_MEMBER)
+            assert info.compress_type == zipfile.ZIP_STORED
+            assert archive.read(PAYLOAD_MEMBER) == EICAR.encode("latin-1")
 
     def test_the_probe_passes_every_structural_validation(self, tmp_path: Path) -> None:
         """If any of these raised, the scanner would again never be consulted."""
-        probe = build_eicar_pdf(tmp_path / "probe.pdf")
+        probe = build_eicar_docx(tmp_path / "probe.docx")
 
-        declared = validators.check_extension_and_mime(probe.name, PDF_MIME)
-        assert declared == DocumentFormat.PDF.value
+        declared = validators.check_extension_and_mime(probe.name, DOCX_MIME)
+        assert declared == DocumentFormat.DOCX.value
 
-        detected = validators.check_signature(probe.read_bytes()[:16], DocumentFormat.PDF.value)
-        assert detected == DocumentFormat.PDF.value
+        detected = validators.check_signature(probe.read_bytes()[:16], DocumentFormat.DOCX.value)
+        assert detected == DocumentFormat.DOCX.value
 
-    def test_the_probe_is_parseable_as_one_page(self, tmp_path: Path) -> None:
-        """The upload path also enforces a page-count limit via a real parser."""
-        probe = build_eicar_pdf(tmp_path / "probe.pdf")
-        from pypdf import PdfReader
+        validators.check_archive_shape(probe, _limits())
 
-        reader = PdfReader(str(probe))
-        assert len(reader.pages) == 1
+    def test_the_probe_is_parseable_as_a_document(self, tmp_path: Path) -> None:
+        """The upload path hands DOCX files to the real parser; the probe must
+        survive it like any legitimate document."""
+        from docx import Document
+
+        probe = build_eicar_docx(tmp_path / "probe.docx")
+        document = Document(str(probe))
+        assert document.paragraphs, "the probe must be a real document"
 
     def test_the_probe_is_small_enough_to_upload(self, tmp_path: Path) -> None:
-        probe = build_eicar_pdf(tmp_path / "probe.pdf")
-        assert probe.stat().st_size < 10_000, "probe should be tiny"
+        probe = build_eicar_docx(tmp_path / "probe.docx")
+        assert probe.stat().st_size < 200_000, "probe should be small"
 
     def test_a_clean_probe_differs_only_in_payload(self, tmp_path: Path) -> None:
-        """A control: the same PDF without EICAR must be byte-wise different.
+        """A control: the same DOCX without EICAR must be byte-wise different.
 
-        Without this, "the scanner rejected it" could be explained by the PDF
-        structure itself rather than by the payload.
+        Without this, "the scanner rejected it" could be explained by the
+        container itself rather than by the payload.
         """
-        infected = build_eicar_pdf(tmp_path / "infected.pdf")
-        clean = build_eicar_pdf(tmp_path / "clean.pdf", payload="harmless text")
+        import zipfile
+
+        infected = build_eicar_docx(tmp_path / "infected.docx")
+        clean = build_eicar_docx(tmp_path / "clean.docx", payload="harmless text")
         assert infected.read_bytes() != clean.read_bytes()
-        assert EICAR.encode("latin-1") not in clean.read_bytes()
+        with zipfile.ZipFile(clean) as archive:
+            assert EICAR.encode("latin-1") not in archive.read(PAYLOAD_MEMBER)
 
 
 class TestScriptIntegrity:
@@ -177,7 +207,7 @@ class TestScriptIntegrity:
 
     def test_eicar_probe_is_generated_once(self) -> None:
         script = SCRIPT.read_text()
-        assert script.count('pass "built a structurally valid PDF carrying the EICAR string"') == 1
+        assert script.count('pass "built a structurally valid DOCX carrying the EICAR string"') == 1
 
     def test_the_script_never_disables_tls_verification(self) -> None:
         script = SCRIPT.read_text()

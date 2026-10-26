@@ -194,17 +194,19 @@ jobs:
           esac
           csrf="$(awk '$6 == "mafhum_csrf" {print $7}' "$cookiejar")"
           test -n "$csrf"
-          python3 apps/api/tools/eicar_probe.py /tmp/eicar-probe.pdf
-          # Engine-level acceptance of the exact artifact about to be uploaded.
-          # Live evidence (run on c72ff67, 2026-10-25): the daemon detected a
-          # bare EICAR file yet returned CLEAN for the same string embedded in
-          # a PDF content stream, and the API consequently ACCEPTED the probe
-          # (201). The probe now carries the payload after %%EOF as well, and
-          # the gate refuses to proceed unless the engine flags the artifact
-          # itself -- an app-level rejection of a file the engine cannot see
-          # would be meaningless.
+          # The probe is a DOCX, not a PDF: ClamAV by design does not match
+          # EICAR embedded inside other files' bytes (accepted live evidence on
+          # c72ff67 and ea712e8: CLEAN for a PDF content-stream embed AND for
+          # the raw string appended after %%EOF, while the bare file was
+          # FOUND). It detects EICAR as the file itself or inside an archive it
+          # unwraps (Cisco-Talos/clamav#1277) -- and a DOCX is a ZIP. See
+          # apps/api/tools/eicar_probe.py for the full evidence chain.
+          python3 apps/api/tools/eicar_probe.py /tmp/eicar-probe.docx
+          # Engine-level acceptance of the exact artifact about to be uploaded:
+          # an app-level rejection of a file the engine cannot see would be
+          # meaningless, and a 201 would mean the control is not working.
           set +e
-          engine_verdict="$(clamdscan --no-summary /tmp/eicar-probe.pdf 2>&1)"
+          engine_verdict="$(clamdscan --no-summary /tmp/eicar-probe.docx 2>&1)"
           engine_rc=$?
           set -e
           echo "engine verdict on the probe artifact: $engine_verdict"
@@ -213,7 +215,7 @@ jobs:
           code="$(curl -sS -o /tmp/gate-a-response.json -w '%{http_code}' \
             -b "$cookiejar" -H 'Origin: http://localhost:3000' \
             -H "X-CSRF-Token: $csrf" \
-            -F 'file=@/tmp/eicar-probe.pdf;type=application/pdf' \
+            -F 'file=@/tmp/eicar-probe.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document' \
             http://127.0.0.1:8000/api/v1/documents)"
           echo "upload HTTP status: $code"
           cat /tmp/gate-a-response.json

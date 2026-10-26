@@ -22,14 +22,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.eicar_probe import EICAR, build_eicar_pdf
+from tools.eicar_probe import EICAR, build_eicar_docx
 
 from mafhum_api.config import Settings
 from mafhum_api.main import create_app
 from tests.conftest import _register, upload_kwargs
 from tests.test_malware_scanning import UNIX_SOCKET_ONLY, FakeClamd
 
-PDF_MIME = "application/pdf"
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 # The exact substring the staging script greps for. Kept as a constant so the two
 # cannot drift: if this test passes, the script's assertion is satisfiable.
@@ -38,7 +38,7 @@ SCRIPT_ASSERTION = '"reason":"malware_detected"'
 
 class TestEicarApiContract:
     @UNIX_SOCKET_ONLY
-    def test_an_eicar_pdf_upload_reports_reason_malware_detected(
+    def test_an_eicar_docx_upload_reports_reason_malware_detected(
         self, settings, tmp_path: Path
     ) -> None:
         clamd_path = tmp_path / "clamd.sock"
@@ -53,13 +53,13 @@ class TestEicarApiContract:
         store.mkdir(parents=True, exist_ok=True)
         application = create_app(infected, start_worker=False)
         try:
-            probe = build_eicar_pdf(tmp_path / "eicar-probe.pdf")
+            probe = build_eicar_docx(tmp_path / "eicar-probe.docx")
             assert EICAR.encode("latin-1") in probe.read_bytes()
 
             user = _register(application, "eicar@example.com", "Passw0rd!23")
             response = user.post(
                 "/api/v1/documents",
-                **upload_kwargs(probe.read_bytes(), probe.name, PDF_MIME),
+                **upload_kwargs(probe.read_bytes(), probe.name, DOCX_MIME),
             )
 
             assert response.status_code == 422, response.text
@@ -116,11 +116,11 @@ class TestEicarApiContract:
         Path(required.storage_root).mkdir(parents=True, exist_ok=True)
         application = create_app(required, start_worker=False)
         try:
-            probe = build_eicar_pdf(tmp_path / "probe2.pdf")
+            probe = build_eicar_docx(tmp_path / "probe2.docx")
             user = _register(application, "unavail@example.com", "Passw0rd!23")
             response = user.post(
                 "/api/v1/documents",
-                **upload_kwargs(probe.read_bytes(), probe.name, PDF_MIME),
+                **upload_kwargs(probe.read_bytes(), probe.name, DOCX_MIME),
             )
 
             assert response.status_code == 422, response.text
@@ -148,11 +148,11 @@ class TestEicarApiContract:
         Path(clean.storage_root).mkdir(parents=True, exist_ok=True)
         application = create_app(clean, start_worker=False)
         try:
-            probe = build_eicar_pdf(tmp_path / "clean-probe.pdf")
+            probe = build_eicar_docx(tmp_path / "clean-probe.docx")
             user = _register(application, "clean@example.com", "Passw0rd!23")
             response = user.post(
                 "/api/v1/documents",
-                **upload_kwargs(probe.read_bytes(), probe.name, PDF_MIME),
+                **upload_kwargs(probe.read_bytes(), probe.name, DOCX_MIME),
             )
             assert response.status_code in (200, 201), response.text
         finally:

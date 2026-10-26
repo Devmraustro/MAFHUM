@@ -101,24 +101,43 @@ check_scanner() {
   fi
 
   # The application validates extension, MIME type and magic bytes BEFORE it
-  # scans, so uploading a bare eicar.com as application/pdf would be rejected by
+  # scans, so uploading a bare eicar.com as a document would be rejected by
   # validation and never reach the scanner. Asserting only "HTTP 422" would then
-  # report a passing scan on an engine that was never consulted. So the probe is
-  # a structurally valid PDF with the EICAR string embedded in its content, which
-  # passes validation and can only be rejected by the scanner.
-  local eicar_pdf="$EVIDENCE/eicar-probe.pdf"
+  # report a passing scan on an engine that was never consulted.
+  #
+  # The probe must also be a form a real engine detects: live acceptance
+  # evidence (2026-10-25) showed ClamAV returns CLEAN for EICAR embedded in a
+  # PDF content stream and even appended raw after %%EOF, while detecting the
+  # bare file — by design it matches EICAR only as the file itself or inside an
+  # archive it unwraps (Cisco-Talos/clamav#1277). So the probe is a DOCX (a
+  # ZIP) carrying the EICAR string as a stored archive member: it passes every
+  # structural validator and is the one embeddable form the engine flags.
+  local eicar_docx="$EVIDENCE/eicar-probe.docx"
   # Shared with the test suite so the probe used in staging is exactly the probe
   # under test, and the two cannot drift apart.
   # tools/ here is apps/api/tools, which is on the test PYTHONPATH, so the module
   # under test and the probe used in staging are literally the same file.
-  python3 "$(dirname "$0")/../apps/api/tools/eicar_probe.py" "$eicar_pdf" \
+  python3 "$(dirname "$0")/../apps/api/tools/eicar_probe.py" "$eicar_docx" \
     >/dev/null 2>"$EVIDENCE/probe.err"
-  if [ ! -s "$eicar_pdf" ]; then
-    fail "could not build the EICAR PDF probe"
+  if [ ! -s "$eicar_docx" ]; then
+    fail "could not build the EICAR DOCX probe"
     sed 's/^/         /' "$EVIDENCE/probe.err" | head -5
     return
   fi
-  pass "built a structurally valid PDF carrying the EICAR string"
+  pass "built a structurally valid DOCX carrying the EICAR string"
+
+  # The engine itself must flag the exact artifact about to be uploaded; an
+  # app-level rejection of a file the engine cannot see would prove nothing.
+  if command -v clamdscan >/dev/null 2>&1; then
+    local engine_verdict
+    engine_verdict="$(clamdscan --no-summary "$eicar_docx" 2>&1 || true)"
+    printf '         engine: %s\n' "$(printf '%s' "$engine_verdict" | head -1)"
+    if printf '%s' "$engine_verdict" | grep -qi 'Eicar.*FOUND'; then
+      pass "engine detects the EICAR payload inside the probe DOCX"
+    else
+      fail "engine did NOT detect the probe artifact — the upload check below would be vacuous"
+    fi
+  fi
 
   # Now the part that matters: does the APPLICATION reject it, with scanning
   # required? A working engine the app ignores is not a control.
@@ -139,7 +158,7 @@ check_scanner() {
     -X POST "$API_URL/api/v1/documents" \
     -H "X-CSRF-Token: ${MAFHUM_CSRF_TOKEN}" \
     -H "Cookie: ${MAFHUM_COOKIE}" \
-    -F "file=@$eicar_pdf;type=application/pdf" 2>/dev/null)"
+    -F "file=@$eicar_docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" 2>/dev/null)"
 
   if [ "$code" != "422" ]; then
     fail "EICAR upload was NOT rejected (HTTP $code) — fail-closed is not in effect"

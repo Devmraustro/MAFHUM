@@ -1,30 +1,36 @@
-"""Build a structurally valid PDF that carries the EICAR test string.
+"""Build a structurally valid DOCX that carries the EICAR test string.
 
 Why this module exists
 ----------------------
 MAFHUM validates an upload's extension, MIME type and magic bytes **before** it
-scans the stored bytes. So uploading a bare ``eicar.com`` declared as
-``application/pdf`` is rejected by validation and never reaches the scanner.
+scans the stored bytes. So uploading a bare ``eicar.com`` declared as a document
+is rejected by validation and never reaches the scanner.
 
 A staging check that asserted only "the API returned 422" would therefore report a
 passing scan on an engine that was never consulted — a false positive that makes
 the single most important security control look verified when it is not.
 
-The fix is to probe with a file that passes structural validation and can only be
-rejected by the scanner: a real, parseable PDF with the EICAR string embedded in
-its page content, so the rejection can now only have come from the scanner.
+Why a DOCX, and not a PDF
+-------------------------
+Live evidence from the acceptance runs on 2026-10-25 (GitHub jobs 121322493802 on
+c72ff67 and the ea712e8 run) settled the vehicle:
 
-Where the payload goes, and why in two places
----------------------------------------------
-The payload is written (1) inside the page content stream, and (2) as a raw line
-after the ``%%EOF`` marker. The second placement is the one that makes detection
-real: live evidence from the acceptance run on 2026-10-25 (GitHub job 121322493802,
-commit c72ff67) showed ClamAV returning CLEAN for the content-stream embedding —
-the same daemon that detects a bare EICAR file — so the earlier assumption that
-"ClamAV matches EICAR anywhere in a file's bytes" is false when the engine
-recognises the container as a PDF. After ``%%EOF`` the bytes are outside any PDF
-structure, which is exactly the form the engine is proven to detect, while the
-file still parses as a one-page PDF (readers ignore trailing bytes).
+* The daemon detected a bare EICAR file (FOUND) — the engine and signatures work.
+* The same daemon returned CLEAN for a valid PDF with the canonical EICAR string
+  verbatim in an uncompressed content stream, byte-verified before upload.
+* It ALSO returned CLEAN for the same PDF with the raw EICAR string appended
+  after ``%%EOF``, outside any PDF structure.
+
+That is documented ClamAV behaviour, not a defect: by design ClamAV does not
+match EICAR embedded or appended inside other files, because that would cause
+false positives; it detects EICAR as the file itself, or **inside an archive
+type it unwraps, such as ZIP** (Cisco-Talos/clamav#1277).
+
+A DOCX *is* a ZIP archive — one of MAFHUM's two accepted upload formats — so the
+probe is a real, parseable DOCX (python-docx opens it; every structural
+validator passes) that additionally carries the EICAR string as a stored, i.e.
+uncompressed, archive member. The engine unwraps the archive and sees the exact
+contiguous bytes it is proven to flag.
 
 The acceptance gate clamdscans the generated artifact and requires a FOUND
 verdict before the API-level upload, so a probe the engine cannot see can never
@@ -39,59 +45,51 @@ real malware.
 
 from __future__ import annotations
 
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 EICAR = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
+#: Member that carries the payload inside the container. Stored uncompressed so
+#: the string is present verbatim in the archive, which is the form the engine
+#: is documented to detect when it unwraps the ZIP.
+PAYLOAD_MEMBER = "eicar.txt"
 
-def build_eicar_pdf(destination: Path, *, payload: str = EICAR) -> Path:
-    """Write a minimal valid single-page PDF containing ``payload``.
 
-    The result starts with ``%PDF-``, has a well-formed xref table and one page
-    whose content stream carries the payload, so it satisfies magic-byte, page
-    count and parser checks. The payload is repeated as a raw line after
-    ``%%EOF`` — see the module docstring for why that placement is required
-    for real-engine detection.
+def build_eicar_docx(destination: Path, *, payload: str = EICAR) -> Path:
+    """Write a minimal valid one-paragraph DOCX containing ``payload``.
+
+    The result is a genuine Word document: ``PK`` magic bytes, the required
+    ``[Content_Types].xml`` and ``word/document.xml`` parts, parseable by
+    python-docx. ``payload`` is added as a stored archive member, so the file
+    passes every structural validator while the engine, unwrapping the archive,
+    scans the payload bytes themselves.
     """
-    body = f"BT /F1 12 Tf 72 720 Td ({payload}) Tj ET".encode("latin-1")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
-            b"/Resources << /Font << /F1 5 0 R >> >> >>"
-        ),
-        b"<< /Length " + str(len(body)).encode() + b" >>\nstream\n" + body + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
+    from docx import Document  # python-docx: the application's DOCX dependency
 
-    out = bytearray(b"%PDF-1.4\n")
-    offsets: list[int] = []
-    for index, obj in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += f"{index} 0 obj\n".encode() + obj + b"\nendobj\n"
+    document = Document()
+    document.add_paragraph("MAFHUM EICAR acceptance probe")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
 
-    xref_offset = len(out)
-    out += f"xref\n0 {len(objects) + 1}\n".encode()
-    out += b"0000000000 65535 f \n"
-    for offset in offsets:
-        out += f"{offset:010d} 00000 n \n".encode()
-    out += (
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
-    ).encode()
-    # The detectable placement: raw payload bytes outside any PDF structure.
-    # (An earlier version ended the file at %%EOF and relied on the
-    # content-stream embedding, which a real ClamAV demonstrably does not flag.)
-    out += payload.encode("latin-1") + b"\n"
-
-    destination.write_bytes(bytes(out))
+    with (
+        zipfile.ZipFile(buffer, "r") as original,
+        zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as rebuilt,
+    ):
+        for info in original.infolist():
+            rebuilt.writestr(info, original.read(info.filename))
+        member = zipfile.ZipInfo(PAYLOAD_MEMBER, date_time=(2026, 1, 1, 0, 0, 0))
+        member.compress_type = zipfile.ZIP_STORED
+        rebuilt.writestr(member, payload.encode("latin-1"))
     return destination
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point for the shell script
     if len(sys.argv) != 2:
-        print("usage: eicar_probe.py <output.pdf>", file=sys.stderr)
+        print("usage: eicar_probe.py <output.docx>", file=sys.stderr)
         raise SystemExit(2)
-    path = build_eicar_pdf(Path(sys.argv[1]))
+    path = build_eicar_docx(Path(sys.argv[1]))
     print(path)
