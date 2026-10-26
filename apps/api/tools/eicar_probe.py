@@ -45,7 +45,6 @@ real malware.
 
 from __future__ import annotations
 
-import io
 import sys
 import zipfile
 from pathlib import Path
@@ -66,24 +65,44 @@ def build_eicar_docx(destination: Path, *, payload: str = EICAR) -> Path:
     python-docx. ``payload`` is added as a stored archive member, so the file
     passes every structural validator while the engine, unwrapping the archive,
     scans the payload bytes themselves.
+
+    Built with the standard library alone (zipfile + literal OOXML parts) so the
+    probe needs nothing installed on the host that generates it -- CI runners do
+    not have the application's dependencies. A test pins parseability by
+    python-docx so the hand-built parts cannot silently stop being a document.
     """
-    from docx import Document  # python-docx: the application's DOCX dependency
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType='
+        '"application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType='
+        '"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type='
+        '"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"'
+        ' Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>MAFHUM EICAR acceptance probe</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
 
-    document = Document()
-    document.add_paragraph("MAFHUM EICAR acceptance probe")
-    buffer = io.BytesIO()
-    document.save(buffer)
-    buffer.seek(0)
-
-    with (
-        zipfile.ZipFile(buffer, "r") as original,
-        zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as rebuilt,
-    ):
-        for info in original.infolist():
-            rebuilt.writestr(info, original.read(info.filename))
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("word/document.xml", document)
         member = zipfile.ZipInfo(PAYLOAD_MEMBER, date_time=(2026, 1, 1, 0, 0, 0))
         member.compress_type = zipfile.ZIP_STORED
-        rebuilt.writestr(member, payload.encode("latin-1"))
+        archive.writestr(member, payload.encode("latin-1"))
     return destination
 
 
