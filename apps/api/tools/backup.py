@@ -47,6 +47,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -87,32 +88,76 @@ def _tool_in(bindir: Path, name: str) -> str | None:
     return None
 
 
-def find_pg_tools(database_url: str) -> tuple[str, str]:
-    """Locate ``pg_dump``/``pg_restore``.
+def _pg_major(path: str) -> int | None:
+    """Return the tool's major version, or ``None`` if it cannot be read."""
+    try:
+        result = subprocess.run(  # noqa: S603
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except OSError:
+        return None
+    match = re.search(r"(\d+)(?:\.|$)", result.stdout)
+    return int(match.group(1)) if match else None
 
-    Checks the environment first, then the PostgreSQL bundled with ``pgserver``.
-    Bundled tools are preferred over none: they let a backup be produced and
-    *tested* on a machine with no system PostgreSQL client installed, which is
-    what makes an actual restore test possible rather than a theoretical one.
+
+def _server_major(database_url: str) -> int | None:
+    """Return the target server's major version, or ``None`` if unreachable."""
+    try:
+        import psycopg
+
+        with psycopg.connect(database_url, connect_timeout=10) as connection:
+            value = connection.execute("SHOW server_version_num").fetchone()
+    except Exception:
+        return None
+    if not value:
+        return None
+    # server_version_num is e.g. 160008 for 16.8; major is the leading digits.
+    return int(str(value[0])[:2].lstrip("0") or "0")
+
+
+def find_pg_tools(database_url: str) -> tuple[str, str]:
+    """Locate a ``pg_dump``/``pg_restore`` pair that matches the target server.
+
+    Candidates, in order: the system PATH pair, then the pair bundled with
+    ``pgserver``. A dump/restore run must use tools whose major version matches
+    the server: a newer ``pg_restore`` emits statements the older server
+    rejects (observed live: a runner image gained PostgreSQL 17 clients, and
+    ``pg_restore`` 17 failed against a 16.x server on its own
+    ``SET transaction_timeout = 0;``), and an older ``pg_dump`` silently drops
+    what a newer server offers. The first candidate pair whose ``pg_restore``
+    major matches the server's major wins; if the server version cannot be
+    read, the PATH pair is returned when present (the previous behaviour).
     """
-    dump = shutil.which("pg_dump")
-    restore = shutil.which("pg_restore")
-    if dump and restore:
-        return dump, restore
+    candidates: list[tuple[str, str]] = []
+    path_dump, path_restore = shutil.which("pg_dump"), shutil.which("pg_restore")
+    if path_dump and path_restore:
+        candidates.append((path_dump, path_restore))
     try:
         import pgserver
     except ImportError:
         pgserver = None
     if pgserver is not None:
         bindir = Path(pgserver.__file__).parent / "pginstall" / "bin"
-        bundled_dump = _tool_in(bindir, "pg_dump")
-        bundled_restore = _tool_in(bindir, "pg_restore")
+        bundled_dump, bundled_restore = _tool_in(bindir, "pg_dump"), _tool_in(bindir, "pg_restore")
         if bundled_dump and bundled_restore:
-            return bundled_dump, bundled_restore
-    raise SystemExit(
-        "pg_dump/pg_restore not found. Install the PostgreSQL client tools, or "
-        "install pgserver (which bundles them)."
-    )
+            candidates.append((bundled_dump, bundled_restore))
+    if not candidates:
+        raise SystemExit(
+            "pg_dump/pg_restore not found. Install the PostgreSQL client tools, or "
+            "install pgserver (which bundles them)."
+        )
+
+    server_major = _server_major(database_url)
+    if server_major is not None:
+        for dump, restore in candidates:
+            if _pg_major(restore) == server_major:
+                return dump, restore
+
+    return candidates[0]
 
 
 def create_backup(
