@@ -41,7 +41,13 @@ RUN npm ci --omit=dev --no-audit --no-fund
 FROM node:22-slim AS builder
 
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1 \
+# next.config.mjs evaluates rewrites() at BUILD time and bakes the destination
+# into .next/routes-manifest.json. A runtime-only MAFHUM_API_URL would be
+# ignored and the container would proxy to its own 127.0.0.1. Default to the
+# Compose service name; override with a build arg for another topology.
+ARG MAFHUM_API_URL=http://api:8000
+ENV MAFHUM_API_URL=${MAFHUM_API_URL} \
+    NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -54,7 +60,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    # Required: the Next server proxies /api and /health to the API container.
+    # Documented for operators; the rewrite target itself is baked at build
+    # time from the ARG above (see the builder stage).
     MAFHUM_API_URL=http://api:8000
 
 RUN groupadd --system --gid 10002 mafhum \

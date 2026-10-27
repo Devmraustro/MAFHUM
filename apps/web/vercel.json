@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "installCommand": "npm ci --no-audit --no-fund",
-  "buildCommand": "npm run build"
+  "buildCommand": "node -e \"if (!process.env.MAFHUM_API_URL) { console.error('MAFHUM_API_URL must be set at build time: next.config.mjs bakes rewrites into the build'); process.exit(1); }\" && npm run build"
 }

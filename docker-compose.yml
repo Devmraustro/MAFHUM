@@ -116,6 +116,10 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile
+      args:
+        # Build-time rewrite target (see apps/web/Dockerfile). Must match the
+        # API service name, not 127.0.0.1 (which is the web container itself).
+        MAFHUM_API_URL: http://api:8000
     image: mafhum-web:0.3.0
     restart: unless-stopped
     depends_on:

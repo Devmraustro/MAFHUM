@@ -144,9 +144,15 @@ monitoring system. Wiring it to a real alertmanager and retaining the redacted
 
 ## 7. Vercel web rehearsal
 
-`apps/web/vercel.json` pins the framework and install/build commands. Point the
-Vercel project's root directory at `apps/web`, set `MAFHUM_API_URL` to the
-**public API origin**, and deploy. Because the API is not deployed on Vercel,
+`apps/web/vercel.json` pins the framework and install/build commands and fails
+the build if `MAFHUM_API_URL` is missing. **This is a build-time variable**:
+`next.config.mjs` evaluates `rewrites()` during `next build` and writes the
+destination into `.next/routes-manifest.json`. Setting it only at runtime would
+silently proxy to `127.0.0.1:8000`, which is the web container itself. The
+Compose build passes it as `build.args.MAFHUM_API_URL=http://api:8000`.
+
+Point the Vercel project's root directory at `apps/web`, set `MAFHUM_API_URL` to
+the **public API origin** as a build environment variable, and deploy. Because the API is not deployed on Vercel,
 a frontend-only deployment will serve the UI but every `/api` call will fail —
 that is a build/deploy rehearsal, not a working full-stack product, and must be
 described as such. See `docs/STATUS_REPORT_2026-10-27.md` §12 for the recorded

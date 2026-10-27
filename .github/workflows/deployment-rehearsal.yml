@@ -86,12 +86,16 @@ jobs:
       - name: Health checks
         run: |
           set -euo pipefail
-          curl -fsS http://127.0.0.1:8000/health/live
+          curl -fsS http://127.0.0.1:8000/health/live \
+            || { echo "::error::API /health/live failed"; exit 1; }
           echo
-          curl -fsS http://127.0.0.1:8000/health/ready
+          curl -fsS http://127.0.0.1:8000/health/ready \
+            || { echo "::error::API /health/ready failed"; exit 1; }
           echo
-          curl -fsS -o /dev/null -w 'web home: HTTP %{http_code}\n' http://127.0.0.1:3000/
-          curl -fsS http://127.0.0.1:3000/health/live
+          curl -fsS -o /dev/null -w 'web home: HTTP %{http_code}\n' http://127.0.0.1:3000/ \
+            || { echo "::error::web home page failed"; exit 1; }
+          curl -fsS http://127.0.0.1:3000/health/live \
+            || { echo "::error::Next.js rewrite to API health failed"; exit 1; }
           echo
 
       - name: Real HTTP journey through the running stack
