@@ -1,21 +1,113 @@
-# Open-source Reuse Register
+# Open-source reuse register
 
-Preliminary review only: this records evidence inspected and candidate decisions. It does not mean code has been integrated or locally tested.
+Every candidate evaluated for Phase 3 document ingestion, with the **verified**
+license of the version inspected, its dependency weight, and the reason it was
+adopted or rejected.
 
-| Candidate | Evidence inspected | Proposed use | Decision / gate |
-|---|---|---|---|
-| [ScholaRAGent](https://github.com/ShiYu0318/ScholaRAGent) | README and LICENSE; MIT. README describes academic multi-stage RAG, injectable components and deterministic tests. Quick start treats Groq as required. | Architecture reference and possible selective research/retrieval modules. | Conditional. Inspect full source, dependencies, activity, security, data model and tests. Remove mandatory Groq assumption; retain MIT notice. Upstream test badges are claims from README, not local results. |
-| [Docling](https://github.com/docling-project/docling) | README, LICENSE and pyproject.toml; MIT. Document parsing/layout/table/OCR support. | Parser adapter for PDF/DOCX and scanned-doc fallback. | Candidate. Benchmark Arabic/French digital/scanned PDF, tables, reading order, latency and memory. |
-| [PptxGenJS](https://github.com/gitbrent/PptxGenJS) | LICENSE and package.json; MIT; metadata version 4.0.1 at inspection. | Editable PPTX generation. | Candidate; test actual Arabic RTL, mixed scripts, citations, charts and PowerPoint/LibreOffice output. |
-| [OpenTutor](https://github.com/zijinz456/OpenTutor) | README, LICENSE and SECURITY.md; MIT. README calls it local single-user beta; security policy requires auth and strong JWT secret before public exposure. | Learning UX/feature reference. | Reference only unless multi-user isolation and security are separately proven; do not deploy/copy wholesale. |
-| [Marp CLI](https://github.com/marp-team/marp-cli) | package.json; MIT, version 4.5.1 at inspection. | Comparison candidate for slide workflow. | Benchmark only; PPTX editability and RTL must pass. |
-| [Qwen3-Embedding](https://github.com/QwenLM/Qwen3-Embedding) | README inspected; describes multilingual embedding/reranking for 100+ languages. Exact weights license not confirmed in this review. | Optional embedding/reranking. | Not approved before exact model card/weights license, memory and Arabic/French benchmark. |
-| [Haystack](https://github.com/deepset-ai/haystack) | Not fully audited in this pass. | Optional RAG orchestration. | Do not add until evaluated complexity justifies it; inspect exact version/license/security first. |
+Method: licenses were read from the upstream repository via the GitHub license
+API and from PyPI metadata (`license_expression` / classifiers) for the exact
+version considered — not inferred from popularity or from a package's README.
 
-## Adoption template
-Record upstream URL, pinned commit/tag, date, exact license URL/text, files/modules used, notices, modifications, security/advisories, tests run, maintenance signal, rationale, risks and decision.
+---
 
-## Restricted/rejected
-- Do not use PaperLens community-license code without written permission and legal review.
-- Do not add AGPL/GPL applications without compatibility/deployment-obligations review.
-- Commerce, video, trading and device-sync projects are outside scope unless a demonstrated product need exists.
+## Adopted
+
+### pypdf 6.21.2 — PDF text extraction
+
+- **License:** BSD-3-Clause (permissive; GitHub reports `NOASSERTION` only because
+  the text is the non-canonical variant carrying a name-endorsement clause.
+  Copyright 2006–2008 Mathieu Fenniak and contributors.)
+- **Why adopted:** pure Python, no native binaries, no model downloads, actively
+  maintained (three releases within the week of inspection), and it exposes
+  enough structure to detect encryption and image-only pages.
+- **Rejected alternative it beat:** pdfminer.six (also MIT, viable, but fewer
+  dependencies is better and pypdf is more actively maintained).
+
+### python-docx 1.2.0 — DOCX text extraction
+
+- **License:** MIT
+- **Dependencies:** only `lxml>=3.1.0` and `typing_extensions`
+- **Why adopted:** minimal dependency surface, and MAFHUM reads only
+  `word/document.xml` plus tables. `vbaProject.bin` is **detected but never
+  opened**, so macros are never parsed or executed.
+
+### fonttools 4.67.0 — test fixtures only
+
+- **License:** MIT
+- **Why:** builds the synthetic Arabic/French PDFs used by the test suite.
+  Dev/test dependency; never shipped.
+
+---
+
+## Rejected, with reasons
+
+### PyMuPDF — rejected on license and weight
+
+- **License:** **AGPL-3.0**, with a separate commercial licence available.
+- **Reason:** AGPL's network copyleft is incompatible with this project's
+  licensing posture, and no explicit compatibility review has been authorised.
+  It also pulls `onnxruntime`, `pymupdf-layout` and `pymupdf4llm`, which means
+  model downloads at install time — a direct violation of the "no large model
+  downloads in the default installation" constraint.
+
+### Docling — rejected on dependency weight
+
+- **License:** MIT (acceptable)
+- **Reason:** the slim distribution alone declares **184 dependencies**
+  (`docling-core`, `filetype`, `langcodes`, `pluggy`, `requests`, `tqdm`, …) and
+  the full pipeline downloads models at runtime. Far too heavy for a
+  zero-budget default install on ordinary hardware.
+
+### OCRmyPDF — rejected on runtime requirements
+
+- **License:** MPL-2.0 (acceptable)
+- **Reason:** it is a wrapper around the `tesseract` binary plus language packs,
+  neither of which can be assumed present, and which could not be installed or
+  verified in the target environment. Shipping an OCR path that cannot be
+  exercised would mean claiming a capability that does not work.
+- **Recorded as the future OCR path**, with its true install cost:
+  `tesseract-ocr` + `tesseract-ocr-ara` + `tesseract-ocr-fra` + `qpdf`.
+
+### Apache Tika — rejected on runtime requirements
+
+- **License:** Apache-2.0 (acceptable)
+- **Reason:** requires a JVM and a running Tika server. That is a service
+  dependency, not a library, and it contradicts the modular-monolith,
+  ordinary-hardware constraints.
+
+### pdfminer.six — viable, not selected
+
+- **License:** MIT
+- **Reason not selected:** pypdf covers the requirement with fewer dependencies
+  and more active maintenance. Kept on record as the fallback PDF parser if
+  pypdf ever regresses on Arabic extraction.
+
+### postgresql-wheel — dead end
+
+- **License:** Apache-2.0 (acceptable)
+- **Reason:** publishes no cp311 wheel, so it cannot be installed on Python 3.11.
+
+### pgserver 0.1.4 — accepted for tests only
+
+- **License:** **Apache-2.0**, verified against the upstream repository
+  (`github.com/orm011/pgserver`). PyPI publishes no license field, which is why
+  this needed checking at source rather than trusting the registry.
+- **Reason accepted:** it bundles a self-contained PostgreSQL 16.2 and is the
+  only way to run real PostgreSQL integration tests in an environment with no
+  system database. It is a **dev/test dependency only** and never ships.
+- **Caveat:** last upstream push was mid-2024 — maintained, but not fast moving.
+
+---
+
+## Decision summary
+
+| Need | Decision |
+|---|---|
+| PDF text extraction | pypdf 6.21.2 (BSD-3-Clause) |
+| DOCX text extraction | python-docx 1.2.0 (MIT) |
+| Scanned-PDF handling | **Detect and report; do not OCR** |
+| Malware scanning | **Not integrated — do not claim it** |
+| Test PostgreSQL | pgserver 0.1.4 (dev/test only, Apache-2.0) |
+
+Two overlapping PDF parsers were deliberately **not** adopted. One parser per
+format keeps the extraction behaviour predictable and the audit surface small.

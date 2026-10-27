@@ -1,0 +1,114 @@
+# MAFHUM local/staging stack.
+#
+# This is for local development and staging only. It is NOT a production
+# deployment definition: it uses a single-node database with no replica, no
+# automated backup, and no TLS termination.
+#
+# ---------------------------------------------------------------------------
+# NOT YET VERIFIED BY EXECUTION.
+# No container runtime (docker, podman, nerdctl) is installed in the environment
+# where this was written, so `docker compose up` has not been observed to start
+# this stack. What IS verified: the PostgreSQL 16 migrations run cleanly
+# up->down->up against a real PostgreSQL 16.2, and the API boots and serves
+# /health/live and /health/ready when run directly. See
+# docs/OPERATIONAL_HARDENING_REPORT.md.
+# ---------------------------------------------------------------------------
+#
+# Scaling note
+# ------------
+# Running more than one `api` replica is safe for request handling: quotas and the
+# login throttle are enforced in the database, so limits hold across processes.
+# It is NOT safe for migrations -- every replica would try to apply them at
+# startup. Set MAFHUM_RUN_MIGRATIONS=false on all but one replica, or run
+# `alembic upgrade head` as a separate one-shot step before scaling up.
+
+name: mafhum
+
+services:
+  db:
+    image: postgres:16
+    # Pinned major version. For a fully reproducible stack, pin by digest.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mafhum}
+      # Never a literal secret in this file; supplied from the environment or a
+      # secrets manager. Compose refuses to interpolate an unset variable.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-mafhum}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mafhum} -d ${POSTGRES_DB:-mafhum}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Bound to loopback so the database is not reachable from outside the host.
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    image: mafhum-api:0.3.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # app_env is a strict Literal of development|test|production
+      # (apps/api/src/mafhum_api/config.py); "staging" is not a valid value and
+      # would abort the boot with a pydantic validation error. A staging box
+      # runs the same image as production minus the production-only guarantees;
+      # configure it with APP_ENV=development or production accordingly.
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mafhum}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-mafhum}
+      # Required in production; see Settings.assert_production_ready().
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Unprefixed: the application has no env_prefix, so MAFHUM_STORAGE_ROOT
+      # would be read by nothing and uploads would land outside the volume.
+      STORAGE_ROOT: /var/lib/mafhum/storage
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      # Malware scanning is OFF unless a clamd daemon is provided. With
+      # MALWARE_SCAN_REQUIRED=true the API rejects uploads when no engine can
+      # vouch for them, so do not enable it without also enabling clamd.
+      CLAMD_UNIX_PATH: ${CLAMD_UNIX_PATH:-}
+      MALWARE_SCAN_REQUIRED: ${MALWARE_SCAN_REQUIRED:-false}
+      # Read by the entrypoint itself (not by the application settings).
+      MAFHUM_RUN_MIGRATIONS: ${MAFHUM_RUN_MIGRATIONS:-true}
+    volumes:
+      - storage:/var/lib/mafhum/storage
+      # Uncomment to mount a clamd socket and turn scanning on.
+      # - /var/run/clamav/clamd.ctl:/var/run/clamav/clamd.ctl:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "http://127.0.0.1:8000/health/ready",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # A document parser that chokes on a hostile file should take the container
+    # down rather than the host with it.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  pgdata:
+  storage:

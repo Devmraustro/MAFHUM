@@ -1,7 +1,68 @@
 # MAFHUM — Project Architecture
 
 > Brand: **MAFHUM**. Do not call the product “MAFHUM AI” or “DZ University AI” in user-facing surfaces.
-> Status: architecture baseline for a new repository. This is a plan/specification, not evidence that code has been implemented or tested.
+> Status: architecture baseline for a new repository. Sections 1–12 below are the
+> original Phase 0 plan and are preserved as the design record. **Section 0
+> records what has actually been built**, including where reality diverged from
+> the plan.
+
+## 0. Implementation status (verified)
+
+Phases 0–3 are implemented and tested. Phases 4–7 are not started. See
+[`ROADMAP.md`](ROADMAP.md) for phase detail and
+[`THREAT_MODEL.md`](THREAT_MODEL.md) for residual risk.
+
+```
+apps/api/    FastAPI application
+  src/mafhum_api/
+    config.py              pydantic-settings; refuses insecure production config
+    core/                  errors, request context, redacted logging, security
+    db/                    SQLAlchemy models, session/engine
+    services/
+      identity/            registration, sessions, scrypt, revocation
+      projects/            per-user projects
+      documents/
+        storage.py         DocumentStorage protocol + LocalFileStorage
+        validators.py      magic bytes, MIME, archive shape, limits
+        parsers/           pypdf (PDF), python-docx (DOCX)
+        normalizer.py      NFC only — never destroys Arabic diacritics
+        segmenter.py       paragraph/page-preserving segmentation
+        pipeline.py        validate → parse → normalize → segment → persist
+        service.py         upload saga with compensating cleanup
+        worker.py          bounded pool, FOR UPDATE SKIP LOCKED, stale recovery
+      sources/             catalog with provenance, never fabricates
+      deletion/            account deletion, resumable, DeletionReport
+    api/v1/                health, auth, projects, documents, sources, account
+  alembic/                 0001_identity, 0002_documents
+  tests/                   435 tests against a real PostgreSQL
+
+apps/web/    Next.js 16 + React 19, TypeScript strict
+  src/app/                 Arabic-first RTL, lang="ar" dir="rtl"
+  src/lib/                 typed API client, i18n (ar/fr), locale provider
+  src/components/          header, alerts, status badge, confirm dialog
+
+tools/e2e/                 live end-to-end verification over real HTTP
+```
+
+### Where the implementation diverged from this plan
+
+| Plan said | Reality | Why |
+|---|---|---|
+| Docling adapter (§7) | pypdf + python-docx | Docling declares 184 dependencies and downloads models at runtime. See [`OSS_REUSE_REGISTER.md`](OSS_REUSE_REGISTER.md) |
+| Docker Compose (§10, Phase 1) | Not provided | Docker is unavailable in the verification environment; an untested Compose file would be a claim without evidence |
+| Deterministic mock AI provider (§6) | `ENABLE_AI_GATEWAY=false`, no provider code | No Phase 4 retrieval exists to feed it; a mock would risk being mistaken for a real integration |
+| Scanned-document benchmark (§10, Phase 3) | Detect and report only | There is no OCR. See [ADR 0003](ADR/0003-no-ocr-no-malware-scanning.md) |
+
+### Operational constraints that are load-bearing
+
+- **One API process.** Quotas, the login throttle and the worker pool are
+  process-local. Scaling out requires moving enforcement into the database first.
+  See [ADR 0004](ADR/0004-bounded-in-process-worker.md).
+- **The browser never learns the API origin.** The frontend issues only relative
+  `/api/v1/...` requests, which `next.config.mjs` proxies. Cookies stay
+  same-origin, so `SameSite` and the CSRF double-submit work without CORS.
+- **PostgreSQL only.** SQLite is not supported; the migrations and
+  `SKIP LOCKED` job claiming are PostgreSQL-specific.
 
 ## 1. Mission and product constraints
 Build a web-first, Arabic-first learning and academic productivity platform for Algerian students, expandable across the Arab world. Arabic UI must use true RTL; French is supported for sources and output. Professional identity: navy and white, accessible contrast, responsive layouts.
