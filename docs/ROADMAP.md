@@ -160,6 +160,15 @@ the full three-service stack on a Docker runner, exercises it over real HTTP
 (`tools/e2e/compose_smoke.py`) and performs a **quiesced backup + restore into
 a scratch database** with checksum verification.
 
+**Rehearsal evidence (2026-10-27):** `deployment-rehearsal.yml` run
+`40530008866` — full Compose stack built/started, real HTTP journey, quiesced
+backup+restore drill, **success**. Staging gates A/B/C re-ran on `main` in run
+`40523074856` — success. A Vercel web deployment
+(`dpl_Hhpr51CPn24fZT91yisV78S4i6oy`, https://mafhum-web.vercel.app/) serves the
+Arabic RTL page over real HTTP but **cannot reach any API** because the API is
+not hosted there — a frontend-only rehearsal. See
+`docs/DEPLOYMENT_REHEARSAL_REPORT.md`.
+
 **Still open:** no external alerting/dashboard is wired to the metrics endpoint;
 no managed PostgreSQL, TLS terminator, secrets manager or private object store
 is configured; no production deployment on real infrastructure has been

@@ -155,8 +155,11 @@ Point the Vercel project's root directory at `apps/web`, set `MAFHUM_API_URL` to
 the **public API origin** as a build environment variable, and deploy. Because the API is not deployed on Vercel,
 a frontend-only deployment will serve the UI but every `/api` call will fail —
 that is a build/deploy rehearsal, not a working full-stack product, and must be
-described as such. See `docs/STATUS_REPORT_2026-10-27.md` §12 for the recorded
-result of the rehearsal performed on 2026-10-27.
+described as such. The executed rehearsal (project `mafhum-web`, deployment
+`dpl_Hhpr51CPn24fZT91yisV78S4i6oy`, URL https://mafhum-web.vercel.app/) is
+recorded in `docs/DEPLOYMENT_REHEARSAL_REPORT.md`: `GET /` returned the Arabic
+RTL page, while `GET /health/live` returned 502 because the API origin is a
+deliberately non-resolvable placeholder.
 
 ---
 
@@ -176,8 +179,10 @@ has not been restored from a verified archive.
   object storage are configured here; Compose binds to `127.0.0.1` and is
   explicitly labelled local/staging only.
 - No `docker compose up` was executed in the development sandbox (no Docker
-  binary). The rehearsal workflow on a GitHub runner is the evidence; until it
-  is green, this runbook is a procedure, not a completed deployment.
-- The staging acceptance gates A/B/C have not been re-run on `main` since the
-  merges; `workflow_dispatch` from this session was denied (HTTP 403, token
-  scope). Push-triggered or manually dispatched runs by an operator are needed.
+  binary). It **was** executed on a GitHub runner in workflow run `40530008866`
+  (success), so the procedure is verified there — but that is a rehearsal on
+  ephemeral CI infrastructure, not a running production service.
+- Staging gates A/B/C **were** re-run automatically on `main` after PR #2
+  merged (run `40523074856`, all three gates success). A manual
+  `workflow_dispatch` from this session is still denied (HTTP 403, token scope),
+  and another run should be triggered after PR #3 merges.
