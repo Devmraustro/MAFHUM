@@ -30,9 +30,12 @@ test. Residual risks are listed at the end rather than omitted.
 | Login throttling | 12 failures then `429 rate_limited` | integration tests |
 | Logout | Revokes the session server-side; returns `204` with an empty body | integration + regression test |
 
-**Login throttling is process-local.** It does not coordinate across workers, so
-N replicas permit roughly N× the attempts. This is documented rather than
-described as distributed rate limiting.
+**Login throttling is database-enforced.** Attempts are keyed by an HMAC-derived
+client identifier in `login_attempts`, so the limit holds across every API
+process; `tests/test_multi_instance_state.py` asserts two independent instances
+block after the same budget. Document quotas use the same pattern (row lock on
+the owning user). The bounded document-processing worker is the remaining
+per-process component; one worker per database is enforced by an advisory lock.
 
 ### Authorization and tenant isolation
 
@@ -162,14 +165,20 @@ Each was found by verification, fixed, and given a regression test.
 
 Recorded deliberately. None is hidden by a passing test suite.
 
-1. **No malware scanning.** A valid PDF that is also malicious will be stored and
-   served back to its owner on download. Mitigation: `nosniff`, `attachment`
-   disposition and CSP reduce browser-side impact. A real scanner is not
-   integrated.
+1. **No malware engine in the default install.** The `clamd` client, verdict
+   persistence and fail-closed policy are implemented, and Gate A verified real
+   detection (ClamAV + fresh signatures + EICAR-in-DOCX → API `422`) in the
+   acceptance environment on 2026-10-26 (run `40377229156`). A default install
+   still ships no engine or signatures, so a valid-but-malicious PDF will be
+   stored and served back to its owner until an operator provisions and verifies
+   `clamd`. Mitigations meanwhile: `nosniff`, `attachment` disposition and CSP.
+   `docs/SECURITY_ASSESSMENTS.md` records the exact boundary.
 2. **No OCR.** Scanned documents yield no text. The UI says so explicitly instead
    of showing an empty result.
-3. **Quotas and rate limits are process-local.** Documented; do not run multiple
-   API replicas without moving enforcement to the database.
+3. **The processing worker pool is per-process.** Quotas and the login throttle
+   are database-enforced and safe across replicas, but only one document worker
+   may run per database (advisory lock). Set `PROCESSING_WORKER_ENABLED=false`
+   on additional replicas before scaling out.
 4. **`braces` advisory in the dev tree (GHSA-vfj7-8cjw-p6xm, high, CVSS 7.5).**
    Affects `braces <= 3.0.3`, which is the **latest release** — no patched
    version exists. It reaches MAFHUM only through
@@ -180,13 +189,28 @@ Recorded deliberately. None is hidden by a passing test suite.
    input; the worst outcome is a crashed lint process. `npm audit fix --force`
    was **rejected** because it downgrades `eslint-config-next` from 16.4.2 to
    14.2.35 — a breaking change that would not fix `braces` either. Follow-up:
-   re-audit when upstream publishes a fix.
+   re-audit when upstream publishes a fix. **Re-audit 2026-10-27:** `npm audit`
+   on the full `apps/web` tree now reports **0 vulnerabilities** while
+   `braces@3.0.3` is still present through `eslint-config-next`. The triage is
+   retained because the code path has not changed; this is a current registry
+   result, not proof the underlying issue was fixed.
 5. **`pgserver` maintenance cadence.** Its license is confirmed Apache-2.0 (the
    PyPI field is blank, but the upstream `LICENSE` is standard Apache-2.0). The
    repository was last pushed in mid-2024, so it is maintained but not fast
    moving. It is dev/test only and never ships.
 6. **No encryption at rest.** Filesystem permissions only.
-7. **A passing test suite does not prove the absence of vulnerabilities.** The
+7. **Presentation artifacts are user-controlled OOXML.** A generated `.pptx`
+   could in principle contain a student's own text and is served with
+   `nosniff`, `attachment` disposition and a private `Cache-Control`; it is
+   never rendered server-side as HTML. Generation happens in-process, so a
+   library-level parser bug would affect the API process. Bounded specs (slide,
+   text, citation and output-size caps) limit the blast radius, but no
+   sandbox/separate worker isolates it (ADR 0005). No visual render check is
+   performed, so a font-substitution or bidi rendering defect could still reach
+   the student. The PptxGenJS comparison package had two inherited high DoS
+   advisories via `image-size`; they are resolved with a pinned `2.0.4`
+   override and an `npm audit` CI gate, and that package never ships.
+8. **A passing test suite does not prove the absence of vulnerabilities.** The
    suite covers the controls listed above; it is not a penetration test.
 
 ---

@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # --- concurrency guards ---------------------------------------------------
     max_concurrent_uploads_per_user: int = 3
 
+    # --- presentations (Phase 6) ----------------------------------------------
+    # Generation is synchronous but bounded: caps on evidence, output size and
+    # wall-clock time keep a single request from exhausting the API process.
+    max_presentations_per_user: int = 20
+    presentation_max_citations: int = 6
+    presentation_max_output_mb: int = 8
+
     # --- misc -----------------------------------------------------------------
     request_timeout_seconds: int = 30
     default_page_size: int = 20
@@ -119,6 +126,17 @@ class Settings(BaseSettings):
     def _positive_workers(cls, v: int) -> int:
         if v < 1:
             raise ValueError("processing_worker_count must be >= 1")
+        return v
+
+    @field_validator(
+        "max_presentations_per_user",
+        "presentation_max_citations",
+        "presentation_max_output_mb",
+    )
+    @classmethod
+    def _positive_presentation_limits(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("presentation limits must be positive")
         return v
 
     @field_validator("max_archive_compression_ratio")

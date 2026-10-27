@@ -13,12 +13,12 @@ name: Staging acceptance probes
 # here substitutes a mock for a real runtime or a real endpoint.
 
 on:
-  # workflow_dispatch is retained for future use, but GitHub only registers a
-  # dispatchable workflow from the default branch -- which this work must not
-  # modify. So the gates also run on push to the feature branch, where the file
-  # actually lives.
+  # PR #1 merged into `main` on 2026-10-27, so this file now lives on the
+  # default branch: workflow_dispatch is registered by GitHub and is the
+  # primary way to run the gates. Pushes to `main` touching runtime/deployment
+  # inputs re-run them automatically. No feature branch is referenced any more.
   push:
-    branches: [arena/1cb7b9d2-mafhum]
+    branches: [main]
     paths:
       - ".github/workflows/staging-acceptance.yml"
       - "apps/api/Dockerfile"

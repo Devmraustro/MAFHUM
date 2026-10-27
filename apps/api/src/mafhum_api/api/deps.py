@@ -27,6 +27,7 @@ from mafhum_api.services.documents.storage import DocumentStorage
 from mafhum_api.services.documents.worker import ProcessingWorker, WorkerConfig
 from mafhum_api.services.identity.service import AuthenticatedUser, IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
+from mafhum_api.services.presentations.service import PresentationService
 from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.service import ResearchService
 from mafhum_api.services.sources.service import SourceService
@@ -47,6 +48,7 @@ class AppContext:
     deletion: DeletionService
     research: ResearchService
     study: StudyService
+    presentations: PresentationService
     worker: ProcessingWorker
     login_throttle: LoginThrottle
 

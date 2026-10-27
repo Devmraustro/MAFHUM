@@ -123,12 +123,23 @@ API response may describe an upload as scanned, clean or safe.
 
 ---
 
-## 2. Docker and reproducible deployment — NOT VERIFIED
+## 2. Docker and reproducible deployment — API IMAGE VERIFIED, STACK NOT RUN
 
-**No image was built and no Compose stack was run.** Claiming otherwise would be
-false.
+**Status update, 2026-10-27 (after PR #1 merged into `main`).** Gate B of the
+staging acceptance workflow (run `40377229156`, 2026-10-26) built
+`apps/api/Dockerfile` on a GitHub-hosted runner and verified a non-root runtime,
+`/health/ready`, readiness against PostgreSQL and graceful shutdown. The
+assessment below is the **historical point-in-time record** from 2026-10-23, when
+no container runtime was available in the development sandbox; its commands and
+"no Dockerfile" observation describe that earlier tree, not the final one.
 
-Verified blockers:
+**Still not verified, and therefore still not claimed:** `docker compose up` on
+the root `docker-compose.yml` (db + api + volumes together), an upload → process
+→ download → delete journey inside that stack, secret-injection inspection of
+the built image, and any web deployment (there is no `apps/web/Dockerfile`).
+`PRODUCTION-READY` is not the outcome; the gates are acceptance evidence only.
+
+Historical measurement (2026-10-23, superseded by Gate B):
 
 ```
 $ command -v docker          # no output — binary absent
@@ -138,10 +149,11 @@ $ ls Dockerfile* docker-compose* compose* apps/*/Dockerfile*
 # no Dockerfile or compose file tracked
 ```
 
-There is no container runtime **and** no Dockerfile in the repository, so there
-is nothing to build yet. A sibling branch (`arena/dee89266-mafhum`) contains a
-root `docker-compose.yml`; it was not adopted here because it was never verified
-against this tree.
+At that time there was no container runtime in the sandbox and no Dockerfile in
+the tree being assessed. Both conditions have since changed: the merged tree
+tracks `apps/api/Dockerfile` and a root `docker-compose.yml`, and Gate B built
+the API image on a runner that does have Docker. Keep the checklist below as the
+list of checks still owed on the full stack.
 
 ### Commands still required once Docker exists
 
@@ -172,8 +184,11 @@ docker compose stop api && docker compose logs api | tail -20
 python tools/e2e/live_e2e.py --base-url http://localhost:8000
 ```
 
-Checks 2, 4, 6 and 7 are the ones most likely to reveal a real defect; none has
-been performed.
+Checks 2, 4 and 7 (and the `docker compose up` journey in checks 3–6) have not
+been performed on the full stack. Check 6's graceful shutdown and the health
+endpoint were exercised by Gate B on the single API container. Note that check
+2's second `docker build` refers to `apps/web/Dockerfile`, which does not exist
+yet — web deployment is an open Phase 7 item.
 
 ---
 
@@ -219,6 +234,14 @@ $ npm audit
 $ npm ls braces --omit=dev
 `-- (empty)                        # not in the production tree
 ```
+
+**Re-audit 2026-10-27 (Phase 6):** `npm audit` on the full `apps/web` tree now
+reports **0 vulnerabilities** (exit 0), while `npm ls braces --all` still shows
+`braces@3.0.3` via `eslint-config-next`. The earlier 5-high result below is a
+historical measurement; the registry's current advisory data no longer flags it.
+The triage is kept because nothing in the dependency path changed. A new
+`apps/slides` audit gate was added for the PptxGenJS comparison package: after
+pinning `image-size@2.0.4` via an override, it reports 0 vulnerabilities too.
 
 `braces` (GHSA-vfj7-8cjw-p6xm, stack exhaustion via deeply nested patterns)
 affects `<=3.0.3` and has **no patched release**. It reaches the tree only

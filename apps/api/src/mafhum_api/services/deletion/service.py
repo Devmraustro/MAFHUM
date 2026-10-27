@@ -45,6 +45,8 @@ from mafhum_api.db.models import (
     Document,
     DocumentProcessingJob,
     DocumentTextSegment,
+    PresentationArtifact,
+    PresentationJob,
     Project,
     SourceRecord,
     User,
@@ -199,6 +201,31 @@ class DeletionService:
                 report.documents_removed += 1
         db.flush()
 
+        # Phase 6: generated PPTX files are user data too. A DB cascade would
+        # drop the rows but leave the bytes behind, so erase each blob first and
+        # keep the account tombstoned if any deletion fails.
+        artifacts = list(
+            db.scalars(
+                select(PresentationArtifact).where(PresentationArtifact.owner_id == user_id)
+            ).all()
+        )
+        for artifact in artifacts:
+            key = artifact.storage_key
+            try:
+                if self._storage.delete(key):
+                    report.blobs_removed += 1
+            except StorageError:
+                logger.error(
+                    "account deletion: presentation blob removal failed",
+                    extra={"event": "deletion_artifact_blob_failed"},
+                )
+                report.blobs_failed.append(key)
+                continue
+            db.delete(artifact)
+        if artifacts:
+            db.flush()
+        _delete_where(db, PresentationJob, PresentationJob.owner_id == user_id)
+
         if report.blobs_failed:
             # Stay tombstoned and inaccessible; a later run finishes the job.
             report.complete = False
@@ -321,10 +348,21 @@ class DeletionService:
         Another caller having already removed the row counts as ``"deleted"``:
         the intended end state was reached.
         """
-        remaining = db.scalar(
-            select(func.count()).select_from(Document).where(Document.owner_id == user_id)
+        remaining = (
+            db.scalar(
+                select(func.count()).select_from(Document).where(Document.owner_id == user_id)
+            )
+            or 0
         )
-        if remaining:
+        remaining_artifacts = (
+            db.scalar(
+                select(func.count())
+                .select_from(PresentationArtifact)
+                .where(PresentationArtifact.owner_id == user_id)
+            )
+            or 0
+        )
+        if remaining or remaining_artifacts:
             # Documents still exist, so their bytes are still owed.
             return "documents_remain"
         try:

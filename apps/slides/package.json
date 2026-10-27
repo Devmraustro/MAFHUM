@@ -1,0 +1,20 @@
+{
+  "name": "mafhum-slides-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Comparison generator for MAFHUM's editable PPTX benchmark (not the production path)",
+  "scripts": {
+    "generate": "node generate.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "pptxgenjs": "4.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "image-size": "2.0.4"
+  }
+}

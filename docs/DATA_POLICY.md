@@ -19,6 +19,8 @@ that is stated plainly rather than implied by omission.
 | Text extracted from those documents | Search and study features | Derived |
 | Academic source metadata | Cataloguing | Only what the user supplies |
 | Session tokens | Keeping a user signed in | Yes |
+| Presentation job specs | Remembering which citations a deck was built from | Only when a deck is created |
+| Generated PPTX artifacts | Delivering an editable deck to its owner | Only when a deck is created |
 
 MAFHUM collects no telemetry, no analytics, no advertising identifiers and no
 third-party tracking. There is no external service to send data to.
@@ -45,6 +47,11 @@ field the user did not provide and the document did not contain is stored as
     by the API.**
   - Files are written atomically (`O_CREAT|O_EXCL` + `fsync` + rename) so a crash
     cannot leave a half-written object that later reads as valid.
+- **Generated presentations:** PPTX files are private blobs in the same
+  `STORAGE_ROOT`, with the same opaque keys and permissions. A job's stored spec
+  keeps the verbatim quotations and citation locators so source availability can
+  be recomputed on read. Deleting a job removes its blob; deleting an account
+  erases all presentation blobs before dropping the rows.
 - **Backups:** none are performed by MAFHUM. Backing up is an operator
   responsibility. A backup of the database alone is **not** a backup of user
   documents — `STORAGE_ROOT` must be captured too, and both must be restored
