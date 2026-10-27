@@ -6,16 +6,40 @@ Branch: `arena/1cb7b9d2-mafhum`
 Commit at phase start: `c4bdcbb` (verified, see §1)
 Latest commit: see the final line of §1
 
-**Verdict: CONDITIONAL STAGING**
+**Final verdict (2026-10-27, recorded after PR #1 merged into `main`):
+GATES GREEN — CONDITIONAL STAGING.**
 
-Unchanged from the Phase 1 hardening verdict, and for the same underlying reason:
-every staging requirement that requires external infrastructure remains unverifiable
-in this environment. That reason is now established by direct measurement on four
-independent acquisition paths rather than by inference (§3). This phase produced no
-production code change; it produced evidence, and the evidence does not support an
-upgrade.
+All three acceptance gates ran to completion on GitHub-hosted runners and passed
+on 2026-10-26: run `40377229156`, commit `3589dc8`. Gate A — real ClamAV with
+fresh signatures, EICAR-in-DOCX detected by the engine and rejected by the
+fail-closed API; Gate B — API image build, non-root runtime, readiness and
+graceful shutdown; Gate C — DNS/TCP/verified TLS to both configured sources.
+`MAFHUM CI` (4/4 jobs) is green on the final branch HEAD `2719689`, run
+`40397915589`.
 
-`PRODUCTION-READY` is explicitly not the outcome of this phase.
+Checklist deltas that supersede the historical §2 table:
+
+| Row | Then | Now |
+|---|---|---|
+| 1.1 configure a real malware engine | BLOCKED | **VERIFIED in acceptance** (Gate A); a default install still ships none |
+| 1.2 clean / EICAR / unavailable / timeout / error | PARTIAL (stub) | **VERIFIED for engine+policy paths** in Gate A; timeout/error still stub-tested |
+| 1.6 document engine version/config | N/A | **PARTIAL** — the workflow pins the daemon config; engine version is logged by the gate |
+| 2.1 build the image | BLOCKED | **VERIFIED** (Gate B, `apps/api/Dockerfile`) |
+| 2.3 start the app in a container | BLOCKED | **VERIFIED** (Gate B) |
+| 2.4 startup validation / health / DB / migrations / shutdown | BLOCKED | **PARTIAL** — health, readiness and shutdown verified; in-container migration log and upload journey are not |
+| 2.6 upload → processing inside the container | BLOCKED | **still BLOCKED** |
+| 2.7 record image identifier / runtime results | BLOCKED | **PARTIAL** — run log records the build; no published image digest |
+| 5.1 / 5.3 live publisher content + citation provenance | BLOCKED | **still BLOCKED** — Gate C proves transport only |
+
+Still true and not changed by the gates: `docker compose up` on the root stack
+has never been executed, no publisher content was retrieved end-to-end, no
+deployment on real infrastructure was performed, and a default install ships no
+malware engine. **`PRODUCTION-READY` is explicitly NOT the outcome.**
+
+The sections below retain the 2026-10-23 assessment as the historical record of
+what was blocked in the restricted sandbox. Where they say `BLOCKED`, read it
+together with the deltas above and the "Gates executed for real" section at the
+end of this file.
 
 ---
 

@@ -126,14 +126,19 @@ HTTP — not mocks:
 2. **No antivirus engine ships.** MAFHUM integrates the ClamAV `clamd` daemon
    over its socket protocol (`CLAMD_UNIX_PATH` or `CLAMD_HOST`/`CLAMD_PORT`),
    with a fail-closed switch (`MALWARE_SCAN_REQUIRED=true` rejects uploads when
-   no engine vouches for them). But no engine or signature database is bundled:
-   until an operator provisions `clamd` and the staging acceptance gate (Gate A)
-   passes against it with the EICAR test file, **do not describe MAFHUM as
-   scanning for malware**. `GET /api/v1/documents/limits` discloses the live
+   no engine vouches for them). Gate A proved detection on 2026-10-26 against a
+   real engine with fresh signatures in the acceptance environment, but no
+   engine or signature database is bundled. Until an operator provisions
+   `clamd` in their own deployment and verifies it with the EICAR file,
+   **do not describe that deployment as scanning for malware**.
+   `GET /api/v1/documents/limits` discloses the live
    `malware_scanning_available` state.
-3. **Quotas and the worker are process-local.** There is no distributed queue.
-   Run a single API process, or move enforcement into the database before
-   scaling horizontally.
+3. **The processing worker pool is per-process, with one worker per database.**
+   A PostgreSQL advisory lock enforces the single writer at startup. Quotas and
+   the login throttle are enforced in the database and are safe across
+   replicas; the bounded worker pool is not shared. Set
+   `PROCESSING_WORKER_ENABLED=false` on every replica except the processing
+   instance. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 4. **No URL ingestion.** Only direct file uploads are accepted; fetching a
    document from a URL is deliberately not implemented (SSRF risk).
 5. **Arabic text direction.** PDF text extraction returns Arabic in logical

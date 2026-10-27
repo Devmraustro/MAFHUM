@@ -32,17 +32,22 @@ a variable `Settings` does not read.
 `/health/ready`; config validation; request IDs and safe errors; migrations;
 deterministic mock AI provider.
 
-Done, except: **Docker Compose is not provided** and the AI gateway is a disabled
-flag rather than a mock provider. Docker is unavailable in the verification
-environment, so a Compose file could not be built or tested; shipping an
-unverified one would violate the change-control rule below.
+Done, except: the AI gateway is a disabled flag rather than a mock provider.
+A root `docker-compose.yml` and `apps/api/Dockerfile` are now tracked, and Gate B
+verified the API image build, non-root runtime, readiness and graceful shutdown
+on a GitHub-hosted runner (run `40377229156`). **`docker compose up` on the full
+stack has not been executed**, and there is no `apps/web/Dockerfile`; neither is
+claimed as verified.
 
 ## Phase 2 — Secure identity and workspace
 
 **Exit:** authentication, sessions, project CRUD, ownership/tenant-isolation
 tests, quotas, account export and deletion.
 
-Done. Login rate limiting is **process-local** and documented as such.
+Done. Login throttling and quotas were hardened to be **database-enforced**
+(`login_attempts` table, `SELECT ... FOR UPDATE` on the owning user row) and
+are verified across two independent application instances. The document
+processing worker remains per-process — see `docs/DEPLOYMENT.md`.
 Account **export** is not implemented — deletion is.
 
 ## Phase 3 — Documents and source catalog
@@ -65,12 +70,13 @@ Arabic and French PDF/DOCX extraction, deletion propagation, source provenance.
   PDFs are *detected and reported*; no text is extracted. Claiming a benchmark
   for a capability that does not exist would be false.
 
-**Known limitations carried forward:** no OCR, no URL ingestion, quotas and
-worker are process-local, and mixed Arabic/Latin lines may not round-trip
-through PDF text extraction. Malware scanning has an engine integration
-(`clamd` over its socket protocol) but no engine ships with the product —
-see the malware-scanning note under Phase 4's era in
-`docs/SECURITY_ASSESSMENTS.md`.
+**Known limitations carried forward:** no OCR, no URL ingestion, the processing
+worker pool is per-process (one worker per database, enforced by an advisory
+lock) while quotas and the login throttle are database-enforced, and mixed
+Arabic/Latin lines may not round-trip through PDF text extraction. Malware
+scanning has an engine integration (`clamd` over its socket protocol) and Gate A
+verified detection in the acceptance environment, but no engine ships with the
+product — see `docs/SECURITY_ASSESSMENTS.md`.
 
 ## Phase 4 — Grounded research
 

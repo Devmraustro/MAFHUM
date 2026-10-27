@@ -192,4 +192,21 @@ gh issue list / gh release list                   # فارغان
 
 الأولوية القصوى: **دمج PR #1 بعد تحديث وصفه** → مزامنة فرع الجلسة → إصلاح محفّز بوابات staging → توحيد الوثائق → ثم البدء بـ Phase 6 (PPTX).
 
-> لم أُنفّذ أي دمج أو تعديل على الكود في هذا التقرير؛ انتظار قرارك.
+> النسخة الأصلية من هذا التقرير كُتبت قبل تنفيذ P0. انظر قسم "تحديث التنفيذ" في الأسفل.
+
+---
+
+## 10. تحديث التنفيذ — P0 نُفّذ (نفس اليوم)
+
+بعد موافقة المستخدم، نُفّذت عناصر P0 فعلياً على الفرع `arena/71aa7382-mafhum`:
+
+| العنصر | ما نُفّذ |
+|---|---|
+| وصف PR #1 | حُدّث عبر `gh api PATCH .../pulls/1` (تعذّر `gh pr edit` بخطأ Projects-classic GraphQL) ليصف المراحل 1–5 والقيود الحقيقية |
+| الدمج | `gh pr merge 1 --merge` → `MERGED` في 2026-10-27T11:47:19Z، merge commit `8ed788d` على `main` |
+| المزامنة | `git fetch origin main` + `git merge origin/main` على فرع الجلسة (بقي 175 ملفاً متتبَّعاً) + `git push origin arena/71aa7382-mafhum` |
+| محفّز البوابات | `.github/workflows/staging-acceptance.yml` صار يعمل على `push: branches: [main]` بدل اسم الفرع القديم؛ `workflow_dispatch` أصبح متاحاً من الفرع الافتراضي |
+| توحيد الوثائق | `README.md`، `docs/ROADMAP.md`، `docs/THREAT_MODEL.md`، `docs/SECURITY_ASSESSMENTS.md`، `docs/STAGING_ACCEPTANCE_REPORT.md` صُحّحت تناقضاتها (الحصص/الـ worker، Docker، فحص الفيروسات، حالة البوابات) |
+| `.env.example` | أُضيفت المتغيرات الحقيقية الناقصة (`PROCESSING_WORKER_ENABLED`، `CLAMD_*`، `MALWARE_SCAN_REQUIRED`، حدود الـ throttle) وصُحّح تعليق الـ process-local |
+
+**ما لم يُنفّذ بعد من P0:** إضافة `LICENSE` و`SECURITY.md` و`CODEOWNERS` (تحتاج قرار ترخيص من المالك)، أرشفة الفرع القديم `arena/dee89266-mafhum` (يحتاج موافقة صريحة قبل الحذف)، وإعادة تشغيل بوابات A/B/C على `main` بعد الدمج. Phase 6 تُنفّذ في نفس الفرع في العمل التالي.
