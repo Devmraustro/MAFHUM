@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Deployment template is documentation, not a secret: it contains placeholders.
+!deploy/.env.prod.example
 *.pem
 *.key
 secrets/

@@ -4,11 +4,11 @@
 #   docker build -f apps/web/Dockerfile -t mafhum-web:0.3.0 apps/web
 #
 # ---------------------------------------------------------------------------
-# NOT YET VERIFIED BY EXECUTION in the environment where this file was written
-# (no container runtime installed). It is exercised by the "Deployment
-# rehearsal" GitHub Actions workflow, which builds and starts the full Compose
-# stack on a runner that does have Docker. Until that run is green, do not
-# describe this image as tested.
+# VERIFIED ON CI (2026-10-27). This image is built and started by
+# .github/workflows/deployment-rehearsal.yml on a runner with Docker; run
+# 40530008866 concluded success with the web home page and the /health rewrite
+# both returning 200. The development sandbox itself has no container runtime,
+# so the image was never built there. See docs/DEPLOYMENT_REHEARSAL_REPORT.md.
 # ---------------------------------------------------------------------------
 #
 # Design notes

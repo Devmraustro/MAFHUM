@@ -169,12 +169,24 @@ Arabic RTL page over real HTTP but **cannot reach any API** because the API is
 not hosted there — a frontend-only rehearsal. See
 `docs/DEPLOYMENT_REHEARSAL_REPORT.md`.
 
-**Still open:** no external alerting/dashboard is wired to the metrics endpoint;
-no managed PostgreSQL, TLS terminator, secrets manager or private object store
-is configured; no production deployment on real infrastructure has been
-performed; the staging gates have not been re-run on `main` since the merges.
-The Vercel rehearsal, if recorded, is a frontend-only deployment — the API is
-not hosted there.
+**Post-merge follow-up (2026-10-27):** PR #3 merged into `main` and its push
+automatically re-ran CI, the staging gates and the deployment rehearsal on
+`main`. Five documentation contradictions found in review were corrected,
+`admin_access_denied` writes are now throttled to one row per actor per minute,
+`admin_metrics_viewed` is audited, and the operator CLI refuses to demote the
+last admin without `--force`. A free scheduled uptime probe
+(`.github/workflows/uptime-monitor.yml`, `tools/monitoring/probe.py`) and a
+structural PPTX pre-render gate (`apps/api/tools/check_pptx_visual.py`) were
+added, plus a self-hosted production blueprint in `deploy/`.
+See `docs/MONITORING.md`, `docs/FULL_STACK_DEPLOYMENT.md` and
+`docs/STATUS_REPORT_2026-10-27.md` §13.
+
+**Still open:** no public API origin (the Vercel deployment is deliberately
+frontend-only, and the user chose to keep it that way); no managed PostgreSQL,
+TLS terminator, secrets manager or private object store; no Prometheus scrape
+credential, dashboard or external alerting; no pixel-level PPTX render check
+(no LibreOffice/PowerPoint available); no `LICENSE` (owner decision recorded as
+"not now"). The `deploy/` stack is configuration, not an executed deployment.
 
 ---
 

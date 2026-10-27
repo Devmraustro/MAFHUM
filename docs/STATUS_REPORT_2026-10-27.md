@@ -291,10 +291,69 @@ ruff + mypy strict               نظيفان (69 ملف مصدر)
 
 ### ما تبقّى حتى الإنجاز الكامل (محدَّث)
 
-1. **دمج PR #3** في `main` (يحتاج قرارك؛ لم أدمجه).
+1. ~~**دمج PR #3** في `main`~~ — **تم** في 2026-10-27 21:54 UTC (commit `e106727`) بعد المراجعة؛ أطلق الدمج تلقائياً CI + Staging + Deployment rehearsal على `main`.
 2. **استضافة الـ API فعلياً**: لا يوجد أصل عام للـ API، لذلك نشر Vercel الحالي **واجهة فقط** وكل طلب `/api` يفشل. يحتاج خدمة FastAPI + PostgreSQL مُدارة + TLS + `ALLOWED_ORIGINS` صحيح + إعادة بناء الويب بـ `MAFHUM_API_URL` حقيقي.
 3. **ربط المراقبة**: لا يوجد تنبيه/لوحة/تجميع سجلات/فحص جاهزية خارجي؛ endpoint الـ metrics مصدر فقط.
 4. **فحص بصري للعروض** في PowerPoint/LibreOffice (غير متوفرين في البيئة).
 5. **اختيار ترخيص** وإضافة `LICENSE` (المستودع بلا ترخيص — قرار المالك).
 6. **الفجوات القديمة**: لا OCR، لا mock AI gateway، لا تصدير حساب، مصادر حية غير موثّقة، لا محرك فيروسات افتراضي، لا تشفير at rest، لا اختبار اختراق/تغميم، ولا أرشفة للفرع القديم `arena/dee89266-mafhum`.
-7. **إعادة بوابات Staging** بعد دمج PR #3 (محفّزها يعمل على `main` عند تغيير مساراتها؛ `workflow_dispatch` اليدوي ما زال مرفوضاً بـ 403 لصلاحيات الـ token).
+7. ~~**إعادة بوابات Staging** بعد دمج PR #3~~ — **تمت تلقائياً** (run `40590637500`). `workflow_dispatch` اليدوي ما زال مرفوضاً بـ 403 لصلاحيات الـ token، لكن محفّز `push` على `main` يعمل.
+
+
+---
+
+## 13. تحديث ما بعد الدمج — إكمال الخطوات (نفس اليوم، على الفرع `arena/1c68522d-mafhum`)
+
+بعد ضغط **Continue** انتقل العمل إلى فرع جديد، ودُمج PR #3 فعلياً (لم يكن مدموجاً رغم حالة `pr_merged` السابقة)، ثم نُفّذ ما يلي.
+
+### أ. تصحيح تناقضات الوثائق الخمسة
+
+| الملف | التصحيح |
+|---|---|
+| `docs/SECURITY_ASSESSMENTS.md` §2 | حُذفت عبارة "لا يوجد `apps/web/Dockerfile` ولم يُشغّل Compose"؛ أُضيف دليل run `40530008866` و`40523074856` مع ما زال غير مُتحقَّق (فحص الأسرار في الصور، نشر دائم) |
+| `docs/ROADMAP.md` §Phase 7 | حُذفت عبارة "بوابات Staging لم تُعَد" والتحفّظ "if recorded"؛ أُضيف قسم ما بعد الدمج |
+| `apps/web/Dockerfile` | الترويسة صارت "VERIFIED ON CI (2026-10-27)" بدل "NOT YET VERIFIED" |
+| `docker-compose.yml` | نفس التصحيح مع تمييز واضح: rehearsal على CI ≠ خدمة إنتاج |
+| `docs/STAGING_ACCEPTANCE_REPORT.md` §5 | وُسم القسم كسجل تاريخي superseded يعلو دليل 2026-10-27 |
+| `docs/STATUS_REPORT_2026-10-27.md` §12 | صُحّحت عبارتا "لم أدمجه" و"بعد الدمج" |
+
+### ب. تحسينات أمنية (مراجعة ما بعد الدمج)
+
+- `AuditService.record_denied_once()`: حدّ أقصى **صف رفض واحد لكل مستخدم كل 60 ثانية** عبر `COUNT` في قاعدة البيانات (يعمل عبر النسخ المتعددة) — منع إغراق جدول التدقيق.
+- `/api/v1/admin/metrics` صار يسجّل حدث `admin_metrics_viewed` أسوة بباقي نقاط الإدارة.
+- `apps/api/tools/set_admin.py` يرفض تجريد **آخر admin نشط** بدون `--force` (ودائماً يسجّل الحدث).
+- `tools/e2e/compose_smoke.py` صار يتحقق من جسم الاستجابة: عند 201 يتأكد من وجود artifact و`slide_count>0`؛ عند 409 يوضّح أن `insufficient_evidence` إجابة صحيحة غير مُختلقة.
+- 3 اختبارات جديدة في `test_admin_audit.py` (المجموع 14 في الملف) وكلها ناجحة.
+
+### ج. مراقبة مجانية حقيقية
+
+- `tools/monitoring/probe.py`: فحص uptime/mحتوى بلا تبعيات (stdlib فقط) — يتحقق 200 + وجود `مَفْهُوم` + مهلة زمنية، ويُخرج JSON مُطهَّراً.
+- `.github/workflows/uptime-monitor.yml`: مهمة `selftest` على كل push/PR (صفحة سليمة تنجح، صفحة خاطئة تفشل → لا أخضر كاذب)، ومهمة `live-probe` كل 15 دقيقة + `workflow_dispatch` على نطاق Vercel مع `vars.MAFHUM_WEB_URL` قابل للتغيير. قناة التنبيه = إشعار فشل GitHub Actions.
+- `docs/MONITORING.md` يوثّق بصراحة: لا يوجد بعد scrape credential لـ Prometheus، ولا لوحة، ولا تنبيه خارجي، ولا مراقبة للـ API لأنه غير منشور.
+
+### د. فحص ما قبل العرض البصري
+
+- `apps/api/tools/check_pptx_visual.py`: يفحص ZIP/OOXML، absence of bidi controls، علامات RTL، `a:cs`، `lang`، أجزاء chart/table، أبعاد 16:9، وتقدير فيض النص — ويُعلن صراحة `render_check: NOT PERFORMED`.
+- أُضيف إلى `MAFHUM CI` خطوة على **كلا** ملفي الـ benchmark. محلياً: كلا الملفين `ok=true, problems=[], warnings=[]`.
+
+### هـ. مسار نشر كامل (تجهيز، لا تنفيذ)
+
+- `deploy/docker-compose.prod.yml` + `deploy/Caddyfile` + `deploy/.env.prod.example`: db + api + web + Caddy مع TLS تلقائي، وحدات تخزين دائمة، `APP_ENV=production`، وأسرار من البيئة فقط. **لم يُنفَّذ** (لا خادم/نطاق/بيانات دخول).
+- `docs/FULL_STACK_DEPLOYMENT.md`: يشرح لماذا يبقى نشر Vercel واجهة فقط، ولماذا يحتاج المشروع قرصاً دائماً (لا يوجد object-store adapter)، وخطوات المشغّل.
+- **قرار المستخدم:** الإبقاء على نشر Vercel التجريبي **كما هو**؛ لم أغيّره.
+- **قرار المستخدم:** **لا ملف `LICENSE` الآن** — يبقى المستودع بلا ترخيص، موثّق كقرار مفتوح للمالك.
+
+### و. أدلة `main` بعد دمج PR #3 (محفّز push تلقائي)
+
+```
+40590637390  MAFHUM CI                      success (4/4 وظائف)
+40590637423  Deployment rehearsal           success (db+api+web + نسخ/استعادة)
+40590637500  Staging acceptance probes      success (Gate A/B/C)
+```
+
+### ز. ما تبقّى فعلياً (بعد هذا التحديث)
+
+1. توفير خادم/نطاق وتشغيل `deploy/` ثم ضبط `MAFHUM_API_URL` وقت البناء و`ALLOWED_ORIGINS` — عندها فقط يصبح `/api` عاملاً ويمكن تغيير نشر Vercel (الحالي مُبقى عليه بقرارك).
+2. إضافة scrape credential مقيّد لـ `/admin/metrics` + قواعد تنبيه + لوحة، وتحديد مدة الاحتفاظ بـ `audit_events` والأرشيفات.
+3. فحص بصري بشري لملف PPTX في PowerPoint/LibreOffice (لا يتوفران في أي بيئة تحقق هنا).
+4. اختيار ترخيص لاحقاً، أرشفة الفرع القديم `arena/dee89266-mafhum`، والفجوات القديمة (OCR، mock AI، تصدير الحساب، تشفير at rest، اختبار اختراق).

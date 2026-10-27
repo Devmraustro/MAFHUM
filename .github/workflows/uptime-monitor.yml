@@ -1,0 +1,87 @@
+name: Uptime monitor
+
+# Free, credential-free monitoring. GitHub Actions is the probe runner and its
+# failure notification is the alert channel: no external SaaS is required.
+#
+# Two jobs:
+#   selftest  — proves the probe itself works against a local HTTP server on
+#               every push/PR, so a broken monitor cannot silently go green.
+#   live-probe — checks the real deployed web origin every 15 minutes and on
+#               dispatch. It does NOT check the API: the current Vercel
+#               deployment is frontend-only by design (see docs/MONITORING.md).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/monitoring/**"
+      - ".github/workflows/uptime-monitor.yml"
+  pull_request:
+    paths:
+      - "tools/monitoring/**"
+      - ".github/workflows/uptime-monitor.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime-monitor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    name: Probe self-test (local server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Healthy page must pass
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mafhum-probe
+          printf '<!doctype html><html lang="ar" dir="rtl"><body>مَفْهُوم</body></html>' \
+            > /tmp/mafhum-probe/index.html
+          python -m http.server 8099 --directory /tmp/mafhum-probe >/tmp/probe-server.log 2>&1 &
+          echo $! > /tmp/probe-server.pid
+          trap 'kill "$(cat /tmp/probe-server.pid)" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8099/ >/dev/null; then break; fi
+            sleep 0.3
+          done
+          python tools/monitoring/probe.py --url http://127.0.0.1:8099/ --timeout 3
+      - name: Wrong content must fail (no false green)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mafhum-probe-bad
+          printf '<!doctype html><html><body>not mafhum</body></html>' \
+            > /tmp/mafhum-probe-bad/index.html
+          python -m http.server 8098 --directory /tmp/mafhum-probe-bad >/tmp/probe-bad.log 2>&1 &
+          echo $! > /tmp/probe-bad.pid
+          trap 'kill "$(cat /tmp/probe-bad.pid)" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8098/ >/dev/null; then break; fi
+            sleep 0.3
+          done
+          if python tools/monitoring/probe.py --url http://127.0.0.1:8098/ --timeout 3; then
+            echo "::error::probe accepted a page without the product marker"
+            exit 1
+          fi
+          echo "probe correctly rejected the wrong content"
+
+  live-probe:
+    name: Live web uptime probe
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check deployed web origin
+        env:
+          MAFHUM_WEB_URL: ${{ vars.MAFHUM_WEB_URL || 'https://mafhum-web.vercel.app/' }}
+        run: python tools/monitoring/probe.py --url "$MAFHUM_WEB_URL" --timeout 10

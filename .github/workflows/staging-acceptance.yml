@@ -31,6 +31,14 @@ on:
       # validate against a different probe.
       - "apps/api/tools/eicar_probe.py"
       - "tools/staging_verification.sh"
+      # Phase 7: deployment artefacts change what Gate B builds and what the
+      # live journey exercises, so they must re-run the heavy gates too.
+      - "apps/web/Dockerfile"
+      - "apps/web/.dockerignore"
+      - "docker-compose.yml"
+      - "deploy/**"
+      - "apps/api/src/mafhum_api/api/deps.py"
+      - "apps/api/src/mafhum_api/services/audit/**"
   workflow_dispatch:
     inputs:
       gates:

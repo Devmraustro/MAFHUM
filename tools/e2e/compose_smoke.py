@@ -73,7 +73,11 @@ def main() -> int:
         check("API readiness", wait_for_api(client), f"{API}/health/ready")
 
         web = client.get(f"{WEB}/", timeout=15.0)
-        check("web serves the home page", web.status_code == 200, f"HTTP {web.status_code}")
+        check(
+            "web serves the home page",
+            web.status_code == 200,
+            f"HTTP {web.status_code}",
+        )
 
         proxied = client.get(f"{WEB}/health/live", timeout=15.0)
         check(
@@ -87,16 +91,23 @@ def main() -> int:
         email = f"rehearsal-{uuid.uuid4().hex[:10]}@example.org"
         registered = client.post(
             f"{API}/api/v1/auth/register",
-            json={"email": email, "password": "Rehearsal-Only-1", "display_name": "rehearsal"},
+            json={
+                "email": email,
+                "password": "Rehearsal-Only-1",
+                "display_name": "rehearsal",
+            },
             headers={"Origin": ORIGIN},
         )
-        check("register an account", registered.status_code == 201, registered.text[:120])
+        check(
+            "register an account", registered.status_code == 201, registered.text[:120]
+        )
         csrf = client.cookies.get("mafhum_csrf") or ""
 
         admin = client.get(f"{API}/api/v1/admin/overview", headers={"Origin": ORIGIN})
         check(
             "new admin routes exist but reject a normal user",
-            admin.status_code == 404 and admin.json().get("code") == "resource_not_found",
+            admin.status_code == 404
+            and admin.json().get("code") == "resource_not_found",
             f"HTTP {admin.status_code}",
         )
 
@@ -113,32 +124,54 @@ def main() -> int:
         final: dict[str, object] = {}
         deadline = time.time() + 60.0
         while time.time() < deadline:
-            polled = client.get(f"{API}/api/v1/documents/{doc_id}", headers={"Origin": ORIGIN})
+            polled = client.get(
+                f"{API}/api/v1/documents/{doc_id}", headers={"Origin": ORIGIN}
+            )
             final = polled.json()
             if final.get("status") in {"ready", "failed"}:
                 break
             time.sleep(0.5)
-        check("worker processes the document", final.get("status") == "ready", str(final))
+        check(
+            "worker processes the document", final.get("status") == "ready", str(final)
+        )
 
         download = client.get(
             f"{API}/api/v1/documents/{doc_id}/download", headers={"Origin": ORIGIN}
         )
         check(
             "download is byte-identical",
-            download.status_code == 200 and hashlib.sha256(download.content).hexdigest() == pdf_sha,
+            download.status_code == 200
+            and hashlib.sha256(download.content).hexdigest() == pdf_sha,
             f"HTTP {download.status_code}",
         )
 
         presentation = client.post(
             f"{API}/api/v1/presentations/jobs",
-            json={"title": "عرض النشر", "language": "ar", "question": "ما هو اختبار النشر؟"},
+            json={
+                "title": "عرض النشر",
+                "language": "ar",
+                "question": "ما هو اختبار النشر؟",
+            },
             headers={"Origin": ORIGIN, "X-CSRF-Token": csrf},
         )
         check(
-            "a grounded presentation can be generated",
+            "presentation endpoint answers with a job or an honest no-evidence conflict",
             presentation.status_code in (201, 409),
             f"HTTP {presentation.status_code}",
         )
+        if presentation.status_code == 201:
+            body = presentation.json()
+            check(
+                "generated deck has a downloadable artifact",
+                bool(body.get("artifact")) and body.get("slide_count", 0) > 0,
+                f"slide_count={body.get('slide_count')}",
+            )
+        else:
+            print(
+                "::notice::synthetic PDF did not support the question; "
+                "409 insufficient_evidence is the correct, non-fabricated answer",
+                flush=True,
+            )
 
     return _result()
 
