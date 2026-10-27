@@ -801,3 +801,91 @@ class LoginAttempt(Base):
     # triggered by one confused user from one triggered by guessing, without
     # having to correlate against the sessions table.
     succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: editable presentations. A job is owned by a user; an artifact is a
+# private blob whose key never leaves the server. The spec is stored as JSON so
+# provenance survives even when a source document is deleted later -- `describe`
+# recomputes availability on read instead of trusting the stored flag.
+# ---------------------------------------------------------------------------
+
+
+class PresentationJob(TimestampMixin, Base):
+    """One deck-generation request and the evidence it was built from."""
+
+    __tablename__ = "presentation_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_presentation_jobs_status",
+        ),
+        CheckConstraint("language IN ('ar', 'fr')", name="ck_presentation_jobs_language"),
+        CheckConstraint("slide_count >= 0", name="ck_presentation_jobs_slide_count"),
+        CheckConstraint("citation_count >= 0", name="ck_presentation_jobs_citation_count"),
+        CheckConstraint(
+            "error_message IS NULL OR char_length(error_message) <= 300",
+            name="ck_presentation_jobs_error_len",
+        ),
+        Index("ix_presentation_jobs_owner", "owner_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str] = mapped_column(String(2), nullable=False, default="ar")
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=JobStatus.QUEUED.value,
+        server_default=JobStatus.QUEUED.value,
+    )
+    slide_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    citation_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # The exact spec handed to the generator, including citation locators and
+    # document ids. Used to recompute source availability when a deck is opened.
+    spec: Mapped[dict[str, object]] = mapped_column(JsonVariant, nullable=False, default=dict)
+    generator_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generator_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PresentationArtifact(TimestampMixin, Base):
+    """A private, downloadable PPTX blob produced by one presentation job."""
+
+    __tablename__ = "presentation_artifacts"
+    __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_presentation_artifacts_storage_key"),
+        UniqueConstraint("job_id", name="uq_presentation_artifacts_job"),
+        CheckConstraint("size_bytes > 0", name="ck_presentation_artifacts_size"),
+        CheckConstraint("format = 'pptx'", name="ck_presentation_artifacts_format"),
+        Index("ix_presentation_artifacts_owner", "owner_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("presentation_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    storage_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    format: Mapped[str] = mapped_column(String(8), nullable=False, default="pptx")
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)

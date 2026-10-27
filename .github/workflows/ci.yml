@@ -177,6 +177,33 @@ jobs:
       - name: Production build
         run: npm run build
 
+      # Phase 6: the PptxGenJS comparison generator lives in its own package.
+      # Its tests prove the benchmark deck can still be produced from the exact
+      # same DeckSpec the Python generator consumes.
+      - name: PPTX comparison generator tests
+        working-directory: apps/slides
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: PPTX comparison generator audit
+        # PptxGenJS 4.0.1 declares image-size ^1.2.1, which carries two high
+        # DoS advisories. An override pins the patched 2.0.4; this gate fails if
+        # that override is ever removed or a new advisory appears.
+        working-directory: apps/slides
+        run: npm audit
+
+      - name: PPTX benchmark (both generators)
+        # Node is present here, so the real comparison runs on the runner rather
+        # than being reported from a workstation memory. The tool prints the
+        # measured report and fails if either generator produces a non-editable
+        # or direction-less deck.
+        working-directory: .
+        run: |
+          python3 -m venv /tmp/mafhum-bench
+          /tmp/mafhum-bench/bin/pip install --quiet python-pptx==1.0.2
+          PYTHONPATH=apps/api/src /tmp/mafhum-bench/bin/python apps/api/tools/benchmark_pptx.py
+
       - name: Audit — production runtime
         run: npm audit --omit=dev
 

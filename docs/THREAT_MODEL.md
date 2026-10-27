@@ -189,13 +189,28 @@ Recorded deliberately. None is hidden by a passing test suite.
    input; the worst outcome is a crashed lint process. `npm audit fix --force`
    was **rejected** because it downgrades `eslint-config-next` from 16.4.2 to
    14.2.35 — a breaking change that would not fix `braces` either. Follow-up:
-   re-audit when upstream publishes a fix.
+   re-audit when upstream publishes a fix. **Re-audit 2026-10-27:** `npm audit`
+   on the full `apps/web` tree now reports **0 vulnerabilities** while
+   `braces@3.0.3` is still present through `eslint-config-next`. The triage is
+   retained because the code path has not changed; this is a current registry
+   result, not proof the underlying issue was fixed.
 5. **`pgserver` maintenance cadence.** Its license is confirmed Apache-2.0 (the
    PyPI field is blank, but the upstream `LICENSE` is standard Apache-2.0). The
    repository was last pushed in mid-2024, so it is maintained but not fast
    moving. It is dev/test only and never ships.
 6. **No encryption at rest.** Filesystem permissions only.
-7. **A passing test suite does not prove the absence of vulnerabilities.** The
+7. **Presentation artifacts are user-controlled OOXML.** A generated `.pptx`
+   could in principle contain a student's own text and is served with
+   `nosniff`, `attachment` disposition and a private `Cache-Control`; it is
+   never rendered server-side as HTML. Generation happens in-process, so a
+   library-level parser bug would affect the API process. Bounded specs (slide,
+   text, citation and output-size caps) limit the blast radius, but no
+   sandbox/separate worker isolates it (ADR 0005). No visual render check is
+   performed, so a font-substitution or bidi rendering defect could still reach
+   the student. The PptxGenJS comparison package had two inherited high DoS
+   advisories via `image-size`; they are resolved with a pinned `2.0.4`
+   override and an `npm audit` CI gate, and that package never ships.
+8. **A passing test suite does not prove the absence of vulnerabilities.** The
    suite covers the controls listed above; it is not a penetration test.
 
 ---

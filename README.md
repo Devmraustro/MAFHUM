@@ -31,6 +31,7 @@ French is secondary.
 | Web UI: Arabic-first RTL, French locale, document workspace | Implemented, tested |
 | Grounded research: lexical retrieval, verbatim citations, insufficient-evidence status | Implemented, tested — no language model; `docs/GROUNDING_EVALUATION.md` |
 | Tutor and TD tools: topics, questions, SM-2 flashcards, plans | Implemented, tested |
+| Editable PPTX: jobs, private artifacts, Arabic RTL, French deck, chart/table | Implemented, tested — `docs/PPTX_BENCHMARK.md` |
 | Malware scanning: `clamd` socket integration, fail-closed policy | Integration implemented, tested (stub protocol tests + real ClamAV/EICAR staging gate); **no engine ships** — see limitations |
 | OCR for scanned documents | **Not implemented** — see limitations |
 | AI answer generation beyond grounded extraction | **Not implemented** (`ENABLE_AI_GATEWAY` exists, disabled) |
@@ -100,6 +101,17 @@ npm audit --omit=dev && npm audit
 The backend test suite starts a real PostgreSQL server via `pgserver` (a
 dev-only dependency) and runs the real Alembic migrations against it.
 
+### 5. PPTX benchmark and comparison generator
+
+```bash
+cd apps/slides && npm ci && npm test          # PptxGenJS comparison generator
+cd ../..
+PYTHONPATH=apps/api/src .venv/bin/python apps/api/tools/benchmark_pptx.py
+```
+
+The tool prints measured evidence for both generators on the same six-slide
+Arabic/French fixture. Outputs go to the gitignored `artifacts/` directory.
+
 ### 4. Live end-to-end verification
 
 `tools/e2e/` contains the scripts used to verify a *running* system over real
@@ -145,6 +157,12 @@ HTTP — not mocks:
    order for single-script lines, but a line mixing Arabic with Latin characters
    or punctuation may not round-trip perfectly. This is a limitation of PDF text
    extraction, and it is documented rather than papered over.
+
+6. **No visual render check for presentations.** The generated decks are
+   validated as OOXML (ZIP integrity, native editable text/chart/table shapes,
+   RTL markers, mixed-script preservation), but no LibreOffice or PowerPoint is
+   available in the verification environment. Open the `.pptx` in a real
+   presentation app before relying on its appearance.
 
 See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and
 [`docs/DATA_POLICY.md`](docs/DATA_POLICY.md) for the security and data-handling

@@ -235,6 +235,14 @@ $ npm ls braces --omit=dev
 `-- (empty)                        # not in the production tree
 ```
 
+**Re-audit 2026-10-27 (Phase 6):** `npm audit` on the full `apps/web` tree now
+reports **0 vulnerabilities** (exit 0), while `npm ls braces --all` still shows
+`braces@3.0.3` via `eslint-config-next`. The earlier 5-high result below is a
+historical measurement; the registry's current advisory data no longer flags it.
+The triage is kept because nothing in the dependency path changed. A new
+`apps/slides` audit gate was added for the PptxGenJS comparison package: after
+pinning `image-size@2.0.4` via an override, it reports 0 vulnerabilities too.
+
 `braces` (GHSA-vfj7-8cjw-p6xm, stack exhaustion via deeply nested patterns)
 affects `<=3.0.3` and has **no patched release**. It reaches the tree only
 through `eslint-config-next → @next/eslint-plugin-next → fast-glob → micromatch`,

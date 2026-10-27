@@ -51,6 +51,7 @@ export function SiteHeader() {
     { href: "/documents", label: t("nav.documents") },
     { href: "/research", label: t("nav.research") },
     { href: "/study", label: t("nav.study") },
+    { href: "/presentations", label: t("nav.presentations") },
   ];
 
   return (

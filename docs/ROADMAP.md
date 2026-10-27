@@ -12,7 +12,7 @@ for what remains a residual risk.
 | 3 — Documents and source catalog | Done, with documented limitations |
 | 4 — Grounded research | Done, with documented limitations |
 | 5 — Tutor and TD tools | Done, with documented limitations |
-| 6 — Editable presentations | Not started |
+| 6 — Editable presentations | Done, with documented limitations (no visual render check) |
 | 7 — Admin and deployment rehearsal | Partially done — backup/restore tooling implemented; no admin role, no deployment rehearsal |
 
 ---
@@ -117,7 +117,24 @@ on read.
 
 ## Phase 6 — Editable presentations
 
-**Not started.** PptxGenJS has not been evaluated and no generator exists.
+**Done, with documented limitations.** A `DeckGenerator` protocol with a
+`python-pptx` production adapter writes native editable text boxes, a real chart
+and a real table; Arabic direction is written at paragraph/run/table level.
+PptxGenJS 4.0.1 was evaluated against the **same six-slide Arabic/French
+`DeckSpec` fixture** and kept as a comparison tool (Marp was rejected). Measured
+results are in `docs/PPTX_BENCHMARK.md`, the decision in
+`docs/ADR/0005-pptx-generator.md`.
+
+Endpoints: `POST/GET /api/v1/presentations/jobs`, `GET/DELETE
+/api/v1/presentations/jobs/{id}`, `GET /api/v1/artifacts/{id}/download`.
+Artifacts are private blobs with ownership checked in SQL; account deletion
+erases them before dropping the rows. Generation is synchronous and bounded by
+caps on evidence, slides, text and output size (see ADR 0005).
+
+**Limitations:** no LibreOffice/PowerPoint render was available here, so visual
+fidelity is unverified; fonts are not embedded; generation is not a background
+job; a deck built from a deleted source keeps its snapshot but reports
+`sources_available=false`.
 
 ## Phase 7 — Admin and deployment rehearsal
 

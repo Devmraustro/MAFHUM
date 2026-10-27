@@ -108,6 +108,78 @@ version considered — not inferred from popularity or from a package's README.
 | Scanned-PDF handling | **Detect and report; do not OCR** |
 | Malware scanning | **Not integrated — do not claim it** |
 | Test PostgreSQL | pgserver 0.1.4 (dev/test only, Apache-2.0) |
+| Editable PPTX (production) | python-pptx 1.0.2 (MIT) |
+| Editable PPTX (comparison only) | PptxGenJS 4.0.1 (MIT, dev/benchmark) |
+| Markdown → editable PPTX | **Marp CLI rejected** (image export; editable mode experimental) |
 
 Two overlapping PDF parsers were deliberately **not** adopted. One parser per
 format keeps the extraction behaviour predictable and the audit surface small.
+
+
+---
+
+## Phase 6 — editable presentations (2026-10-27)
+
+The upstream README, the exact LICENSE file, the package manifest, release
+activity and the dependency tree were inspected for each candidate. Licenses
+below were read from the upstream LICENSE text, not inferred from a README badge.
+
+### Adopted: python-pptx 1.0.2 — production generator
+
+- **License:** MIT — verified from
+  `https://raw.githubusercontent.com/scanny/python-pptx/master/LICENSE`
+  (Copyright (c) 2013 Steve Canny). PyPI metadata for 1.0.2 also reports MIT.
+- **Why:** pure Python, no native binaries or model downloads, active project,
+  produces native editable text/chart/table objects. It runs inside the already
+  verified `python:3.11-slim` API image without adding a second runtime.
+- **Dependencies pulled in:** `lxml`, `Pillow`, `XlsxWriter`, `typing_extensions`.
+  `pip-audit` reports no known vulnerabilities for the pinned tree.
+- **Modifications:** none to the library. RTL attributes are written through its
+  public XML model (`a:pPr`, `a:rPr`, `a:tblPr`) from MAFHUM's own generator.
+- **Test status:** 12 backend tests + the six-slide benchmark; see
+  `docs/PPTX_BENCHMARK.md`.
+
+### Comparison only: PptxGenJS 4.0.1 — not in the production image
+
+- **License:** MIT — verified from
+  `https://raw.githubusercontent.com/gitbrent/PptxGenJS/master/LICENSE`
+  (Copyright (c) 2015-2022 Brent Ely); npm registry metadata also reports MIT.
+- **Review:** actively maintained, 19 transitive packages in our install,
+  built-in `rtlMode` and `lang` text options, native chart/table APIs.
+- **Why not production here:** the API container has no Node runtime. Adding one
+  would change an image that Gate B already verified, and Docker is unavailable
+  in this environment to re-verify it. It stays as a dev/benchmark dependency in
+  `apps/slides` and is pinned exactly.
+- **Security review (2026-10-27):** `npm audit` on the unmodified install
+  reported **2 high advisories** inherited through `image-size@1.2.1`
+  (GHSA-5p2g-fcmc-qvqq and GHSA-w3rx-r6r6-pgpr — infinite-loop DoS in JXL/HEIF
+  and ICNS parsers). Upstream 4.0.1 declares `image-size ^1.2.1`; 4.0.0 is not
+  a clean fix either. `apps/slides/package.json` therefore pins an `overrides`
+  entry to **`image-size@2.0.4` (MIT)**, which is outside both advisory ranges.
+  This is a major-version override, justified by a narrow scope: the benchmark
+  spec contains **no images**, so the image-size API is never called. The
+  override is confined to the dev/benchmark package and is verified by
+  `npm audit` (0 vulnerabilities), the Node tests and an unchanged 6-slide
+  benchmark output. Remove it when upstream publishes a fixed dependency range.
+- **Measured caveat:** it does not set `a:tblPr@rtl` for tables and can leave
+  mixed-script runs with the default `en-US` language unless `lang` is passed
+  explicitly (we pass it). See the benchmark.
+
+### Rejected: Marp CLI — documentation review, not installed
+
+- **License:** MIT per package metadata (previously recorded in this register).
+- **Reason:** its standard PPTX export is one pre-rendered image per slide, so
+  the output is **not editable** — a hard requirement. The experimental
+  `--pptx-editable` mode requires both a browser and LibreOffice Impress, warns
+  it may produce incomplete results, and drops presenter notes. Neither runtime
+  is available here and the upstream maintainer describes web-to-editable-PPTX
+  conversion as inherently unreliable. Marp was therefore not installed or
+  benchmarked; this is an explicit, evidence-backed rejection, not a measured
+  tie.
+- **Sources:** `https://github.com/marp-team/marp-cli`, issue #166,
+  discussion #82.
+
+### Unchanged
+
+No code from any of these projects was copied into MAFHUM. All are consumed as
+declared dependencies, and `THIRD_PARTY_NOTICES.md` records the pinned versions.

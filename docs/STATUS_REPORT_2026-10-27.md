@@ -210,3 +210,47 @@ gh issue list / gh release list                   # فارغان
 | `.env.example` | أُضيفت المتغيرات الحقيقية الناقصة (`PROCESSING_WORKER_ENABLED`، `CLAMD_*`، `MALWARE_SCAN_REQUIRED`، حدود الـ throttle) وصُحّح تعليق الـ process-local |
 
 **ما لم يُنفّذ بعد من P0:** إضافة `LICENSE` و`SECURITY.md` و`CODEOWNERS` (تحتاج قرار ترخيص من المالك)، أرشفة الفرع القديم `arena/dee89266-mafhum` (يحتاج موافقة صريحة قبل الحذف)، وإعادة تشغيل بوابات A/B/C على `main` بعد الدمج. Phase 6 تُنفّذ في نفس الفرع في العمل التالي.
+
+---
+
+## 11. تحديث التنفيذ — Phase 6 نُفّذت (نفس اليوم)
+
+### ما أُنجز
+
+| البند | التفصيل |
+|---|---|
+| المولّد | `DeckGenerator` بروتوكول + `PythonPptxGenerator` (python-pptx 1.0.2, MIT). كتابة RTL على مستوى الفقرة (`a:pPr@rtl`)، التشغيل (`a:rPr@lang`, `a:cs`) والجدول (`a:tblPr@rtl`) |
+| المقارنة | PptxGenJS 4.0.1 (MIT) في `apps/slides` على **نفس** مواصفة العرض المعيارية؛ Marp مرفوض (تصدير صوري/تجريبي). ADR 0005 + `docs/PPTX_BENCHMARK.md` بأرقام مقاسة |
+| المحتوى | العرض يُبنى من اقتباسات حرفية فقط + مخطط بعدّ الاقتباسات الحقيقي + جدول مراجع；لا نصوص أكاديمية مُختلقة |
+| قاعدة البيانات | هجرة `0008_presentations` بجدولين `presentation_jobs` و`presentation_artifacts` مع قيود وفهارس، واختبار linear-chain محدّث |
+| API | `POST/GET /api/v1/presentations/jobs`، `GET/DELETE /api/v1/presentations/jobs/{id}`، `GET /api/v1/artifacts/{id}/download` — ملكية مُتحقَّق منها في SQL، و404 متطابقة للمستخدم الآخر |
+| الأمن | حدود على عدد العروض/الاقتباسات/الشرائح/النص/حجم المخرج؛ حذف المهمة يمسح الـ blob؛ حذف الحساب يمسح عروض PPTX قبل حذف الصفوف؛ إعادة حساب توفّر المصادر عند القراءة |
+| الواجهة | صفحة `/presentations` عربية RTL + فرنسية، وسم "مسودة" دائم، تنزيل نسبي، تحذير عند حذف مصدر، 6 اختبارات جديدة |
+| CI | خطوة لاختبارات مولّد المقارنة + خطوة `npm audit` له + خطوة benchmark لكلا المولّدين |
+
+### نتائج التحقق الفعلية (محلياً، 2026-10-27)
+
+```
+ruff check apps/api                      All checks passed
+ruff format --check apps/api            116 files already formatted
+mypy src (strict)                       Success: no issues found in 66 source files
+pytest (full, real PostgreSQL)          all passed, 4 skips (live-egress opt-ins), exit 0
+pip-audit                               No known vulnerabilities found (exit 0)
+web: typecheck / lint / test / build    0 / 0 / 107 passed / OK (route /presentations)
+web: npm audit (prod + full)            0 vulnerabilities
+apps/slides: npm test                   2 passed
+apps/slides: npm audit                  0 vulnerabilities (after image-size 2.0.4 override)
+pptx benchmark (both generators)        exit 0, 6 slides, editable, RTL, chart+table
+YAML + .env.example contract            OK / 0 unknown settings
+```
+
+**ملاحظة بيئية بصراحة:** لا يوجد Docker ولا LibreOffice/PowerPoint في هذه البيئة؛ لذلك **لم يُفتح أي عرض بصرياً** ولم يُبنى `docker compose up`. محاولة `workflow_dispatch` يدوي عبر API رُفضت بـ 403 لضعف صلاحيات الـ token، لذا بوابات staging لم تُعَد بعد الدمج.
+
+### ما تبقّى بعد Phase 6 (محدَّث)
+
+1. **Phase 7** — دور admin وأحداث تدقيق، مراقبة/تنبيهات，**نشر حقيقي مُختبَر عبر رابط فعلي**، تجربة نسخ/استعادة ودليل rollback. الواجهة لا تزال بلا `Dockerfile`/إعداد نشر.
+2. **دمج PR #2** (هذا الفرع) في `main` حتى تدخل إصلاحات P0 والـ Phase 6 إلى الفرع الافتراضي.
+3. **إعادة بوابات Staging A/B/C** على `main` بعد الدمج، وتشغيل `docker compose up` فعلياً في runner.
+4. **فحص بصري للعروض** في PowerPoint/LibreOffice لتأكيد تشكيل العربية واتجاه الجداول.
+5. **الفجوات القديمة ما زالت قائمة:** لا OCR، لا mock AI gateway (العلم فقط)، لا تصدير بيانات الحساب، استرجاع المصادر الحية غير موثّق، لا محرك فيروسات في التثبيت الافتراضي، لا تشفير at rest، ولا اختبار اختراق.
+6. **إصدار** `LICENSE`/`SECURITY.md`/`CODEOWNERS` (يحتاج قرار المالك) وأرشفة الفرع القديم `arena/dee89266-mafhum`.

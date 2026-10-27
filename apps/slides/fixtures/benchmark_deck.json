@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "title": "الأدلة والمراجع في البحث الجامعي",
+  "subtitle": "MAFHUM — عرض معياري عربي/فرنسي (نصوص اصطناعية)",
+  "language": "ar",
+  "rtl": true,
+  "draft_notice": "مسودة للمراجعة — تحقق من المصادر قبل تقديم العرض",
+  "citations": [
+    {
+      "index": 1,
+      "quote": "تحدد مدة ولاية رئيس الجمهورية بخمس سنوات وفق النص الدستوري.",
+      "locator": "وثيقة اصطناعية — p. 12 — §3",
+      "title": "وثيقة اصطناعية.pdf",
+      "page_number": 12,
+      "ordinal": 3,
+      "url": null,
+      "document_id": null,
+      "source_id": null,
+      "available": true
+    },
+    {
+      "index": 2,
+      "quote": "La durée du mandat présidentiel est de cinq ans, selon le texte constitutionnel (article 85).",
+      "locator": "Document fictif — p. 4 — §1",
+      "title": "Document fictif.pdf",
+      "page_number": 4,
+      "ordinal": 1,
+      "url": null,
+      "document_id": null,
+      "source_id": null,
+      "available": true
+    }
+  ],
+  "slides": [
+    { "kind": "title", "title": "الأدلة والمراجع في البحث الجامعي", "text": "", "items": [], "citation_indices": [], "chart_labels": [], "chart_values": [], "table_headers": [], "table_rows": [] },
+    { "kind": "bullets", "title": "خطة العرض", "text": "", "items": ["عرض السؤال والمادة المستند إليها", "مقاطع مقتبسة حرفيًا مع موضعها", "توزيع الاقتباسات على المستندات", "قائمة المراجع للتحقق"], "citation_indices": [], "chart_labels": [], "chart_values": [], "table_headers": [], "table_rows": [] },
+    { "kind": "quote", "title": "الدليل 1", "text": "« تحدد مدة ولاية رئيس الجمهورية بخمس سنوات وفق النص الدستوري. »", "items": ["مأخوذ حرفيًا من: وثيقة اصطناعية — p. 12 — §3"], "citation_indices": [1], "chart_labels": [], "chart_values": [], "table_headers": [], "table_rows": [] },
+    { "kind": "quote", "title": "الدليل 2 — مزيج عربي/فرنسي", "text": "« La durée du mandat présidentiel est de cinq ans, selon le texte constitutionnel (article 85). »", "items": ["مأخوذ حرفيًا من: Document fictif — p. 4 — §1"], "citation_indices": [2], "chart_labels": [], "chart_values": [], "table_headers": [], "table_rows": [] },
+    { "kind": "chart", "title": "توزيع الاقتباسات حسب المستند", "text": "", "items": [], "citation_indices": [1, 2], "chart_labels": ["وثيقة اصطناعية.pdf", "Document fictif.pdf"], "chart_values": [1, 1], "table_headers": [], "table_rows": [] },
+    { "kind": "table", "title": "المراجع", "text": "", "items": [], "citation_indices": [1, 2], "chart_labels": [], "chart_values": [], "table_headers": ["#", "المصدر", "الموضع", "الحالة"], "table_rows": [["1", "وثيقة اصطناعية.pdf", "p. 12 — §3", "متاح"], ["2", "Document fictif.pdf", "p. 4 — §1", "متاح"]] }
+  ]
+}

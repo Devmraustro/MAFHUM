@@ -624,3 +624,71 @@ export const study = {
     });
   },
 };
+
+// ------------------------------------------------------------ presentations
+export interface PresentationCitation {
+  index: number;
+  locator: string;
+  title: string | null;
+  page_number: number | null;
+  available: boolean;
+}
+
+export interface PresentationArtifact {
+  id: string;
+  filename: string;
+  size_bytes: number;
+}
+
+export type PresentationStatus = "queued" | "running" | "succeeded" | "failed";
+
+export interface PresentationJob {
+  id: string;
+  title: string;
+  question: string;
+  language: "ar" | "fr";
+  status: PresentationStatus;
+  slide_count: number;
+  citation_count: number;
+  sources_available: boolean;
+  citations: PresentationCitation[];
+  generator: string | null;
+  error_code: string | null;
+  created_at: string | null;
+  artifact: PresentationArtifact | null;
+}
+
+export interface PresentationJobList {
+  items: PresentationJob[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export const presentations = {
+  create(payload: {
+    title: string;
+    language: "ar" | "fr";
+    question?: string;
+    saved_research_id?: string;
+  }): Promise<PresentationJob> {
+    return request("/presentations/jobs", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  list(): Promise<PresentationJobList> {
+    return request("/presentations/jobs");
+  },
+
+  get(id: string): Promise<PresentationJob> {
+    return request(`/presentations/jobs/${id}`);
+  },
+
+  remove(id: string): Promise<void> {
+    return request(`/presentations/jobs/${id}`, { method: "DELETE" });
+  },
+
+  /** Relative URL: the browser stays same-origin and keeps its session cookie. */
+  downloadUrl(artifactId: string): string {
+    return `${API_PREFIX}/artifacts/${artifactId}/download`;
+  },
+};

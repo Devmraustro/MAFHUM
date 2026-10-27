@@ -181,7 +181,7 @@ Approved source adapters, lexical retrieval, evidence-pack schema, cite resolver
 Simplification, alternate examples, comprehension questions, TD problem statement/outline. AI output clearly labelled draft.
 
 ### Phase 6 — editable presentations
-PptxGenJS baseline, compare Marp if useful. Test a 6-slide Arabic/French deck with bullets, quotation, chart, table, footers and bibliography; verify valid, editable PPTX and inspect RTL render.
+Implemented 2026-10-27 with a `DeckGenerator` protocol. Production uses python-pptx (MIT); PptxGenJS 4.0.1 is measured as a comparison generator on the same six-slide Arabic/French fixture; Marp was rejected as non-editable/experimental. A 6-slide benchmark deck with bullets, two verbatim quotations, a chart, a table, footers and a bibliography is validated for ZIP integrity, native editable objects, paragraph/run/table RTL and mixed-script preservation (`docs/PPTX_BENCHMARK.md`, `docs/ADR/0005-pptx-generator.md`). **Pixel-level RTL rendering in PowerPoint/LibreOffice remains unverified** because neither application is installed in the verification environment.
 
 ### Phase 7 — admin, quotas and deployment rehearsal
 Roles, abuse controls, redacted logs/metrics, backups and restore drill, data deletion, deployment limits and rollback guide. Confirm free-tier limits from current docs; no promise of free 24/7 GPU inference.

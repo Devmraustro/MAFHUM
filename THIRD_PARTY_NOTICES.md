@@ -25,6 +25,7 @@ as declared dependencies.
 | python-multipart | 0.0.32 | Apache-2.0 | Multipart upload parsing |
 | pypdf | 6.21.2 | BSD-3-Clause | PDF text extraction |
 | python-docx | 1.2.0 | MIT | DOCX text extraction |
+| **python-pptx** | 1.0.2 | MIT | Editable PPTX generation (Phase 6); pulls in lxml, Pillow, XlsxWriter |
 | lxml | 6.1.3 | BSD-3-Clause | Pulled in by python-docx |
 | email-validator | 2.3.0 | **Unlicense** (public domain) | Email syntax validation |
 
@@ -119,6 +120,20 @@ All MIT unless stated. Verified against the npm registry.
 entry, because `typescript-eslint` (via `eslint-config-next`) requires
 `>=4.8.4 <6.1.0`. Without the override, npm backtracks indefinitely trying to
 upgrade TypeScript and the install never completes.
+
+---
+
+## Node.js — `apps/slides` (Phase 6 comparison generator; dev/benchmark only)
+
+| Package | Pinned version | License | Notes |
+|---|---|---|---|
+| pptxgenjs | 4.0.1 | MIT | Produces the comparison deck from the same `DeckSpec` fixture; never shipped in the API image |
+| image-size (override) | 2.0.4 | MIT | Pinned over pptxgenjs' `^1.2.1` range to clear GHSA-5p2g-fcmc-qvqq / GHSA-w3rx-r6r6-pgpr; see `docs/OSS_REUSE_REGISTER.md` |
+
+The MIT notice for PptxGenJS (Copyright (c) 2015-2022 Brent Ely) and for
+python-pptx (Copyright (c) 2013 Steve Canny) are preserved by the packages
+themselves and recorded here with their upstream LICENSE URLs in
+`docs/OSS_REUSE_REGISTER.md`.
 
 ---
 

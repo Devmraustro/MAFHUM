@@ -35,6 +35,11 @@ from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
+from mafhum_api.services.presentations.generator import PythonPptxGenerator
+from mafhum_api.services.presentations.service import (
+    PresentationLimits,
+    PresentationService,
+)
 from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.retrieval import HttpSourceFetcher
 from mafhum_api.services.research.service import ResearchService
@@ -79,6 +84,17 @@ def build_context(settings: Settings | None = None) -> AppContext:
     limits = document_limits(settings)
     worker = ProcessingWorker(database, storage, limits, worker_config(settings))
     scanner = build_scanner(settings)
+    research = ResearchService(HttpSourceFetcher() if settings.research_retrieval_enabled else None)
+    presentations = PresentationService(
+        storage,
+        PythonPptxGenerator(),
+        research,
+        PresentationLimits(
+            max_jobs_per_user=settings.max_presentations_per_user,
+            max_citations=settings.presentation_max_citations,
+            max_output_bytes=settings.presentation_max_output_mb * 1024 * 1024,
+        ),
+    )
     return AppContext(
         settings=settings,
         database=database,
@@ -94,10 +110,9 @@ def build_context(settings: Settings | None = None) -> AppContext:
         ),
         sources=SourceService(),
         deletion=DeletionService(storage),
-        research=ResearchService(
-            HttpSourceFetcher() if settings.research_retrieval_enabled else None
-        ),
+        research=research,
         study=StudyService(),
+        presentations=presentations,
         worker=worker,
         login_throttle=LoginThrottle(
             database,
