@@ -244,7 +244,9 @@ pptx benchmark (both generators)        exit 0, 6 slides, editable, RTL, chart+t
 YAML + .env.example contract            OK / 0 unknown settings
 ```
 
-**ملاحظة بيئية بصراحة:** لا يوجد Docker ولا LibreOffice/PowerPoint في هذه البيئة؛ لذلك **لم يُفتح أي عرض بصرياً** ولم يُبنى `docker compose up`. محاولة `workflow_dispatch` يدوي عبر API رُفضت بـ 403 لضعف صلاحيات الـ token، لذا بوابات staging لم تُعَد بعد الدمج.
+**دليل CI إضافي (على GitHub runner):** فُتح **PR #2** من فرع الجلسة إلى `main` ويحمل كل عمل P0 + Phase 6. تشغيل `MAFHUM CI` رقم **`40518074098`** على HEAD `ee2fe8ac` انتهى **success بـ 4/4 وظائف**: Repository baseline، Backend (lint/types/tests)، Migrations (upgrade/downgrade/upgrade)، Frontend (lint/types/tests/build + اختبارات مولّد المقارنة + `npm audit` له + benchmark لكلا المولّدين). هذا يثبت أن مسار Node/PptxGenJS يعمل على runner حقيقي وليس فقط محلياً.
+
+**ملاحظة بيئية بصراحة:** لا يوجد Docker ولا LibreOffice/PowerPoint في هذه البيئة؛ لذلك **لم يُفتح أي عرض بصرياً** ولم يُبنى `docker compose up`. محاولة `workflow_dispatch` يدوي عبر API رُفضت بـ 403 لضعف صلاحيات الـ token، لذا بوابات staging لم تُعَد بعد الدمج. سجلات خطوات الـ runner غير قابلة للتنزيل من هذه البيئة (blob host خارج المسموح)، لكن حالة كل خطوة موثّقة كـ success في واجهة التشغيل.
 
 ### ما تبقّى بعد Phase 6 (محدَّث)
 
