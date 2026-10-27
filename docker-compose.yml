@@ -5,13 +5,14 @@
 # automated backup, and no TLS termination.
 #
 # ---------------------------------------------------------------------------
-# NOT YET VERIFIED BY EXECUTION.
-# No container runtime (docker, podman, nerdctl) is installed in the environment
-# where this was written, so `docker compose up` has not been observed to start
-# this stack. What IS verified: the PostgreSQL 16 migrations run cleanly
-# up->down->up against a real PostgreSQL 16.2, and the API boots and serves
-# /health/live and /health/ready when run directly. See
-# docs/OPERATIONAL_HARDENING_REPORT.md.
+# NOT YET VERIFIED BY EXECUTION in the environment where this file was written:
+# no container runtime (docker, podman, nerdctl) is installed there. What IS
+# verified: PostgreSQL 16 migrations run cleanly up->down->up, the API boots
+# and serves /health/live and /health/ready when run directly, and Gate B built
+# and ran the API image on a GitHub-hosted runner. The full three-service stack
+# is exercised by .github/workflows/deployment-rehearsal.yml on a runner with
+# Docker; until that run is green, `docker compose up` is not claimed as tested.
+# See docs/OPERATIONAL_HARDENING_REPORT.md.
 # ---------------------------------------------------------------------------
 #
 # Scaling note
@@ -108,6 +109,50 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+
+  # Arabic-first Next.js frontend. It serves the UI and proxies /api and /health
+  # to the API container, so the browser stays same-origin and cookies work.
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        # Build-time rewrite target (see apps/web/Dockerfile). Must match the
+        # API service name, not 127.0.0.1 (which is the web container itself).
+        MAFHUM_API_URL: http://api:8000
+    image: mafhum-web:0.3.0
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Server-side rewrite target, never exposed to the browser.
+      MAFHUM_API_URL: http://api:8000
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    security_opt:
+      - no-new-privileges:true
+    # Unlike the API, the web process does not parse untrusted files. It is
+    # still non-root; `read_only` is deliberately not set here because Next.js
+    # may write to .next/cache at runtime and a failed write would break the
+    # server rather than harden it.
 
 volumes:
   pgdata:

@@ -73,3 +73,29 @@ rather than admitting them.
 Until a real engine has been verified with the EICAR test file, do not claim
 malware protection. `GET /api/v1/documents/limits` reports the live
 `malware_scanning_available` state.
+
+
+## Administration and audit (Phase 7)
+
+The `admin` role is a database value constrained by a CHECK, not a claim in a
+token. Grant it from the operator's command line; **no HTTP endpoint can change
+a role**:
+
+```bash
+DATABASE_URL='postgresql://...' python apps/api/tools/set_admin.py \
+  --email operator@example.com --role admin
+python apps/api/tools/set_admin.py --list
+```
+
+Every grant appends an `admin_role_changed` audit row. Admin views are read-only:
+`/api/v1/admin/overview`, `/usage`, `/audit-events`, `/metrics`. A non-admin
+receives the same `404 resource_not_found` envelope as a missing resource, and
+the denial is itself recorded on a separate transaction.
+
+Audit details are allow-listed and bounded: no email, filename, URL, IP, token
+or document text. `actor_id` is nullable so deleting an account preserves the
+event without a dangling reference. There is no API to edit or delete an event.
+
+The full operator procedure (pre-deploy backup, deploy, verify, rollback) is in
+[`docs/DEPLOYMENT_RUNBOOK.md`](DEPLOYMENT_RUNBOOK.md) and
+[`docs/ROLLBACK_GUIDE.md`](ROLLBACK_GUIDE.md).

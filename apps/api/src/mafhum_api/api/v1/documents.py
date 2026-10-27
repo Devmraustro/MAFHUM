@@ -135,6 +135,13 @@ async def upload_document(
         fileobj=file.file,
         project_id=parsed_project_id,
     )
+    context.audit.record(
+        db,
+        action="document_uploaded",
+        actor_id=user.id,
+        target_type="document",
+        target_id=str(document.id),
+    )
     db.commit()
     # Nudge the worker instead of waiting for its next poll.
     context.worker.wake()
@@ -279,6 +286,13 @@ def delete_document(
     db: DbSession,
 ) -> DocumentDeletedResponse:
     context.documents.delete(db, user.id, document_id)
+    context.audit.record(
+        db,
+        action="document_deleted",
+        actor_id=user.id,
+        target_type="document",
+        target_id=str(document_id),
+    )
     db.commit()
     return DocumentDeletedResponse(id=document_id, deleted=True)
 

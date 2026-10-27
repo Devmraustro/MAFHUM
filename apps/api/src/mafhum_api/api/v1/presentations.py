@@ -130,6 +130,14 @@ def create_job(
             saved_research_id=payload.saved_research_id,
         ),
     )
+    context.audit.record(
+        db,
+        action="presentation_created",
+        actor_id=user.id,
+        target_type="presentation",
+        target_id=str(job.id),
+        details={"count": job.slide_count},
+    )
     db.commit()
     return _response(context, db, user, job)
 
@@ -173,6 +181,13 @@ def delete_job(
     db: DbSession,
 ) -> PresentationDeletedResponse:
     context.presentations.delete_job(db, user.id, job_id)
+    context.audit.record(
+        db,
+        action="presentation_deleted",
+        actor_id=user.id,
+        target_type="presentation",
+        target_id=str(job_id),
+    )
     db.commit()
     return PresentationDeletedResponse(id=job_id, deleted=True)
 

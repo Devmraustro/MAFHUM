@@ -123,7 +123,16 @@ API response may describe an upload as scanned, clean or safe.
 
 ---
 
-## 2. Docker and reproducible deployment — API IMAGE VERIFIED, STACK NOT RUN
+**Phase 7 update (2026-10-27):** the gap is closed. A `web` service and
+`apps/web/Dockerfile` were added, and `.github/workflows/deployment-rehearsal.yml`
+built and started the full db+api+web stack on a Docker-enabled runner, exercised
+it over real HTTP, and performed a quiesced backup/restore drill. Run
+**`40530008866`** concluded **success** (all 10 steps). This means
+`docker compose up` has now been executed and observed — on CI infrastructure,
+not in the development sandbox and not as a production service. The historical
+assessment below is retained. See `docs/DEPLOYMENT_REHEARSAL_REPORT.md`.
+
+## 2. Docker and reproducible deployment — FULL STACK RUN ON CI
 
 **Status update, 2026-10-27 (after PR #1 merged into `main`).** Gate B of the
 staging acceptance workflow (run `40377229156`, 2026-10-26) built

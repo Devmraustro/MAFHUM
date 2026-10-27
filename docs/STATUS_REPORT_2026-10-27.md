@@ -256,3 +256,45 @@ YAML + .env.example contract            OK / 0 unknown settings
 4. **فحص بصري للعروض** في PowerPoint/LibreOffice لتأكيد تشكيل العربية واتجاه الجداول.
 5. **الفجوات القديمة ما زالت قائمة:** لا OCR، لا mock AI gateway (العلم فقط)، لا تصدير بيانات الحساب، استرجاع المصادر الحية غير موثّق، لا محرك فيروسات في التثبيت الافتراضي، لا تشفير at rest، ولا اختبار اختراق.
 6. **إصدار** `LICENSE`/`SECURITY.md`/`CODEOWNERS` (يحتاج قرار المالك) وأرشفة الفرع القديم `arena/dee89266-mafhum`.
+
+---
+
+## 12. تحديث التنفيذ — Phase 7 نُفّذت (نفس اليوم)
+
+بعد موافقة المستخدم **دُمج PR #2** في `main` (14:38 UTC، commit `a4b90d1`)، وزُومن فرع الجلسة، ثم نُفّذت Phase 7.
+
+### ما أُنجز
+
+| البند | التفصيل |
+|---|---|
+| دور admin | هجرة `0009_admin_audit` مع `CHECK (role IN ('student','admin'))`؛ المنح **من CLI فقط** (`apps/api/tools/set_admin.py`) ولا يوجد أي endpoint لتغيير الصلاحية |
+| أحداث التدقيق | جدول `audit_events` append-only، و`actor_id` بـ `ON DELETE SET NULL`؛ تسجيل التسجيل/الدخول/الفشل/الخروج/الحذف/الإنشاء/رفض الوصول/عرض الأدمن؛ `details` بقائمة مسموحات بدون أي بيانات شخصية |
+| API الإدارة | `/api/v1/admin/overview` و`/usage` و`/audit-events` و`/metrics` (عدادات بصيغة Prometheus بدون PII) — للقراءة فقط، وغير الأدمن يحصل على 404 مطابقة |
+| صورة الويب | `apps/web/Dockerfile` متعدد المراحل، مستخدم غير جذري، تبعيات إنتاج فقط، فحص صحة بـ Node؛ `apps/web/.dockerignore` و`apps/web/vercel.json` وخدمة `web` في Compose |
+| **تجربة نشر حقيقية** | سير عمل `.github/workflows/deployment-rehearsal.yml` بنى وشغّل db+api+web على runner فيه Docker، وأجرى رحلة HTTP كاملة، ثم **نسخة احتياطية هادئة + استعادة في قاعدة مؤقتة مع تحقق checksums** |
+| النشر على Vercel | مشروع `mafhum-web` ونشر `dpl_Hhpr51CPn24fZT91yisV78S4i6oy` بحالة READY على https://mafhum-web.vercel.app/ — الصفحة العربية RTL تُخدم فعلياً (تحقق HTTP) |
+| الوثائق | `docs/DEPLOYMENT_RUNBOOK.md`، `docs/ROLLBACK_GUIDE.md`، `docs/DEPLOYMENT_REHEARSAL_REPORT.md`، `SECURITY.md`، `.github/CODEOWNERS`، وتحديث THREAT_MODEL/DATA_POLICY/ROADMAP/README |
+
+### أدلة التشغيل الفعلية
+
+```
+MAFHUM CI على PR #3               40530009023 / 40527952019 / 40528767578 → 4/4 خضراء
+Staging A/B/C على main           40523074856 → success (بعد دمج PR #2 تلقائياً)
+Deployment rehearsal            40530008866 → success (10/10 خطوات، 1m48s)
+Vercel web deployment           READY/PROMOTED، 31.8s، GET / → 200 عربي RTL
+                               GET /health/live → 502 DNS_HOSTNAME_NOT_FOUND (متوقع: لا يوجد API هناك)
+pytest كامل (PostgreSQL حقيقي)  كل الاختبارات ناجحة + 4 skips معلنة
+ruff + mypy strict               نظيفان (69 ملف مصدر)
+```
+
+**ثلاثة أخطاء حقيقية اكتُشفت وأُصلحت أثناء التجربة:** انتقال `ubuntu-latest` إلى Ubuntu 26 (تم تثبيت الـ runner على 24.04)، و`rewrites` في Next تُبنى وقت البناء لا التشغيل (أُضيف `ARG` + حارس في `vercel.json`)، ونطاق `.invalid` مرفوض من مدقق البريد (استُبدل بـ `example.org`). التفاصيل في `docs/DEPLOYMENT_REHEARSAL_REPORT.md`.
+
+### ما تبقّى حتى الإنجاز الكامل (محدَّث)
+
+1. **دمج PR #3** في `main` (يحتاج قرارك؛ لم أدمجه).
+2. **استضافة الـ API فعلياً**: لا يوجد أصل عام للـ API، لذلك نشر Vercel الحالي **واجهة فقط** وكل طلب `/api` يفشل. يحتاج خدمة FastAPI + PostgreSQL مُدارة + TLS + `ALLOWED_ORIGINS` صحيح + إعادة بناء الويب بـ `MAFHUM_API_URL` حقيقي.
+3. **ربط المراقبة**: لا يوجد تنبيه/لوحة/تجميع سجلات/فحص جاهزية خارجي؛ endpoint الـ metrics مصدر فقط.
+4. **فحص بصري للعروض** في PowerPoint/LibreOffice (غير متوفرين في البيئة).
+5. **اختيار ترخيص** وإضافة `LICENSE` (المستودع بلا ترخيص — قرار المالك).
+6. **الفجوات القديمة**: لا OCR، لا mock AI gateway، لا تصدير حساب، مصادر حية غير موثّقة، لا محرك فيروسات افتراضي، لا تشفير at rest، لا اختبار اختراق/تغميم، ولا أرشفة للفرع القديم `arena/dee89266-mafhum`.
+7. **إعادة بوابات Staging** بعد دمج PR #3 (محفّزها يعمل على `main` عند تغيير مساراتها؛ `workflow_dispatch` اليدوي ما زال مرفوضاً بـ 403 لصلاحيات الـ token).

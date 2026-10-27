@@ -79,6 +79,9 @@ def register(
         display_name=payload.display_name,
     )
     issued = context.identity.issue_session(db, user, user_agent=request.headers.get("user-agent"))
+    context.audit.record(
+        db, action="auth_register", actor_id=user.id, target_type="user", target_id=str(user.id)
+    )
     db.commit()
     csrf = generate_csrf_token()
     _set_auth_cookies(response, context, issued.token, csrf)
@@ -103,9 +106,17 @@ def login(
         # Recorded on its own connection, not the request's: this session is about
         # to be discarded, and the attempts worth counting are the failed ones.
         context.login_throttle.record(key, succeeded=False)
+        context.audit.record_detached(
+            context.database,
+            action="auth_login_failed",
+            outcome="denied",
+            target_type="session",
+            details={"reason": "bad_credentials"},
+        )
         raise
     context.login_throttle.record(key, succeeded=True)
     issued = context.identity.issue_session(db, user, user_agent=request.headers.get("user-agent"))
+    context.audit.record(db, action="auth_login", actor_id=user.id, target_type="session")
     db.commit()
     csrf = generate_csrf_token()
     _set_auth_cookies(response, context, issued.token, csrf)
@@ -121,6 +132,7 @@ def logout(
 ) -> Response:
     token = request.cookies.get(context.settings.session_cookie_name)
     context.identity.revoke_session(db, token)
+    context.audit.record(db, action="auth_logout", target_type="session")
     db.commit()
     # A 204 must carry no body. `JSONResponse(content=None)` renders `b"null"`,
     # which desynchronises HTTP keep-alive framing and makes the *next* request

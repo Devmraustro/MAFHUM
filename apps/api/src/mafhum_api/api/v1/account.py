@@ -41,6 +41,15 @@ def delete_account(
     deleted, the account stays tombstoned (so it remains inaccessible) and the
     response reports the work still outstanding rather than claiming success.
     """
+    # Record before the account row goes away; the foreign key then sets
+    # actor_id to NULL, preserving the event without a dangling reference.
+    context.audit.record(
+        db,
+        action="account_deleted",
+        actor_id=user.id,
+        target_type="user",
+        target_id=str(user.id),
+    )
     report = context.deletion.delete_account(db, user.id)
     db.commit()
     _clear_auth_cookies(response, context)

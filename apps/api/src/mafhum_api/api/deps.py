@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from mafhum_api.config import Settings
 from mafhum_api.core.errors import (
     AuthenticationError,
+    AuthorizationError,
     DomainError,
     RateLimitedError,
     ValidationError,
@@ -20,7 +21,8 @@ from mafhum_api.core.errors import (
 from mafhum_api.core.request_context import get_request_id
 from mafhum_api.core.security import tokens_match, verify_origin
 from mafhum_api.db.base import Database
-from mafhum_api.db.models import User
+from mafhum_api.db.models import User, UserRole
+from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
 from mafhum_api.services.documents.service import DocumentLimits, DocumentService
 from mafhum_api.services.documents.storage import DocumentStorage
@@ -51,6 +53,7 @@ class AppContext:
     presentations: PresentationService
     worker: ProcessingWorker
     login_throttle: LoginThrottle
+    audit: AuditService
 
     @property
     def limits(self) -> DocumentLimits:
@@ -124,6 +127,34 @@ def authenticated_user(
 
 
 AuthedUser = Annotated[AuthenticatedUser, Depends(authenticated_user)]
+
+
+def admin_user(
+    user: CurrentUser,
+    context: Context,
+    db: DbSession,
+) -> User:
+    """Require the database-backed admin role.
+
+    A non-admin gets the same 404 as a missing resource, so probing the admin
+    routes cannot even confirm they exist. The denial is recorded on a separate
+    transaction: the request is about to be rejected, and the audit row must
+    survive that rejection.
+    """
+    if user.role != UserRole.ADMIN.value:
+        context.audit.record_detached(
+            context.database,
+            action="admin_access_denied",
+            actor_id=user.id,
+            outcome="denied",
+            target_type="admin",
+            details={"reason": "role_not_admin"},
+        )
+        raise AuthorizationError()
+    return user
+
+
+AdminUser = Annotated[User, Depends(admin_user)]
 
 
 # ------------------------------------------------------------------------ CSRF
@@ -231,6 +262,7 @@ def safe_details(details: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "AdminUser",
     "AppContext",
     "AuthedUser",
     "AuthenticationError",

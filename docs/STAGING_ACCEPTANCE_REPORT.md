@@ -9,6 +9,11 @@ Latest commit: see the final line of §1
 **Final verdict (2026-10-27, recorded after PR #1 merged into `main`):
 GATES GREEN — CONDITIONAL STAGING.**
 
+**Re-run on `main`:** after PR #2 merged, the corrected trigger fired
+automatically and run **`40523074856`** (commit `a4b90d11`) completed with
+**Gate A, Gate B and Gate C all success** on 2026-10-27. The gates are therefore
+green on the default branch, not only on the retired feature branch.
+
 All three acceptance gates ran to completion on GitHub-hosted runners and passed
 on 2026-10-26: run `40377229156`, commit `3589dc8`. Gate A — real ClamAV with
 fresh signatures, EICAR-in-DOCX detected by the engine and rejected by the
