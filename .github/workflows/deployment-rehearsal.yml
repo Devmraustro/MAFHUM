@@ -40,7 +40,10 @@ concurrency:
 jobs:
   stack:
     name: Build, run, exercise, back up and restore
-    runs-on: ubuntu-latest
+    # Pinned: find_pg_tools() requires a pg_dump/pg_restore whose major version
+    # matches PostgreSQL 16. ubuntu-latest has moved to Ubuntu 26 (PostgreSQL 18
+    # client), where postgresql-client-16 is not in the default archive.
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
       POSTGRES_USER: mafhum
@@ -62,10 +65,18 @@ jobs:
       - name: Install verification tooling
         run: |
           set -euo pipefail
+          . /etc/os-release
+          echo "::notice::runner ${PRETTY_NAME}"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          if ! sudo apt-get install -y --no-install-recommends postgresql-client-16; then
+            echo "::error::postgresql-client-16 is unavailable on ${PRETTY_NAME}"
+            exit 1
+          fi
           python -m pip install --upgrade pip
-          pip install -e "apps/api[dev]"
+          if ! pip install -e "apps/api[dev]"; then
+            echo "::error::Python verification dependencies failed to install"
+            exit 1
+          fi
           pg_dump --version
           pg_restore --version
 
