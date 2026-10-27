@@ -160,9 +160,11 @@ HTTP — not mocks:
    or punctuation may not round-trip perfectly. This is a limitation of PDF text
    extraction, and it is documented rather than papered over.
 
-6. **No monitoring system is deployed.** Admin metrics exist as a scrape source
-   (`GET /api/v1/admin/metrics`), but no alerting, log aggregation, uptime
-   probe or dashboard is configured. Wiring those is an operator action.
+6. **Monitoring is minimal.** A free scheduled uptime probe checks the deployed
+   web origin (`docs/MONITORING.md`), and admin metrics exist as a scrape source
+   (`GET /api/v1/admin/metrics`). But there is no Prometheus scrape credential,
+   dashboard, log aggregation or external alerting — GitHub Actions failure
+   notifications are the only alert channel.
 7. **No visual render check for presentations.** The generated decks are
    validated as OOXML (ZIP integrity, native editable text/chart/table shapes,
    RTL markers, mixed-script preservation), but no LibreOffice or PowerPoint is

@@ -219,6 +219,14 @@ that list that only a real engine can establish.
 
 ## 5. Workstream 2 — Docker build and runtime: no runtime exists
 
+> **Historical record (2026-10-23), superseded.** The measurements and the
+> "no image was built" conclusion below describe the restricted sandbox at the
+> time. On 2026-10-27 the staging gates ran green on `main` (run `40523074856`)
+> and the full Compose stack was built/started/exercised on a Docker runner (run
+> `40530008866`). See the final-verdict deltas at the top of this file and
+> `docs/DEPLOYMENT_REHEARSAL_REPORT.md`. Nothing in this section is a current
+> statement about the repository.
+
 Every runtime was checked, including the rootless and low-level ones:
 
 ```

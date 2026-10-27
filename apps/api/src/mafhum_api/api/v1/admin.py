@@ -157,6 +157,8 @@ def metrics(user: AdminUser, context: Context, db: DbSession) -> str:
         "# TYPE mafhum_audit_denied_total counter",
         f"mafhum_audit_denied_total {data['denied_events']}",
     ]
+    context.audit.record(db, action="admin_metrics_viewed", actor_id=user.id, target_type="admin")
+    db.commit()
     return "\n".join(lines) + "\n"
 
 

@@ -204,6 +204,20 @@ jobs:
           /tmp/mafhum-bench/bin/pip install --quiet python-pptx==1.0.2
           PYTHONPATH=apps/api/src /tmp/mafhum-bench/bin/python apps/api/tools/benchmark_pptx.py
 
+      - name: PPTX visual pre-flight (structural, not a pixel render)
+        # No LibreOffice/PowerPoint exists on the runner either. This gate
+        # catches the defects that most often make an editable deck look wrong:
+        # bidi control characters, missing RTL/complex-script tags, missing
+        # chart/table parts, wrong slide size and impossible text-box sizes.
+        working-directory: .
+        run: |
+          PYTHONPATH=apps/api/src /tmp/mafhum-bench/bin/python \
+            apps/api/tools/check_pptx_visual.py \
+            artifacts/pptx-benchmark/benchmark_python.pptx --rtl
+          PYTHONPATH=apps/api/src /tmp/mafhum-bench/bin/python \
+            apps/api/tools/check_pptx_visual.py \
+            artifacts/pptx-benchmark/benchmark_pptxgenjs.pptx --rtl
+
       - name: Audit — production runtime
         run: npm audit --omit=dev
 

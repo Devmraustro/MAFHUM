@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -181,3 +182,38 @@ class TestOperatorCli:
             ).all()
             assert len(rows) == 1
             assert rows[0].details == {"status": "admin"}
+
+
+class TestHardeningFollowUps:
+    """Fixes found during the post-merge review of PR #3."""
+
+    def test_repeated_denials_do_not_flood_the_audit_table(
+        self, two_users: tuple[AuthedClient, AuthedClient], app: FastAPI
+    ) -> None:
+        user_a, _ = two_users
+        for _ in range(6):
+            assert user_a.get("/api/v1/admin/overview").status_code == 404
+        promote(app, user_a.user_id)  # type: ignore[arg-type]
+        denials = user_a.get("/api/v1/admin/audit-events?action=admin_access_denied").json()
+        assert denials["total"] == 1, denials
+        assert denials["items"][0]["details"] == {"reason": "role_not_admin"}
+
+    def test_metrics_view_is_audited(self, user_a: AuthedClient, app: FastAPI) -> None:
+        promote(app, user_a.user_id)  # type: ignore[arg-type]
+        assert user_a.get("/api/v1/admin/metrics").status_code == 200
+        events = user_a.get("/api/v1/admin/audit-events?action=admin_metrics_viewed").json()
+        assert events["total"] == 1
+
+    def test_cli_refuses_to_demote_the_last_admin(
+        self, two_users: tuple[AuthedClient, AuthedClient], app: FastAPI, postgres_url: str
+    ) -> None:
+        _user_a, user_b = two_users
+        set_role(postgres_url, user_b.email, "admin")
+        with pytest.raises(SystemExit, match="last active admin"):
+            set_role(postgres_url, user_b.email, "student")
+        # Still an admin, so the account was not locked out.
+        assert user_b.get("/api/v1/admin/overview").status_code == 200
+        # An explicit --force is allowed (operator decision, audited).
+        result = set_role(postgres_url, user_b.email, "student", force=True)
+        assert result["role"] == "student"
+        assert user_b.get("/api/v1/admin/overview").status_code == 404

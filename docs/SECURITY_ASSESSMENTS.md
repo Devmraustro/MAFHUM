@@ -142,11 +142,18 @@ assessment below is the **historical point-in-time record** from 2026-10-23, whe
 no container runtime was available in the development sandbox; its commands and
 "no Dockerfile" observation describe that earlier tree, not the final one.
 
-**Still not verified, and therefore still not claimed:** `docker compose up` on
-the root `docker-compose.yml` (db + api + volumes together), an upload → process
-→ download → delete journey inside that stack, secret-injection inspection of
-the built image, and any web deployment (there is no `apps/web/Dockerfile`).
-`PRODUCTION-READY` is not the outcome; the gates are acceptance evidence only.
+**Verified on CI since 2026-10-27:** `docker compose up` on the root
+`docker-compose.yml` starts db + api + web, a real register → upload → process →
+download journey runs over HTTP, and a quiesced backup is restored into a scratch
+database with checksum verification (run `40530008866`). `apps/web/Dockerfile`
+exists and is built in that run; the staging gates A/B/C also re-ran green on
+`main` in run `40523074856`.
+
+**Still not verified, and therefore still not claimed:** secret-injection
+inspection of the built images (`docker history` / runtime `env`), a persistent
+production deployment with managed PostgreSQL, TLS and private object storage,
+and any long-running uptime or load evidence. `PRODUCTION-READY` is not the
+outcome; the gates are acceptance evidence only.
 
 Historical measurement (2026-10-23, superseded by Gate B):
 

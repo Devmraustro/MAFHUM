@@ -135,10 +135,13 @@ GETs):
 | `GET /api/v1/admin/audit-events` | Append-only trail; filter by `action`/`outcome` |
 | `GET /api/v1/admin/metrics` | Redacted Prometheus-style counters (no PII) |
 
-**Honest limit:** no external alerting, log aggregation, uptime probe or
-dashboard is configured. The metrics endpoint is a scrape source, not a
-monitoring system. Wiring it to a real alertmanager and retaining the redacted
-`app_env=production` JSON logs is an operator action that remains open.
+**Honest limit:** a free scheduled uptime probe now exists
+(`.github/workflows/uptime-monitor.yml`, `docs/MONITORING.md`), and GitHub
+Actions failure notifications are its alert channel. There is still no
+Prometheus scrape credential, dashboard, log aggregation or external alerting;
+the metrics endpoint remains a scrape source, not a monitoring system. Wiring it
+to a real alertmanager and retaining the redacted `app_env=production` JSON logs
+is an operator action that remains open.
 
 ---
 
@@ -183,6 +186,7 @@ has not been restored from a verified archive.
   (success), so the procedure is verified there — but that is a rehearsal on
   ephemeral CI infrastructure, not a running production service.
 - Staging gates A/B/C **were** re-run automatically on `main` after PR #2
-  merged (run `40523074856`, all three gates success). A manual
+  merged (run `40523074856`) and again after PR #3 merged (run
+  `40590637500`) — all three gates green each time. A manual
   `workflow_dispatch` from this session is still denied (HTTP 403, token scope),
-  and another run should be triggered after PR #3 merges.
+  but the push trigger on `main` works and is the supported way to re-run them.

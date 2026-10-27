@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -54,6 +55,7 @@ ACTIONS: frozenset[str] = frozenset(
         "admin_overview_viewed",
         "admin_usage_viewed",
         "admin_audit_viewed",
+        "admin_metrics_viewed",
         "admin_access_denied",
         "admin_role_changed",
     }
@@ -62,6 +64,7 @@ ACTIONS: frozenset[str] = frozenset(
 _ALLOWED_DETAIL_KEYS: frozenset[str] = frozenset({"reason", "resource", "status", "code", "count"})
 _MAX_DETAIL_CHARS = 120
 _MAX_PAGE_SIZE = 100
+DENIAL_WINDOW_SECONDS = 60
 
 
 def _safe_details(details: dict[str, object] | None) -> dict[str, object]:
@@ -112,6 +115,52 @@ class AuditService:
         db.add(event)
         db.flush()
         return event
+
+    def record_denied_once(
+        self,
+        database: Database,
+        *,
+        actor_id: uuid.UUID,
+        window_seconds: int = DENIAL_WINDOW_SECONDS,
+        **kwargs: Any,
+    ) -> bool:
+        """Record a denial at most once per actor per window, in the database.
+
+        A non-admin can otherwise flood the audit table by repeatedly probing
+        admin URLs. The check is a COUNT over an indexed column on a fresh
+        session, so it holds across replicas; two simultaneous first requests
+        may still produce two rows, which is an acceptable bound. Returns True
+        when a row was written.
+        """
+        try:
+            with database.session() as session:
+                cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+                recent = (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(AuditEvent)
+                        .where(
+                            AuditEvent.actor_id == actor_id,
+                            AuditEvent.action == "admin_access_denied",
+                            AuditEvent.created_at >= cutoff,
+                        )
+                    )
+                    or 0
+                )
+                if recent:
+                    return False
+                self.record(
+                    session,
+                    action="admin_access_denied",
+                    actor_id=actor_id,
+                    outcome="denied",
+                    **kwargs,
+                )
+                session.commit()
+                return True
+        except Exception:
+            logger.error("audit denial record failed", extra={"event": "audit_write_failed"})
+            return False
 
     def record_detached(self, database: Database, **kwargs: Any) -> None:
         """Record on a fresh session, for paths whose request session is doomed.

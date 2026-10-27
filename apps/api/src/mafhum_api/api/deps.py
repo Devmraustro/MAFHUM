@@ -142,11 +142,9 @@ def admin_user(
     survive that rejection.
     """
     if user.role != UserRole.ADMIN.value:
-        context.audit.record_detached(
+        context.audit.record_denied_once(
             context.database,
-            action="admin_access_denied",
             actor_id=user.id,
-            outcome="denied",
             target_type="admin",
             details={"reason": "role_not_admin"},
         )

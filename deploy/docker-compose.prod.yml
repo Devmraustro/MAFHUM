@@ -1,0 +1,139 @@
+# MAFHUM self-hosted production stack (TEMPLATE — not yet deployed).
+#
+# This is the concrete path from "rehearsal on CI" to "a real public URL". It
+# assumes an operator-controlled host (a small VPS or a home server) with a
+# domain pointed at it. No paid service is required by MAFHUM itself; the host
+# and domain are the operator's responsibility.
+#
+# NOT DEPLOYED: this repository has no server, domain or credential. Running
+# this file is an operator action. See docs/FULL_STACK_DEPLOYMENT.md.
+#
+# Differences from the root docker-compose.yml:
+#   * Caddy terminates TLS with automatic certificates and is the only service
+#     bound to public ports; db/api/web stay on the internal network.
+#   * Blob storage and PostgreSQL data are named volumes on the host, so a
+#     container restart does not erase user data. Back them up together.
+#   * app_env=production; assert_production_ready() refuses insecure settings.
+#   * All secrets come from the environment (or a secrets manager), never here.
+
+name: mafhum-prod
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # The domain is supplied by the operator; no domain is invented here.
+      MAFHUM_DOMAIN: ${MAFHUM_DOMAIN:?MAFHUM_DOMAIN must be set}
+      MAFHUM_ACME_EMAIL: ${MAFHUM_ACME_EMAIL:?MAFHUM_ACME_EMAIL must be set}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+      args:
+        # Next rewrites are baked at build time. In this topology the Next
+        # server proxies /api and /health to the internal api service.
+        MAFHUM_API_URL: http://api:8000
+    image: mafhum-web:0.3.0
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+    expose:
+      - "3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    image: mafhum-api:0.3.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER must be set}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-mafhum}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set}
+      COOKIE_SECURE: "true"
+      # Must be the public HTTPS origin the browser uses, not the internal host.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set}
+      STORAGE_ROOT: /var/lib/mafhum/storage
+      MALWARE_SCAN_REQUIRED: ${MALWARE_SCAN_REQUIRED:-false}
+      CLAMD_UNIX_PATH: ${CLAMD_UNIX_PATH:-}
+      MAFHUM_RUN_MIGRATIONS: "true"
+      PROCESSING_WORKER_ENABLED: "true"
+    volumes:
+      - storage:/var/lib/mafhum/storage
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "http://127.0.0.1:8000/health/ready",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-mafhum}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-mafhum}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Deliberately NOT published: only the API reaches the database.
+
+volumes:
+  pgdata:
+  storage:
+  caddy_data:
+  caddy_config:

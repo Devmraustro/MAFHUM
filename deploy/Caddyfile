@@ -1,0 +1,40 @@
+# Caddy terminates TLS and is the only public entry point for the self-hosted
+# MAFHUM stack. The domain and ACME contact come from the environment; neither
+# is hardcoded or invented in this repository.
+#
+#   MAFHUM_DOMAIN       e.g. mafhum.example.org (operator-owned)
+#   MAFHUM_ACME_EMAIL   contact for certificate expiry notices
+#
+{
+	email {$MAFHUM_ACME_EMAIL}
+}
+
+{$MAFHUM_DOMAIN} {
+	encode zstd gzip
+
+	# Security headers. The API also sets its own; Caddy adds them for the
+	# static/Next responses that the API never sees.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# /api and /health are proxied by the Next server to the API service; a
+	# direct route here avoids a double hop for API-only clients.
+	@backend path /health/* /api/docs /api/openapi.json
+	handle @backend {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

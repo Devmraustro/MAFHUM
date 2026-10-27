@@ -24,12 +24,12 @@ import os
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mafhum_api.db.models import AuditEvent, User, UserRole
+from mafhum_api.db.models import AuditEvent, DeletionState, User, UserRole
 
 VALID_ROLES = {item.value for item in UserRole}
 
@@ -53,7 +53,7 @@ def list_admins(url: str) -> list[dict[str, str]]:
         engine.dispose()
 
 
-def set_role(url: str, email: str, role: str) -> dict[str, str]:
+def set_role(url: str, email: str, role: str, *, force: bool = False) -> dict[str, str]:
     """Change one account's role and append an audit event in the same commit."""
     if role not in VALID_ROLES:
         raise SystemExit(f"role must be one of {sorted(VALID_ROLES)}")
@@ -65,6 +65,22 @@ def set_role(url: str, email: str, role: str) -> dict[str, str]:
             if user is None:
                 raise SystemExit("no account with that email")
             previous = user.role
+            if previous == UserRole.ADMIN.value and role != UserRole.ADMIN.value:
+                active_admins = (
+                    db.scalar(
+                        select(func.count())
+                        .select_from(User)
+                        .where(
+                            User.role == UserRole.ADMIN.value,
+                            User.deletion_state == DeletionState.ACTIVE.value,
+                        )
+                    )
+                    or 0
+                )
+                if active_admins <= 1 and not force:
+                    raise SystemExit(
+                        "refusing to demote the last active admin; use --force if intended"
+                    )
             user.role = role
             db.add(
                 AuditEvent(
@@ -93,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--email")
     parser.add_argument("--role", choices=sorted(VALID_ROLES))
     parser.add_argument("--list", action="store_true", help="list current admins")
+    parser.add_argument("--force", action="store_true", help="allow demoting the last active admin")
     args = parser.parse_args(argv)
     url = _database_url(args.database_url)
 
@@ -101,7 +118,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.email or not args.role:
         parser.error("--email and --role are required unless --list is used")
-    print(json.dumps(set_role(url, args.email, args.role), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            set_role(url, args.email, args.role, force=args.force),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

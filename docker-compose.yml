@@ -5,14 +5,13 @@
 # automated backup, and no TLS termination.
 #
 # ---------------------------------------------------------------------------
-# NOT YET VERIFIED BY EXECUTION in the environment where this file was written:
-# no container runtime (docker, podman, nerdctl) is installed there. What IS
-# verified: PostgreSQL 16 migrations run cleanly up->down->up, the API boots
-# and serves /health/live and /health/ready when run directly, and Gate B built
-# and ran the API image on a GitHub-hosted runner. The full three-service stack
-# is exercised by .github/workflows/deployment-rehearsal.yml on a runner with
-# Docker; until that run is green, `docker compose up` is not claimed as tested.
-# See docs/OPERATIONAL_HARDENING_REPORT.md.
+# VERIFIED ON CI (2026-10-27). There is no container runtime in the development
+# sandbox, but .github/workflows/deployment-rehearsal.yml built and started this
+# full db+api+web stack on a Docker-enabled runner and concluded success (run
+# 40530008866). PostgreSQL 16 migrations also run cleanly up->down->up, the API
+# serves /health/live and /health/ready, and Gate B built and ran the API image.
+# This is a rehearsal on ephemeral CI infrastructure, NOT a production service.
+# See docs/DEPLOYMENT_REHEARSAL_REPORT.md and docs/OPERATIONAL_HARDENING_REPORT.md.
 # ---------------------------------------------------------------------------
 #
 # Scaling note
