@@ -1,0 +1,59 @@
+# Build-context exclusions for the MAFHUM API image.
+#
+# This is enforced at the build-context level, independently of .gitignore: a
+# file that is untracked but present in a developer's working tree would still be
+# copied into the image by `COPY` unless it is excluded here. Secret material and
+# local data must never reach an image layer, because layers are readable by
+# anyone who can pull the image.
+
+# --- secrets and configuration -------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials*
+secrets*
+
+# --- local data that must never be baked into an image -------------------
+data/
+*.db
+*.sqlite
+*.sqlite3
+storage/
+uploads/
+backups/
+*.dump
+
+# --- version control ------------------------------------------------------
+.git
+.gitignore
+.github
+
+# --- Python artefacts ----------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- tests: not needed at runtime ----------------------------------------
+tests/
+.tox/
+.nox/
+
+# --- container artefacts (avoid recursive copy) ---------------------------
+Dockerfile
+.dockerignore
+docker-compose*.yml

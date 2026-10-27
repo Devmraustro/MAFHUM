@@ -1,0 +1,1 @@
+"""MAFHUM API subpackage."""
