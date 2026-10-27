@@ -44,6 +44,7 @@ def check(label: str, condition: bool, detail: str = "") -> None:
     print(f"[{mark}] {label}{(' — ' + detail) if detail else ''}", flush=True)
     if not condition:
         failures.append(label)
+        print(f"::error::{label}{(' — ' + detail) if detail else ''}", flush=True)
 
 
 def wait_for_api(client: httpx.Client, timeout: float = 90.0) -> bool:
@@ -81,7 +82,9 @@ def main() -> int:
             f"HTTP {proxied.status_code} {proxied.text[:80]}",
         )
 
-        email = f"rehearsal-{uuid.uuid4().hex[:10]}@example.invalid"
+        # example.org is a reserved documentation domain: syntactically valid
+        # (email-validator rejects .invalid) and deliberately non-deliverable.
+        email = f"rehearsal-{uuid.uuid4().hex[:10]}@example.org"
         registered = client.post(
             f"{API}/api/v1/auth/register",
             json={"email": email, "password": "Rehearsal-Only-1", "display_name": "rehearsal"},
