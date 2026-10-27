@@ -32,6 +32,8 @@ French is secondary.
 | Grounded research: lexical retrieval, verbatim citations, insufficient-evidence status | Implemented, tested — no language model; `docs/GROUNDING_EVALUATION.md` |
 | Tutor and TD tools: topics, questions, SM-2 flashcards, plans | Implemented, tested |
 | Editable PPTX: jobs, private artifacts, Arabic RTL, French deck, chart/table | Implemented, tested — `docs/PPTX_BENCHMARK.md` |
+| Admin role, append-only audit events, redacted metrics | Implemented, tested (CLI-only role grants) |
+| Web container image + Compose web service + deployment rehearsal workflow | Implemented; rehearsal runs on a Docker CI runner |
 | Malware scanning: `clamd` socket integration, fail-closed policy | Integration implemented, tested (stub protocol tests + real ClamAV/EICAR staging gate); **no engine ships** — see limitations |
 | OCR for scanned documents | **Not implemented** — see limitations |
 | AI answer generation beyond grounded extraction | **Not implemented** (`ENABLE_AI_GATEWAY` exists, disabled) |
@@ -158,7 +160,10 @@ HTTP — not mocks:
    or punctuation may not round-trip perfectly. This is a limitation of PDF text
    extraction, and it is documented rather than papered over.
 
-6. **No visual render check for presentations.** The generated decks are
+6. **No monitoring system is deployed.** Admin metrics exist as a scrape source
+   (`GET /api/v1/admin/metrics`), but no alerting, log aggregation, uptime
+   probe or dashboard is configured. Wiring those is an operator action.
+7. **No visual render check for presentations.** The generated decks are
    validated as OOXML (ZIP integrity, native editable text/chart/table shapes,
    RTL markers, mixed-script preservation), but no LibreOffice or PowerPoint is
    available in the verification environment. Open the `.pptx` in a real

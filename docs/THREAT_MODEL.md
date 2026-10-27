@@ -210,7 +210,15 @@ Recorded deliberately. None is hidden by a passing test suite.
    the student. The PptxGenJS comparison package had two inherited high DoS
    advisories via `image-size`; they are resolved with a pinned `2.0.4`
    override and an `npm audit` CI gate, and that package never ships.
-8. **A passing test suite does not prove the absence of vulnerabilities.** The
+8. **Admin is a single global role, with no scoped permissions.** An admin can
+   read aggregate usage and the audit trail but cannot read another user's
+   documents, change roles over HTTP, or delete audit events. There is no
+   per-tenant admin, no impersonation audit UI, and no separation between
+   "can view metrics" and "can view user emails". Role grants happen through a
+   CLI with database access, so the real perimeter is who holds database
+   credentials — not the admin API. No external alerting watches the metrics
+   endpoint, so anomalous admin activity is visible only if someone looks.
+9. **A passing test suite does not prove the absence of vulnerabilities.** The
    suite covers the controls listed above; it is not a penetration test.
 
 ---

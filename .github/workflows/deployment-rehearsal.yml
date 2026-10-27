@@ -1,0 +1,131 @@
+name: Deployment rehearsal — real Compose stack
+
+# The long-standing gap: `docker compose up` had never been executed. This
+# workflow builds all three images on a runner that has Docker, starts the
+# stack, exercises it over real HTTP, then performs a quiesced backup + restore
+# into a scratch database and verifies every document row resolves to a blob.
+#
+# Honesty rule: a gate that cannot run reports failure. Nothing here substitutes
+# a mock for a container, a database or a real HTTP call.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "docker-compose.yml"
+      - "apps/api/Dockerfile"
+      - "apps/api/entrypoint.sh"
+      - "apps/web/Dockerfile"
+      - "apps/web/.dockerignore"
+      - "tools/e2e/compose_smoke.py"
+      - ".github/workflows/deployment-rehearsal.yml"
+  pull_request:
+    paths:
+      - "docker-compose.yml"
+      - "apps/api/Dockerfile"
+      - "apps/api/entrypoint.sh"
+      - "apps/web/Dockerfile"
+      - "apps/web/.dockerignore"
+      - "tools/e2e/compose_smoke.py"
+      - ".github/workflows/deployment-rehearsal.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-rehearsal-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stack:
+    name: Build, run, exercise, back up and restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      POSTGRES_USER: mafhum
+      POSTGRES_PASSWORD: rehearsal-only-not-a-secret
+      POSTGRES_DB: mafhum
+      SESSION_SECRET: rehearsal-only-session-secret-not-for-production
+      APP_ENV: development
+      COOKIE_SECURE: "false"
+      ALLOWED_ORIGINS: '["http://localhost:3000"]'
+      MAFHUM_DATABASE_URL: postgresql://mafhum:rehearsal-only-not-a-secret@127.0.0.1:5432/mafhum
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install verification tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          python -m pip install --upgrade pip
+          pip install -e "apps/api[dev]"
+          pg_dump --version
+          pg_restore --version
+
+      - name: Start the full stack (db + api + web)
+        run: docker compose up -d --build --wait
+
+      - name: Health checks
+        run: |
+          set -euo pipefail
+          curl -fsS http://127.0.0.1:8000/health/live
+          echo
+          curl -fsS http://127.0.0.1:8000/health/ready
+          echo
+          curl -fsS -o /dev/null -w 'web home: HTTP %{http_code}\n' http://127.0.0.1:3000/
+          curl -fsS http://127.0.0.1:3000/health/live
+          echo
+
+      - name: Real HTTP journey through the running stack
+        run: python tools/e2e/compose_smoke.py
+
+      - name: Quiesced backup and restore drill
+        run: |
+          set -euo pipefail
+          # Stop the writer before copying blobs so the DB dump and blob copy
+          # describe the same state. The smoke test leaves one document behind
+          # on purpose, so the archive contains a real blob to verify.
+          docker compose stop api
+          docker run --rm \
+            -v mafhum_storage:/src:ro \
+            -v "$PWD":/out \
+            alpine:3.20 \
+            sh -c "cp -a /src /out/rehearsal-storage && chown -R $(id -u):$(id -g) /out/rehearsal-storage"
+          python - <<'PY'
+          import os
+          import psycopg
+
+          base = os.environ["MAFHUM_DATABASE_URL"].rsplit("/", 1)[0]
+          with psycopg.connect(f"{base}/postgres", autocommit=True) as conn:
+              exists = conn.execute(
+                  "SELECT 1 FROM pg_database WHERE datname = 'mafhum_restore_check'"
+              ).fetchone()
+              if exists:
+                  conn.execute("DROP DATABASE mafhum_restore_check")
+              conn.execute("CREATE DATABASE mafhum_restore_check")
+          print("scratch database ready")
+          PY
+          python apps/api/tools/backup.py \
+            --database-url "$MAFHUM_DATABASE_URL" \
+            --storage-root ./rehearsal-storage \
+            --out ./rehearsal-backups \
+            --require-quiesced \
+            --verify
+
+      - name: Record what was built
+        if: always()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --tail=40 api || true
+          docker compose logs --tail=20 web || true
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v --remove-orphans

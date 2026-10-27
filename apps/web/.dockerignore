@@ -1,0 +1,33 @@
+# Build-context exclusions for the MAFHUM web image.
+#
+# Enforced independently of .gitignore: an untracked file in a developer's
+# working tree would otherwise be copied by `COPY . .` into the builder stage,
+# and build output is readable by anyone who can pull the image.
+
+# --- secrets and local configuration -------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+credentials*
+secrets*
+
+# --- version control and CI ----------------------------------------------
+.git
+.gitignore
+.github
+
+# --- dependencies and build output (rebuilt inside the image) -----------
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+npm-debug.log*
+
+# --- container artefacts (avoid recursive copy) --------------------------
+Dockerfile
+.dockerignore
+docker-compose*.yml

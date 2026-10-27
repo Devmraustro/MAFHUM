@@ -123,6 +123,12 @@ API response may describe an upload as scanned, clean or safe.
 
 ---
 
+**Phase 7 update (2026-10-27):** a `web` service and `apps/web/Dockerfile`
+were added, and `.github/workflows/deployment-rehearsal.yml` now builds and
+starts the full db+api+web stack on a Docker-enabled runner, exercises it over
+real HTTP, and performs a quiesced backup/restore drill. Until that workflow is
+observed green, the "STACK NOT RUN" verdict below still stands.
+
 ## 2. Docker and reproducible deployment — API IMAGE VERIFIED, STACK NOT RUN
 
 **Status update, 2026-10-27 (after PR #1 merged into `main`).** Gate B of the

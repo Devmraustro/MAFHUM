@@ -78,6 +78,17 @@ class DeletionState(str, enum.Enum):
     DELETED = "deleted"
 
 
+class UserRole(str, enum.Enum):
+    STUDENT = "student"
+    ADMIN = "admin"
+
+
+class AuditOutcome(str, enum.Enum):
+    SUCCESS = "success"
+    DENIED = "denied"
+    FAILURE = "failure"
+
+
 class JobStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -152,6 +163,7 @@ class User(TimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint("char_length(email) <= 320", name="ck_users_email_len"),
+        CheckConstraint("role IN ('student', 'admin')", name="ck_users_role"),
         CheckConstraint(
             "deleted_at IS NULL OR deletion_state <> 'active'", name="ck_users_deleted"
         ),
@@ -889,3 +901,60 @@ class PresentationArtifact(TimestampMixin, Base):
     format: Mapped[str] = mapped_column(String(8), nullable=False, default="pptx")
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: administration and audit. Audit rows are append-only at the API
+# level: there is no update or delete endpoint, and no ORM relationship from
+# User, so an account can be erased without erasing the trail of what it did.
+# ---------------------------------------------------------------------------
+
+
+class AuditEvent(Base):
+    """One recorded administrative or security-relevant action.
+
+    ``actor_id`` is nullable on purpose with ``ON DELETE SET NULL``: erasing an
+    account must not erase the audit trail, but keeping a foreign key to a
+    deleted user would be a lie. The event keeps an opaque id and a timestamp.
+
+    ``details`` is an allow-listed, bounded JSON object. No email, password,
+    document text, filename, URL or IP address is ever stored here.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("char_length(action) BETWEEN 1 AND 64", name="ck_audit_action_len"),
+        CheckConstraint("outcome IN ('success', 'denied', 'failure')", name="ck_audit_outcome"),
+        CheckConstraint(
+            "target_id IS NULL OR char_length(target_id) <= 64",
+            name="ck_audit_target_len",
+        ),
+        CheckConstraint(
+            "request_id IS NULL OR char_length(request_id) <= 64",
+            name="ck_audit_request_len",
+        ),
+        Index("ix_audit_events_created", "created_at"),
+        Index("ix_audit_events_action", "action", "created_at"),
+        Index("ix_audit_events_actor", "actor_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=AuditOutcome.SUCCESS.value,
+        server_default=AuditOutcome.SUCCESS.value,
+    )
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details: Mapped[dict[str, object]] = mapped_column(JsonVariant, nullable=False, default=dict)

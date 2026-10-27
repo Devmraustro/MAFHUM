@@ -25,6 +25,18 @@ that is stated plainly rather than implied by omission.
 MAFHUM collects no telemetry, no analytics, no advertising identifiers and no
 third-party tracking. There is no external service to send data to.
 
+**Phase 7 audit trail.** `audit_events` stores an action name, an outcome, an
+opaque actor id, optional target/request ids, a timestamp and an allow-listed
+`details` object. It is append-only at the API level. It never stores an email,
+password, filename, URL, IP address, document text or generated deck content.
+When an account is deleted, `actor_id` becomes `NULL`, so the event survives
+without identifying the erased person. `GET /api/v1/admin/usage` is the only
+view that returns an account email, and it requires the admin role.
+
+**Retention is not implemented.** MAFHUM does not expire audit rows or
+backups. Setting a retention schedule and deleting expired archives is an
+operator responsibility.
+
 **Never invent bibliographic data.** Source records distinguish
 `user_supplied`, `document_extracted` and externally verified provenance. A
 field the user did not provide and the document did not contain is stored as

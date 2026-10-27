@@ -28,6 +28,7 @@ from mafhum_api.core.errors import AuthenticationError, DomainError, ValidationE
 from mafhum_api.core.logging_setup import configure_logging
 from mafhum_api.core.request_context import REQUEST_ID_HEADER, RequestIdMiddleware, get_request_id
 from mafhum_api.db.base import Database
+from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
 from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
@@ -114,6 +115,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
         study=StudyService(),
         presentations=presentations,
         worker=worker,
+        audit=AuditService(),
         login_throttle=LoginThrottle(
             database,
             window_seconds=settings.login_throttle_window_seconds,

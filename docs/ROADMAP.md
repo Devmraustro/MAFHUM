@@ -13,7 +13,7 @@ for what remains a residual risk.
 | 4 — Grounded research | Done, with documented limitations |
 | 5 — Tutor and TD tools | Done, with documented limitations |
 | 6 — Editable presentations | Done, with documented limitations (no visual render check) |
-| 7 — Admin and deployment rehearsal | Partially done — backup/restore tooling implemented; no admin role, no deployment rehearsal |
+| 7 — Admin and deployment rehearsal | Implemented with documented limits — see below (still no production deployment) |
 
 ---
 
@@ -138,12 +138,34 @@ job; a deck built from a deleted source keeps its snapshot but reports
 
 ## Phase 7 — Admin and deployment rehearsal
 
-**Partially done.** Backup and restore tooling exists and is tested
-(`apps/api/tools/backup.py`, `tests/test_backup_restore.py`). Container build,
-non-root runtime, readiness and graceful shutdown are exercised by the staging
-acceptance workflow (`.github/workflows/staging-acceptance.yml`, Gate B) —
-those gates are the deployment rehearsal evidence. Still not started: an admin
-role and audit events. No deployment has been performed on real infrastructure.
+**Implemented with documented limits.** Migration `0009_admin_audit` adds a
+database CHECK on `users.role IN ('student','admin')` and an append-only
+`audit_events` table. Roles are granted **only** by the operator CLI
+`apps/api/tools/set_admin.py` — there is deliberately no HTTP role-change
+endpoint. Denied admin access, registrations, logins, failed logins, logouts,
+account/document/presentation deletion and creation, and admin views all write
+redacted audit rows; `actor_id` uses `ON DELETE SET NULL` so account deletion
+keeps the trail.
+
+Read-only admin API: `/api/v1/admin/overview`, `/usage`, `/audit-events`,
+`/metrics` (redacted Prometheus-style counters, no PII). Tests cover the role
+gate, the 404-for-non-admin behaviour, the absence of write endpoints, the DB
+CHECK, PII hygiene and trail survival.
+
+Deployment artefacts: `apps/web/Dockerfile` (multi-stage, non-root, prod deps
+only), `apps/web/.dockerignore`, `apps/web/vercel.json`, a `web` service in
+`docker-compose.yml`, and `docs/DEPLOYMENT_RUNBOOK.md` +
+`docs/ROLLBACK_GUIDE.md`. `.github/workflows/deployment-rehearsal.yml` builds
+the full three-service stack on a Docker runner, exercises it over real HTTP
+(`tools/e2e/compose_smoke.py`) and performs a **quiesced backup + restore into
+a scratch database** with checksum verification.
+
+**Still open:** no external alerting/dashboard is wired to the metrics endpoint;
+no managed PostgreSQL, TLS terminator, secrets manager or private object store
+is configured; no production deployment on real infrastructure has been
+performed; the staging gates have not been re-run on `main` since the merges.
+The Vercel rehearsal, if recorded, is a frontend-only deployment — the API is
+not hosted there.
 
 ---
 
