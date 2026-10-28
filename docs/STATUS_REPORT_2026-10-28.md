@@ -80,12 +80,14 @@ c64b701  fix(clamd): use a real log file mirrored to stderr; prevent /dev/stdout
 3b22371  ci(clamd): bound every SCAN probe with timeout; cancel superseded engine runs
 eb23ef2  ci(malware): use the proven host clamd daemon for real-engine fail-closed acceptance
 bc79f02  ci(malware): verify real-engine EICAR through MAFHUM's own clamd client
+6610a14  docs: record final CI evidence and the production clamd image runtime limitation
 ```
 
-Final HEAD: `bc79f02`. Earlier failed runs (`40614116773`, `40615090587`,
-`40615509350`, `40616284837`, `40616781698`, `40617850330`, `40619361825`) are
-retained as evidence of the iterative fixes; the ones after `bc79f02` are not
-the final state.
+Final documentation-only commits may follow this line, so the exact review tip
+is `git rev-parse HEAD` on `arena/7a7fdcba-mafhum`. Earlier failed runs
+(`40614116773`, `40615090587`, `40615509350`, `40616284837`, `40616781698`,
+`40617850330`, `40619361825`) are retained as evidence of the iterative fixes;
+they are not the final state.
 
 ### GitHub Actions evidence (PR #6)
 
