@@ -41,4 +41,10 @@ fi
 ) &
 
 echo "[clamd] starting daemon on TCP 3310" >&2
+
+# clamd needs a real log file (see clamd.conf). Mirror it to stderr so the
+# container's logs remain visible through `docker logs` / the orchestrator.
+: > /tmp/mafhum-clamd.log
+tail -F -n 0 /tmp/mafhum-clamd.log >&2 &
+
 exec clamd --config-file=/etc/clamav/clamd.conf --foreground=true

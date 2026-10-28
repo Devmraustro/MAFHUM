@@ -229,6 +229,10 @@ def check_stack() -> list[str]:
     require("TCPSocket 3310" in clamd_conf, "clamd.conf must listen on TCP 3310")
     require("LocalSocket" not in clamd_conf, "clamd.conf must be TCP-only")
     require("StreamMaxLength" in clamd_conf, "clamd.conf must bound INSTREAM size")
+    require(
+        "LogFile /dev/stdout" not in clamd_conf and "LogFile /dev/stderr" not in clamd_conf,
+        "clamd.conf must not log to /dev/std* (ELOOP kills clamd at startup)",
+    )
     healthcheck = (CLAMD_DIR / "healthcheck.sh").read_text(encoding="utf-8")
     require("clamdscan" in healthcheck, "healthcheck must perform a real scan")
     entrypoint = (CLAMD_DIR / "entrypoint.sh").read_text(encoding="utf-8")
