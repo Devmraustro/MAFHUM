@@ -1,0 +1,67 @@
+# OPTIONAL monitoring stack. NOT part of deploy/docker-compose.prod.yml.
+#
+# Start AFTER the production stack, on the same host:
+#
+#   printf '%s' "$METRICS_SCRAPE_TOKEN" > ./secrets/metrics_token   # 0600, untracked
+#   docker compose -f deploy/docker-compose.monitoring.yml up -d
+#
+# It joins the production stack's default network so Prometheus can reach the
+# api service by name. No monitoring port is published to the internet; use an
+# SSH tunnel or a Caddy route with its own auth to view the UIs.
+#
+# Image tags are defaults and MUST be verified and pinned by digest by the
+# operator before this is used on a real host. Prometheus is Apache-2.0;
+# Alertmanager is Apache-2.0. Grafana (AGPL-3.0) is intentionally NOT bundled —
+# adding it would impose additional licence obligations on a derived work.
+
+name: mafhum-monitoring
+
+services:
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.1.0}
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - ./secrets/metrics_token:/run/secrets/mafhum_metrics_token:ro
+      - prometheus_data:/prometheus
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mafhum
+
+  alertmanager:
+    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.28.0}
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - mafhum
+
+volumes:
+  prometheus_data:
+  alertmanager_data:
+
+networks:
+  mafhum:
+    # `name: mafhum-prod` in the production file gives its default network this
+    # name. Override MAFHUM_PROD_NETWORK if the project name was changed.
+    name: ${MAFHUM_PROD_NETWORK:-mafhum-prod_default}
+    external: true

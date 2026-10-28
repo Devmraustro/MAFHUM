@@ -108,6 +108,45 @@ jobs:
       - name: Dependency audit
         run: pip-audit
 
+  security:
+    name: Security — SAST, secrets, config contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
+
+      - name: Install verification tooling
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e "apps/api[dev]"
+
+      # Bandit is a second, independent SAST implementation alongside ruff's
+      # `S` rules in the backend job. -ll reports medium/high severity only, so
+      # a low-confidence note cannot red-line an otherwise green commit.
+      - name: Bandit SAST
+        run: bandit -r apps/api/src -ll -q
+
+      - name: Ruff security rules on repository tooling
+        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/
+
+      # Secret scan, workflow permission check, pinned dependencies, no :latest
+      # images, .gitignore exclusions and the fail-closed Compose contract.
+      - name: Repository security baseline
+        run: python tools/security_baseline.py
+
+      - name: Production Compose fail-closed contract
+        run: python tools/acceptance/prod_compose_contract.py
+
+      # Note: `pip-audit` is deliberately NOT run with --strict here. The local
+      # editable `mafhum-api` package is not on PyPI, and --strict turns that
+      # expected skip into a hard failure. The backend job runs plain pip-audit.
+
   backend-migrations:
     name: Migrations — upgrade and downgrade
     runs-on: ubuntu-latest

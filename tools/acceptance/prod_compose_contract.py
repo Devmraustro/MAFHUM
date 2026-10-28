@@ -242,6 +242,55 @@ def check_stack() -> list[str]:
         "Caddyfile must route the Prometheus scrape path directly to the API",
     )
 
+    # --- monitoring configuration is real and cannot drift from the app ------
+    prom_dir = DEPLOY / "prometheus"
+    prom_file = prom_dir / "prometheus.yml"
+    rules_file = prom_dir / "alert.rules.yml"
+    am_file = prom_dir / "alertmanager.yml"
+    for path in (prom_file, rules_file, am_file):
+        require(path.is_file(), f"missing monitoring config: {path.name}")
+    if prom_file.is_file():
+        prom_text = prom_file.read_text(encoding="utf-8")
+        require("bearer_token_file" in prom_text, "scrape must use a scoped token file")
+        require(
+            "metrics_path: /api/v1/admin/metrics" in prom_text,
+            "scrape must target the token-protected metrics path",
+        )
+        require("api:8000" in prom_text, "scrape must stay on the internal api network")
+    if rules_file.is_file():
+        rules_text = rules_file.read_text(encoding="utf-8")
+        rule_data = _load_yaml(rules_file)
+        expressions = [
+            str(rule.get("expr", ""))
+            for group in rule_data.get("groups", [])
+            for rule in group.get("rules", [])
+        ]
+        require(len(expressions) >= 5, "alert rules must cover availability and security")
+        emitted = set(
+            re.findall(
+                r"mafhum_[a-z0-9_]+",
+                (
+                    REPO_ROOT / "apps" / "api" / "src" / "mafhum_api" / "api" / "v1" / "admin.py"
+                ).read_text(encoding="utf-8"),
+            )
+        )
+        referenced = {
+            name for expr in expressions for name in re.findall(r"mafhum_[a-z0-9_]+", expr)
+        }
+        require(
+            referenced <= emitted,
+            f"alert rules reference metrics the API never emits: {sorted(referenced - emitted)}",
+        )
+        require(
+            "MafhumMalwareScannerUnavailable" in rules_text,
+            "a fail-closed scanning outage must have an alert",
+        )
+    if am_file.is_file():
+        require(
+            "unconfigured" in am_file.read_text(encoding="utf-8"),
+            "alertmanager must not pretend to deliver alerts without an owner destination",
+        )
+
     return failures
 
 

@@ -1,0 +1,90 @@
+# Alert rules for MAFHUM. Every expression below references a metric that the
+# application actually emits in apps/api/src/mafhum_api/api/v1/admin.py, plus
+# Prometheus' built-in `up` series. No rule references a metric that does not
+# exist, because an expression that never fires is worse than no alert at all.
+#
+# Delivery is NOT configured. deploy/prometheus/alertmanager.yml accepts and
+# groups these alerts but has no receiver destination until the owner supplies
+# one. See docs/MONITORING.md for the exact prerequisites.
+
+groups:
+  - name: mafhum-availability
+    rules:
+      - alert: MafhumApiDown
+        expr: up{job="mafhum"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MAFHUM API scrape target is down"
+          description: "Prometheus cannot scrape /api/v1/admin/metrics on api:8000."
+          runbook: "https://github.com/Devmraustro/MAFHUM/blob/main/docs/DEPLOYMENT_RUNBOOK.md"
+
+      - alert: MafhumScrapeTargetMissing
+        expr: absent(up{job="mafhum"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No MAFHUM scrape target registered"
+          description: "The mafhum job has vanished from Prometheus' target list."
+          runbook: "https://github.com/Devmraustro/MAFHUM/blob/main/docs/MONITORING.md"
+
+  - name: mafhum-security
+    rules:
+      - alert: MafhumMalwareScannerUnavailable
+        # Only fires when scanning is REQUIRED. A development box with no engine
+        # must not page anyone; a production box must never accept unscanned
+        # uploads, so this is a release-blocking condition there.
+        expr: mafhum_malware_scan_required == 1 and mafhum_malware_scanner_available == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ClamAV is unreachable while fail-closed scanning is required"
+          description: >-
+            Uploads are being rejected (or will be). Check the clamd container
+            healthcheck and the freshclam signature volume.
+          runbook: "https://github.com/Devmraustro/MAFHUM/blob/main/docs/DEPLOYMENT_RUNBOOK.md"
+
+      - alert: MafhumDeniedEventsSpike
+        expr: increase(mafhum_audit_denied_total[15m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual number of denied admin/audit accesses"
+          description: "More than 20 denied events appeared in 15 minutes."
+          runbook: "https://github.com/Devmraustro/MAFHUM/blob/main/docs/SECURITY_ASSESSMENTS.md"
+
+  - name: mafhum-capacity
+    rules:
+      - alert: MafhumDocumentsStuckProcessing
+        expr: mafhum_processing_pending > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Documents have been pending/processing for over 30 minutes"
+          description: "Check the single-writer lease and worker heartbeat."
+          runbook: "https://github.com/Devmraustro/MAFHUM/blob/main/docs/DEPLOYMENT_RUNBOOK.md"
+
+      - alert: MafhumFailedDocuments
+        expr: mafhum_documents_total{status="failed"} > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10 documents are in failed state"
+          description: "Inspect parser errors and upload validation rejections."
+
+      - alert: MafhumAuditTableGrowth
+        expr: mafhum_audit_events_total > 1000000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit table has more than one million rows"
+          description: >-
+            Agree a retention policy and run tools/purge_audit.py (dry run first).
+            See docs/DATA_POLICY.md.

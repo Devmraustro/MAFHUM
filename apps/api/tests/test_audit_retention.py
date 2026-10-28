@@ -108,9 +108,7 @@ class TestRetentionPolicy:
         db.expire_all()
         assert _count(db) == 5  # 4 old remain + 1 purge record
 
-    def test_no_other_table_is_touched(
-        self, app: FastAPI, db: Session, clean_tables: None
-    ) -> None:
+    def test_no_other_table_is_touched(self, app: FastAPI, db: Session, clean_tables: None) -> None:
         # A row in an unrelated table must survive a retention run: this is the
         # concrete guarantee behind "non-destructive".
         unrelated = User(email="retention@example.com", password_hash="scrypt$not-a-real-hash")
