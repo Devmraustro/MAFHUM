@@ -15,7 +15,7 @@ exists so an operator can close the gap without guessing.
 | Web | https://mafhum-web.vercel.app/ — built and served on Vercel (Hobby). `GET /` returns the Arabic RTL page. |
 | API | **Not hosted publicly.** It has only run locally and on ephemeral GitHub Actions runners. |
 | Database | PostgreSQL 16 in Compose / pgserver in CI. No managed instance exists. |
-| Blobs | Local filesystem `STORAGE_ROOT`. No object store and no encryption at rest. |
+| Blobs | Local filesystem `STORAGE_ROOT`. No object store. **No application-layer encryption at rest is enabled** — ADR 0006 is design-only; host volume encryption is an operator task. |
 | TLS | None for the API. Vercel provides TLS for the web origin only. |
 | Rewrites | `MAFHUM_API_URL=https://mafhum-api.invalid` at Vercel build time — intentionally non-resolvable. Every `/api` call returns 502. |
 

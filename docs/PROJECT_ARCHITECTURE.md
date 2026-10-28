@@ -204,7 +204,11 @@ Approved source adapters, lexical retrieval, evidence-pack schema, cite resolver
 Simplification, alternate examples, comprehension questions, TD problem statement/outline. AI output clearly labelled draft.
 
 ### Phase 6 — editable presentations
-Implemented 2026-10-27 with a `DeckGenerator` protocol. Production uses python-pptx (MIT); PptxGenJS 4.0.1 is measured as a comparison generator on the same six-slide Arabic/French fixture; Marp was rejected as non-editable/experimental. A 6-slide benchmark deck with bullets, two verbatim quotations, a chart, a table, footers and a bibliography is validated for ZIP integrity, native editable objects, paragraph/run/table RTL and mixed-script preservation (`docs/PPTX_BENCHMARK.md`, `docs/ADR/0005-pptx-generator.md`). **Pixel-level RTL rendering in PowerPoint/LibreOffice remains unverified** because neither application is installed in the verification environment.
+Implemented 2026-10-27 with a `DeckGenerator` protocol. Production uses python-pptx (MIT); PptxGenJS 4.0.1 is measured as a comparison generator on the same six-slide Arabic/French fixture; Marp was rejected as non-editable/experimental. A 6-slide benchmark deck with bullets, two verbatim quotations, a chart, a table, footers and a bibliography is validated for ZIP integrity, native editable objects, paragraph/run/table RTL and mixed-script preservation (`docs/PPTX_BENCHMARK.md`, `docs/ADR/0005-pptx-generator.md`). A **headless LibreOffice** render gate now runs in CI
+   (`.github/workflows/pptx-render.yml`): it converts both decks to PDF,
+   rasterises every page with `pdftoppm` and checks page count, non-blank pages
+   and Arabic glyphs. **Microsoft PowerPoint visual parity remains unverified**
+   and requires a Windows host (see `docs/WINDOWS_SETUP.md`).
 
 ### Phase 7 — admin, quotas and deployment rehearsal
 Roles, abuse controls, redacted logs/metrics, backups and restore drill, data deletion, deployment limits and rollback guide. Confirm free-tier limits from current docs; no promise of free 24/7 GPU inference.

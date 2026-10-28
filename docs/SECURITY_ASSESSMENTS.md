@@ -301,8 +301,11 @@ These are properties of the current design, not bugs:
 - **No horizontal scaling.** The bounded in-process worker (ADR 0004) claims jobs
   with `FOR UPDATE SKIP LOCKED`, which is multi-process safe for *job claiming*,
   but the surrounding limits are not.
-- **No encryption at rest.** Blob confidentiality relies on filesystem
-  permissions (`0700`/`0600`) and a private root.
+- **No encryption at rest is enabled.** Blob confidentiality relies on
+  filesystem permissions (`0700`/`0600`) and a private root. A design and a
+  tested AEAD interface now exist in `docs/ADR/0006-encryption-at-rest.md`, but
+  **no production column is encrypted, no KMS is configured and no key material
+  is shipped**. Volume/disk encryption is an operator responsibility.
 - **MAFHUM performs no backups.** The database and `STORAGE_ROOT` must be
   captured **together**; a database restore against a stale blob directory
   resurrects rows whose bytes no longer exist.

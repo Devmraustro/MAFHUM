@@ -137,14 +137,17 @@ HTTP — not mocks:
    no text is extracted. OCRmyPDF was evaluated and rejected for the default
    install because it requires the `tesseract` binary plus language packs —
    see [`docs/OSS_REUSE_REGISTER.md`](docs/OSS_REUSE_REGISTER.md).
-2. **No antivirus engine ships.** MAFHUM integrates the ClamAV `clamd` daemon
-   over its socket protocol (`CLAMD_UNIX_PATH` or `CLAMD_HOST`/`CLAMD_PORT`),
-   with a fail-closed switch (`MALWARE_SCAN_REQUIRED=true` rejects uploads when
-   no engine vouches for them). Gate A proved detection on 2026-10-26 against a
-   real engine with fresh signatures in the acceptance environment, but no
-   engine or signature database is bundled. Until an operator provisions
-   `clamd` in their own deployment and verifies it with the EICAR file,
-   **do not describe that deployment as scanning for malware**.
+2. **No engine is bundled in the Python package; production now wires one.**
+   MAFHUM speaks the ClamAV `clamd` socket protocol (`CLAMD_UNIX_PATH` or
+   `CLAMD_HOST`/`CLAMD_PORT`) with a fail-closed switch
+   (`MALWARE_SCAN_REQUIRED=true` rejects uploads when no engine vouches for
+   them). The **production** Compose blueprint builds a real `clamd` service
+   (`deploy/clamd/`), waits for a SCAN-based healthcheck and hard-codes the
+   fail-closed flag; a plain development install still configures no engine.
+   Gate A and `production-malware-acceptance.yml` verified real EICAR detection
+   on CI runners. **No owner host has been verified.** Until an operator runs
+   that engine on their own deployment and repeats the EICAR check, do not
+   describe that deployment as scanning for malware.
    `GET /api/v1/documents/limits` discloses the live
    `malware_scanning_available` state.
 3. **The processing worker pool is per-process, with one worker per database.**
