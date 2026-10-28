@@ -9,7 +9,9 @@
 # clamdscan exit codes: 0 = OK (clean), 1 = FOUND, 2 = error/unreachable.
 probe="/tmp/mafhum-clamd-probe.$$"
 printf 'MAFHUM clamd healthcheck probe\n' > "$probe"
-clamdscan --config-file=/etc/clamav/clamdscan.conf --no-summary "$probe" >/dev/null 2>&1
+# `timeout` matters: clamd can accept a TCP connection while it is still loading
+# signatures, and a bare clamdscan would then wait forever for a SCAN reply.
+timeout 10 clamdscan --config-file=/etc/clamav/clamdscan.conf --no-summary "$probe" >/dev/null 2>&1
 rc=$?
 rm -f "$probe"
 [ "$rc" -eq 0 ]
