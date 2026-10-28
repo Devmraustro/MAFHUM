@@ -23,8 +23,11 @@
 	}
 
 	# /api and /health are proxied by the Next server to the API service; a
-	# direct route here avoids a double hop for API-only clients.
-	@backend path /health/* /api/docs /api/openapi.json
+	# direct route here avoids a double hop for API-only clients. The metrics
+	# path is listed explicitly so Prometheus can scrape it without going
+	# through the Next rewriter. It is NOT public data: the API requires a
+	# scoped bearer token (see deploy/prometheus/prometheus.yml).
+	@backend path /health/* /api/docs /api/openapi.json /api/v1/admin/metrics
 	handle @backend {
 		reverse_proxy api:8000
 	}

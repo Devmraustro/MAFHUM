@@ -29,6 +29,11 @@ def production_settings(postgres_url: str, storage_root: Path, **overrides: obje
         "session_secret": STRONG_SECRET,
         "cookie_secure": True,
         "log_format": "json",
+        # Production now refuses to boot without a real scanning policy, a
+        # daemon address and a scoped metrics token. Synthetic values only.
+        "malware_scan_required": True,
+        "clamd_host": "127.0.0.1",
+        "metrics_scrape_token": "synthetic-production-metrics-token-0123456789",
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
@@ -91,6 +96,39 @@ class TestProductionRefusals:
         )
         with pytest.raises(RuntimeError):
             create_app(settings, start_worker=False)
+
+    def test_refuses_unscanned_uploads(self, postgres_url: str, storage_root: Path) -> None:
+        settings = production_settings(postgres_url, storage_root, malware_scan_required=False)
+        with pytest.raises(RuntimeError, match="MALWARE_SCAN_REQUIRED"):
+            settings.assert_production_ready()
+
+    def test_refuses_scan_required_without_a_daemon(
+        self, postgres_url: str, storage_root: Path
+    ) -> None:
+        settings = production_settings(
+            postgres_url, storage_root, clamd_host=None, clamd_unix_path=None
+        )
+        with pytest.raises(RuntimeError, match="CLAMD_HOST"):
+            settings.assert_production_ready()
+
+    def test_a_unix_socket_daemon_address_is_acceptable(
+        self, postgres_url: str, storage_root: Path
+    ) -> None:
+        settings = production_settings(
+            postgres_url,
+            storage_root,
+            clamd_host=None,
+            clamd_unix_path="/run/clamd/clamd.sock",
+        )
+        settings.assert_production_ready()
+
+    def test_refuses_a_missing_or_short_metrics_token(
+        self, postgres_url: str, storage_root: Path
+    ) -> None:
+        for token in ("", "short"):
+            settings = production_settings(postgres_url, storage_root, metrics_scrape_token=token)
+            with pytest.raises(RuntimeError, match="METRICS_SCRAPE_TOKEN"):
+                settings.assert_production_ready()
 
     def test_development_and_test_still_boot(self, postgres_url: str, storage_root: Path) -> None:
         for env in ("development", "test"):

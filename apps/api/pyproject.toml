@@ -19,6 +19,10 @@ dependencies = [
     "python-pptx==1.0.2",
     "email-validator==2.3.0",
     "httpx==0.28.1",
+    # Authenticated field encryption primitives (design + interfaces only;
+    # production keys are NOT shipped and the feature is NOT enabled).
+    # Apache-2.0 OR BSD-3-Clause. See docs/ADR/0006-encryption-at-rest.md.
+    "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +37,12 @@ dev = [
     "mypy==2.4.0",
     "pip-audit==2.9.0",
     "pgserver==0.1.4",
+    # Independent SAST pass in the security CI job (ruff's S rules are the fast
+    # first pass; bandit is the second, separate implementation).
+    "bandit==1.9.4",
+    # Used by tools/acceptance/prod_compose_contract.py to parse the Compose
+    # template as data instead of shelling out to Docker in the pytest suite.
+    "PyYAML==6.0.3",
     "types-setuptools==84.0.0.20261006",
 ]
 

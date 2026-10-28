@@ -28,6 +28,11 @@ def ready(context: Context, db: DbSession) -> HealthResponse:
         checks["database"] = "unavailable"
     checks["storage"] = "ok" if _storage_writable(context) else "unavailable"
     checks["processing_worker"] = "ok" if context.worker.worker_id else "stopped"
+    # When scanning is mandatory, a missing engine is a readiness failure, not a
+    # detail to discover on the first upload. `available` performs a real PING;
+    # it is not a check of whether an address was configured.
+    if context.settings.malware_scan_required:
+        checks["malware_scanner"] = "ok" if context.documents.scanner.available else "unavailable"
     status = "ok" if all(value == "ok" for value in checks.values()) else "degraded"
     return HealthResponse(status=status, version=__version__, checks=checks)  # type: ignore[arg-type]
 
