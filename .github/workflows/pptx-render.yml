@@ -55,8 +55,11 @@ jobs:
             fonts-freefont-ttf \
             fonts-kacst
           soffice --version
-          pdfinfo -v 2>&1 | head -1
-          fc-list :lang=ar family | head -8
+          pdfinfo -v 2>&1 || true
+          # Avoid `| head` under `set -o pipefail`: a truncated producer exits
+          # with SIGPIPE (141) and would fail the whole step.
+          fc-list :lang=ar family > /tmp/mafhum-arabic-fonts.txt || true
+          head -8 /tmp/mafhum-arabic-fonts.txt || true
 
       - uses: actions/setup-python@v5
         with:
@@ -93,8 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/pptx-render
-          engine="$(soffice --version 2>&1 | head -1)"
-          echo "$engine" | tee artifacts/pptx-render/engine.txt
+          engine="$(soffice --version 2>&1)"
+          printf '%s\n' "$engine" | tee artifacts/pptx-render/engine.txt
           timeout 300 soffice \
             -env:UserInstallation=file:///tmp/mafhum-lo-profile \
             --headless --norestore --convert-to pdf \
