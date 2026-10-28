@@ -44,7 +44,12 @@ a third party because `.invalid` never resolves.
   asserting fail-closed wiring, required secret interpolations, pinned image tags
   and alert rules that reference only real metrics.
 
-**Validation performed without a host:** `docker compose -f
+**Validation performed without a host:** the `deploy/clamd` image is built and
+its clamd binary/config are smoke-tested in CI, but the container was **not**
+observed reaching SCAN-ready there; the acceptance workflow uses a host-installed
+clamd with the same real engine and signatures. Proving the production image's
+daemon startup and healthcheck on your host is therefore a mandatory pre-deploy
+step, not a completed check. `docker compose -f
 deploy/docker-compose.prod.yml --env-file deploy/.env.prod.example config
 --quiet` and the contract checker both run in CI
 (`.github/workflows/production-malware-acceptance.yml`). A separate workflow

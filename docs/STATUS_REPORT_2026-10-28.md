@@ -18,16 +18,16 @@ implemented but a stated part is design-only or unverified on a real host ·
 
 | # | Task | Status | Verification / precise limitation |
 |---|---|---|---|
-| 1 | Production ClamAV wiring + real fail-closed acceptance | **DONE** (host deployment still open) | `deploy/clamd/` image built on CI; healthcheck performs a real `clamdscan`; `docker compose config` + contract pass; `production-malware-acceptance.yml` clean/EICAR/outage job. **The owner's host has not run it.** |
+| 1 | Production ClamAV wiring + real fail-closed acceptance | **DONE** (image runtime on a real host still open) | `deploy/clamd/` image **built** on CI and its clamd binary/config smoke-tested; healthcheck performs a real `clamdscan`; `docker compose config` + contract pass; `production-malware-acceptance.yml` run `40620251216` verified clean/EICAR/outage against a **real** signature-loaded clamd (all 11 core steps success). **CI did not use that container as the daemon** — its in-container signature load did not reach SCAN-ready within a bounded window, so starting the production image and proving its healthcheck on a real host is an explicit operator / Z Code task. |
 | 2 | Account export with ownership isolation + bounded streaming | **DONE** | `apps/api/tests/test_account_export.py` (11 tests): cross-user isolation, safe ZIP names, file-count/byte caps, audit row, unauthenticated 401. |
 | 3 | Configurable audit retention + privacy docs | **DONE** | `test_audit_retention.py` (8 tests): 0-days no-op, dry run, cutoff, batch cap, other tables untouched, CLI defaults. `DATA_POLICY.md` §8. Purge is opt-in and never scheduled. |
 | 4 | At-rest encryption ADR + testable interfaces | **PARTIAL — by design** | ADR 0006 + `core/crypto.py` + `test_field_encryption.py` (14 tests) with synthetic keys. **No production column is encrypted, no KMS, no key material.** A guard test asserts the module is not wired in. |
 | 5 | Scoped metrics token, Prometheus config, alert rules | **PARTIAL — templates only** | `test_metrics_token.py` (9 tests), contract check that every alert-rule metric is emitted. **No monitoring stack is deployed and `alertmanager.yml` has no destination** — deliberately, rather than shipping a fake webhook. |
 | 6 | Security CI + pentest readiness | **PARTIAL** | Bandit, `security_baseline.py`, compose contract all pass in the `security` CI job. `PENTEST_READINESS.md` written. **No DAST/ZAP/pentest/container-image scan has run** — needs a live target and human triage. |
-| 7 | Headless LibreOffice PPTX render + Arabic/RTL checks | **DONE** (headless only) | `pptx-render.yml` run **40614116944**: all 15 steps success including "Convert both decks to PDF with headless LibreOffice" and "Rasterise and verify every page". **PowerPoint visual parity is BLOCKED** (Windows/manual). |
+| 7 | Headless LibreOffice PPTX render + Arabic/RTL checks | **DONE** (headless only) | `pptx-render.yml` runs **40614116944**, **40620251067**: all 15 steps success including "Convert both decks to PDF with headless LibreOffice" and "Rasterise and verify every page". **PowerPoint visual parity is BLOCKED** (Windows/manual). |
 | 8 | Windows backup/restore URL fix + Windows setup docs | **DONE in code, BLOCKED on Windows** | `test_database_url_portability.py` (12 tests) covers POSIX socket, Windows TCP, IPv6 and encoded-credential URLs; full `test_backup_restore.py` passes locally. **No native Windows host ran the suite.** |
 | 9 | Evidence-backed stale doc corrections | **DONE** | 15+ files corrected; superseded banners on historical reports; new §15 in `STATUS_REPORT_2026-10-27.md`; no remaining "Phases 4–7 not started / 435 tests / no bulk export / socket client not written / detection not verified" claims. |
-| 10 | Production Compose contract validation + runbook updates | **DONE** | `prod_compose_contract.py` (3 pytest tests) + CI job **40614116773** "Compose config + production contract" ran `docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod.example config --quiet` successfully. Runbooks list exact operator inputs. |
+| 10 | Production Compose contract validation + runbook updates | **DONE** | `prod_compose_contract.py` (3 pytest tests) + CI job **40620251216** "Compose config + production contract" ran `docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod.example config --quiet` successfully. Runbooks list exact operator inputs. |
 
 ---
 
@@ -73,16 +73,36 @@ step-level conclusions were read from the GitHub API instead).
 60cd579  feat(pptx,windows,docs): headless render gate, Windows URL portability, stale-doc corrections and deployment contract docs
 d90e600  docs: final contradiction sweep (engine bundling, LibreOffice scope, encryption status)
 95ca156  ci(pptx): avoid SIGPIPE failures when reporting renderer/font versions
+8481366  ci(malware): probe readiness with a real SCAN and emit API-readable diagnostics
+3514f53  ci(malware): fix pipefail false-positive container-exit check
+3013ba9  ci(malware): seed signatures on host, bind-mount into the production clamd image
+c64b701  fix(clamd): use a real log file mirrored to stderr; prevent /dev/stdout ELOOP regression
+3b22371  ci(clamd): bound every SCAN probe with timeout; cancel superseded engine runs
+eb23ef2  ci(malware): use the proven host clamd daemon for real-engine fail-closed acceptance
+bc79f02  ci(malware): verify real-engine EICAR through MAFHUM's own clamd client
 ```
+
+Final HEAD: `bc79f02`. Earlier failed runs (`40614116773`, `40615090587`,
+`40615509350`, `40616284837`, `40616781698`, `40617850330`, `40619361825`) are
+retained as evidence of the iterative fixes; the ones after `bc79f02` are not
+the final state.
 
 ### GitHub Actions evidence (PR #6)
 
 | Workflow | Run | Result |
 |---|---|---|
-| MAFHUM CI (6 jobs incl. new `security`) | `40614116729` | success, 3 m 17 s — repository baseline, backend, **security**, migrations, frontend all pass |
-| PPTX render — headless LibreOffice | `40614116944` | success, 51 s — 15/15 steps, including PDF conversion, rasterisation and verification |
-| Production malware wiring | `40614116773` | `contract` job success (Compose config + contract); `fail-closed` job result recorded in the final chat report |
+| MAFHUM CI (5 jobs incl. new `security`) | **`40620251266`** | success, 3 m 1 s — repository baseline, backend, **security**, migrations, frontend all pass |
+| PPTX render — headless LibreOffice | **`40620251067`** | success, 49 s — 15/15 steps, including PDF conversion, rasterisation and verification |
+| Production malware wiring | **`40620251216`** | success, 1 m 42 s — `contract` job (`docker compose config` + contract) **and** `fail-closed` job (real signatures, engine-level EICAR, production image build, two API instances, clean/EICAR/outage acceptance) all green |
 | Vercel | preview deployment | pass — public frontend unchanged |
+
+Step-level evidence for the final malware run (read from the GitHub Jobs API
+because the raw log blob host is unreachable from this sandbox): all 11 core
+steps `success`, including "Install ClamAV, refresh real signatures, start a
+real daemon", "Build and smoke-test the production ClamAV image", "Engine-level
+EICAR detection", "Start one API with the engine and one with a dead engine
+port" and "Real fail-closed acceptance". The only annotation is a Node.js 20
+action-runtime deprecation warning, not a failure.
 
 Workflow URL pattern:
 `https://github.com/Devmraustro/MAFHUM/actions/runs/<run-id>`.
@@ -97,6 +117,12 @@ PR: `https://github.com/Devmraustro/MAFHUM/pull/6`.
 2. **ClamAV signature freshness is not monitored.** The `malware_scanner`
    readiness gauge proves a PING answer, not that signatures are current. A
    mirror outage after a healthy start would leave a stale database.
+   Additionally, the **production `deploy/clamd` image was built and its binary
+   smoke-tested but never observed reaching SCAN-ready inside a container on
+   CI**; its daemon startup and healthcheck must be proven on the owner's host
+   (Z Code §B5). The in-container `freshclam` bootstrap was found to be slow and
+   fragile under CI; the acceptance workflow therefore uses a host daemon with
+   the same engine and signatures.
 3. **No application-layer encryption at rest.** A database dump or blob volume
    exposes user content. ADR 0006 is design + synthetic-key tests only; the KMS,
    key escrow and rotation policy are owner decisions.

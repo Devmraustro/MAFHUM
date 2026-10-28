@@ -69,6 +69,13 @@ B. LOCAL SERVICES / INTERACTIVE TOOLS (needs a real Docker host + human)
    `/health/ready` reports database=ok, storage=ok, malware_scanner=ok, and the
    clamd container becomes healthy with a downloaded signature set. Record the
    engine version, signature file timestamps and container health status.
+   IMPORTANT: CI built and smoke-tested deploy/clamd/ but never observed that
+   container reaching SCAN-ready — its in-container `freshclam` bootstrap was
+   slow/fragile under CI, so the acceptance workflow used a host-installed clamd
+   with the same engine and signatures. Proving the production image's own
+   bootstrap, config, healthcheck and 12-hourly refresh on a real host is a
+   mandatory, unverified check. If it fails, capture `docker logs`, the
+   container's `.State` and the `/tmp/mafhum-clamd.log` contents.
 6. On that host run the three-case malware acceptance with real signatures:
    clean file accepted; EICAR DOCX from apps/api/tools/eicar_probe.py rejected
    with details.reason=malware_detected; clamd stopped -> upload rejected with a
