@@ -29,7 +29,7 @@ from tools.backup import (
     verify_state,
 )
 
-from tests.conftest import run_worker, upload_kwargs
+from tests.conftest import database_url_with_name, run_worker, upload_kwargs
 from tests.fixtures_content import make_pdf
 
 PDF_MIME = "application/pdf"
@@ -41,7 +41,10 @@ def scratch_targets(postgres_url: str, tmp_path: Path) -> dict[str, object]:
     from sqlalchemy import create_engine, text
 
     name = "mafhum_restore_test"
-    admin = postgres_url.replace("/mafhum_test?", "/postgres?").replace("+psycopg", "")
+    # The pgserver URI shape differs between POSIX (Unix socket + ?host= query)
+    # and Windows (plain TCP). A literal `.replace("/mafhum_test?", ...)` used
+    # to no-op on Windows and point the restore drill at the wrong database.
+    admin = database_url_with_name(postgres_url, "postgres").replace("+psycopg", "")
     engine = create_engine(admin, isolation_level="AUTOCOMMIT")
     with engine.connect() as connection:
         exists = connection.execute(
@@ -52,7 +55,7 @@ def scratch_targets(postgres_url: str, tmp_path: Path) -> dict[str, object]:
         connection.execute(text(f'CREATE DATABASE "{name}"'))
     engine.dispose()
 
-    target_url = postgres_url.replace("/mafhum_test?", f"/{name}?")
+    target_url = database_url_with_name(postgres_url, name)
     return {"database_url": target_url, "storage_root": tmp_path / "restored-blobs"}
 
 

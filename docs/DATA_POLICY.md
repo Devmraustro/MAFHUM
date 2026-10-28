@@ -131,14 +131,17 @@ internals.
 
 These are limitations, stated so nobody has to guess:
 
-1. **No malware scanning in a default install.** Uploads are checked by magic
-   bytes, real parser behaviour, archive shape, entry counts, decompressed-size
-   limits and page limits. That is not antivirus. A malicious file that is also a
-   valid PDF will be stored, and its `scan_verdict` is recorded as `not_scanned`.
-   An operator can connect an external `clamd` and require a clean verdict, in
-   which case anything other than a confirmed-clean result rejects the upload.
-   Detection itself has not been verified here — no engine was available — so do
-   not read the presence of the setting as evidence that scanning works.
+1. **A default *development* install still ships no engine.** Uploads are checked
+   by magic bytes, real parser behaviour, archive shape, entry counts,
+   decompressed-size limits and page limits. That is not antivirus. A malicious
+   file that is also a valid PDF will be stored with `scan_verdict=not_scanned`
+   unless an operator points `CLAMD_HOST`/`CLAMD_UNIX_PATH` at a real daemon. The
+   **production** blueprint now includes a real `clamd` service and hard-codes
+   `MALWARE_SCAN_REQUIRED=true`; production refuses to boot with that flag off or
+   with no daemon address. Real EICAR detection is verified in CI (staging Gate A
+   and `production-malware-acceptance.yml`), not on the owner's host — the
+   operator must verify their own engine and signature freshness before claiming
+   malware protection.
 2. **No OCR.** Scanned or image-only PDFs are detected and reported; no text is
    extracted from them.
 3. **No URL ingestion.** MAFHUM never fetches a document from a URL, so it cannot
@@ -146,11 +149,17 @@ These are limitations, stated so nobody has to guess:
 4. **No external AI provider by default.** `ENABLE_AI_GATEWAY` is `false`. No
    document content leaves the server. If that is ever enabled, it must be
    disclosed to users in the interface before their content is sent anywhere.
-5. **No cross-region residency or encryption at rest.** Files are stored with
-   filesystem permissions only. Full-disk encryption is an operator concern.
-6. **Single-process quotas.** Document counts, byte totals and the processing
-   worker are enforced per process. Running multiple API replicas without moving
-   enforcement into the database would let a user exceed their quota.
+5. **No application-layer encryption at rest is enabled.** Files are stored with
+   `0600` permissions on a private volume and passwords are scrypt-hashed, but
+   anyone who obtains the database files, a dump or the blob volume can read user
+   content. A design and a tested AEAD interface exist in
+   [`ADR/0006-encryption-at-rest.md`](ADR/0006-encryption-at-rest.md); **no
+   production column is encrypted and no KMS is configured.** Volume/disk
+   encryption remains an operator responsibility.
+6. **Quotas are database-enforced; the worker is single-writer.** Document counts,
+   byte totals and the login throttle hold across API replicas. Only the
+   in-process processing worker is limited to one per database (advisory lock);
+   disable `PROCESSING_WORKER_ENABLED` on additional replicas.
 
 ---
 
@@ -162,4 +171,73 @@ These are limitations, stated so nobody has to guess:
 | Correct metadata | Edit your source records |
 | Delete a document | From the interface; removes rows, segments and the file |
 | Delete your account | Removes everything listed in section 4 |
-| Export | Download your original files; there is no bulk export endpoint yet |
+| Export | `GET /api/v1/me/export` streams a bounded ZIP of **your own** rows and original blobs — session-authenticated, ownership-filtered in SQL, capped by file count, bytes and time. See §8. |
+| Retention | Audit events are kept indefinitely by default; a bounded, opt-in purge is described in §8. |
+
+---
+
+## 8. Export scope, audit retention and privacy
+
+### What the export contains
+
+`GET /api/v1/me/export` is session-authenticated and GET-only. Every query is
+filtered by `owner_id` in SQL; no identifier from the request can select another
+account. The ZIP contains `account.json`, `projects.json`, `documents.json`,
+`sources.json`, `presentations.json`, `study_topics.json`, a `manifest.json`
+mapping archive member names back to original filenames, a bilingual README, and
+the caller's original uploaded blobs plus generated PPTX artifacts under
+`files/`.
+
+**Never included:** password hashes, session tokens, CSRF secrets, login attempts,
+other users' rows, audit events and extracted text segments (the original files
+are included instead). Archive member names are UUIDs with a whitelisted
+extension — a user-controlled filename can never become a ZIP path.
+
+Bounds are enforced while the archive is built: `EXPORT_MAX_FILES`,
+`EXPORT_MAX_FILE_BYTES_MB`, `EXPORT_MAX_TOTAL_BYTES_MB`, `EXPORT_MAX_SECONDS` and
+`EXPORT_SPOOL_MEMORY_MB`. Only the spool threshold is ever held in memory; larger
+archives spill to a private `0600` temporary file and are streamed back in
+64 KiB chunks. If a cap is reached, `manifest.json` sets `truncated: true` and
+lists the reason under `notices` — the export is never silently incomplete.
+
+### What deletion does and does not remove
+
+`DELETE /api/v1/me` tombstones the account, revokes sessions, then removes rows
+and blobs in two phases separated by a commit. Audit events survive with a NULL
+`actor_id` so the security trail is not erased with the account. **Backups are
+not purged** by account deletion: an archived backup may still contain the data
+until the backup itself expires. This is a residual-data limitation, disclosed
+rather than hidden.
+
+### Audit-log retention policy (owner decision required)
+
+`audit_events` rows are kept indefinitely by default
+(`AUDIT_RETENTION_DAYS=0`). A positive value is **only an input** to the operator
+command `python apps/api/tools/purge_audit.py --days N`; nothing deletes rows
+automatically and no HTTP endpoint can delete them. The command is a **dry run**
+unless `--apply` is given, deletes only `audit_events` rows older than the cutoff
+in independently committed batches of at most `AUDIT_PURGE_BATCH_SIZE`, and stops
+after `AUDIT_PURGE_MAX_BATCHES` batches. There is no cascade and no TRUNCATE.
+Each purge writes its own `audit_events_purged` row so the deletion is itself
+auditable.
+
+Before setting a positive retention window the owner must confirm:
+
+- the applicable legal/academic record-keeping period;
+- whether any **legal hold** applies (if it does, do not run the purge at all;
+  there is no per-record hold flag in the current implementation);
+- whether backups containing older audit rows may be retained for longer;
+- who is authorised to run `--apply`, and how each run is logged.
+
+Until that decision is made, `0` is the correct and safe value. A scheduled purge
+with `--apply` must not be enabled by default.
+
+### Residual privacy risks
+
+- No application-layer field encryption is enabled (see §6 and
+  [ADR 0006](ADR/0006-encryption-at-rest.md)).
+- Volume/disk encryption, backup encryption and key escrow are operator tasks.
+- Audit `details` are allow-listed and bounded, but `actor_id` and timestamps are
+  still personal data in the sense of most privacy regimes.
+- Log aggregation and retention are not configured; application logs may contain
+  request ids and error codes but must never contain document text.

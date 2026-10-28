@@ -1,5 +1,12 @@
 # MAFHUM — Operational Hardening Report
 
+> **Historical point-in-time report (2026-10-23).** It is retained as evidence of
+> what was verified on that date. Several statements below were superseded after
+> PR #1 merged on 2026-10-27 and Phases 6–7 landed; see
+> `docs/STATUS_REPORT_2026-10-27.md` and `docs/MONITORING.md` for current state.
+> In particular, `docker compose up` **has** now been executed on CI (rehearsal
+> runs `40530008866` and `40593579965`), and Phases 6–7 **are** implemented.
+
 Date: 2026-10-23
 Branch: `arena/1cb7b9d2-mafhum`
 Baseline at start of this work: `a7366df` (Phase 4/5 closeout)
@@ -417,6 +424,9 @@ Safe to deploy to staging under these restrictions:
   reachable, which is what blocks live retrieval from JORADP, ASJP and SNDL.
 - No `tesseract`, so OCR remains out of scope as originally decided.
 
-**Not done, per standing constraints:** PR #1 left open and unmerged; `main`
-untouched; no force-push; no history rewrite; no branch deletion; no public
-deployment; Phases 6–7 not started.
+**Not done at the time of that session, per its standing constraints:** PR #1
+left open and unmerged; `main` untouched; no force-push; no history rewrite; no
+branch deletion; no public deployment.
+**Superseded:** PR #1 merged as `8ed788d` (2026-10-27); Phases 6 and 7 were
+implemented and merged (`a4b90d1`, `e106727`). A public API is **still** not
+deployed.

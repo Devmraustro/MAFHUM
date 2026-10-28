@@ -160,16 +160,19 @@ HTTP — not mocks:
    or punctuation may not round-trip perfectly. This is a limitation of PDF text
    extraction, and it is documented rather than papered over.
 
-6. **Monitoring is minimal.** A free scheduled uptime probe checks the deployed
-   web origin (`docs/MONITORING.md`), and admin metrics exist as a scrape source
-   (`GET /api/v1/admin/metrics`). But there is no Prometheus scrape credential,
-   dashboard, log aggregation or external alerting — GitHub Actions failure
-   notifications are the only alert channel.
-7. **No visual render check for presentations.** The generated decks are
-   validated as OOXML (ZIP integrity, native editable text/chart/table shapes,
-   RTL markers, mixed-script preservation), but no LibreOffice or PowerPoint is
-   available in the verification environment. Open the `.pptx` in a real
-   presentation app before relying on its appearance.
+6. **Monitoring is configured but not deployed.** A free scheduled uptime probe
+   checks the deployed web origin. `GET /api/v1/admin/metrics` now accepts a
+   scoped bearer token (`METRICS_SCRAPE_TOKEN`, mandatory in production) and
+   `deploy/prometheus/` provides a scrape config and alert rules. **No
+   Prometheus/Alertmanager stack is running, no alert destination is configured,
+   and there is no dashboard or log aggregation** — GitHub Actions failure
+   notifications remain the only delivered alert. See `docs/MONITORING.md`.
+7. **Headless render is checked in CI; PowerPoint is not.** The generated decks
+   are validated as OOXML, and `.github/workflows/pptx-render.yml` converts both
+   benchmark decks with LibreOffice Impress, rasterises every page and checks
+   page count, non-blank pages and Arabic glyphs. That is **not** PowerPoint
+   visual parity: open the `.pptx` in Microsoft PowerPoint on Windows before
+   relying on its appearance. See `docs/PPTX_BENCHMARK.md`.
 
 See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and
 [`docs/DATA_POLICY.md`](docs/DATA_POLICY.md) for the security and data-handling

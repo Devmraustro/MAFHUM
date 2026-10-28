@@ -76,7 +76,13 @@ on `d69e297` — all four jobs success; `pytest` 831 tests / 0 failures / 0 erro
 (58 files) clean. Because this phase changed no code, those results still describe
 the tree. §6 records what was re-verified.
 
-## 2. Staging requirement checklist
+## 2. Staging requirement checklist — HISTORICAL (2026-10-23)
+
+> Every `BLOCKED` cell in this table was later resolved on CI. Read the
+> "Checklist deltas" table near the top and the final verdict first; this
+> section is retained only as the point-in-time record of what the
+> restricted sandbox could not do. Current evidence: runs `40377229156`,
+> `40523074856`, `40593579789` and `40593579965`.
 
 | # | Requirement | Status | Evidence |
 | --- | --- | --- | --- |

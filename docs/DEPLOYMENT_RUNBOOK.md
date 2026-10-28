@@ -1,10 +1,16 @@
 # MAFHUM deployment runbook
 
-Date: 2026-10-27 · Applies to: `main` after PR #2 (Phases 0–6) plus Phase 7.
+Date: 2026-10-28 · Applies to the 2026-10-28 review branch (based on `main`
+`2a15f0c`) and later.
 
 This is an operator procedure, not a claim that production is running. Every
 command below is either (a) already exercised in CI, or (b) explicitly marked
 **operator action**. Nothing here requires a paid service.
+
+**Prerequisite change:** production now REQUIRES a real ClamAV engine, a
+mandatory `MALWARE_SCAN_REQUIRED=true`, and a scoped `METRICS_SCRAPE_TOKEN` of at
+least 32 characters. `assert_production_ready()` refuses to start without them.
+Do not start from an older copy of `deploy/.env.prod.example`.
 
 ---
 
@@ -15,6 +21,9 @@ command below is either (a) already exercised in CI, or (b) explicitly marked
 | PostgreSQL 16 | `postgres:16` (Compose) | Migrations job + deployment rehearsal |
 | FastAPI API | `apps/api/Dockerfile` | Gate B (build/non-root/readiness/shutdown) + deployment rehearsal |
 | Next.js web | `apps/web/Dockerfile` (Phase 7) | Local runtime-layout check + deployment rehearsal |
+| ClamAV daemon | `deploy/clamd/Dockerfile` | `production-malware-acceptance.yml` (real engine + EICAR + outage) |
+| Caddy TLS | `deploy/Caddyfile` | `docker compose config` only — **not deployed** |
+| Prometheus / Alertmanager (optional) | `deploy/docker-compose.monitoring.yml` | Config templates only — **not deployed** |
 | Vercel web (optional) | `apps/web/vercel.json` | See §7 — a frontend-only rehearsal |
 
 The web tier never talks to a public API host from the browser. It proxies
@@ -45,16 +54,42 @@ ALLOWED_ORIGINS=["https://<web-host>"]
 STORAGE_ROOT=/var/lib/mafhum/storage
 PROCESSING_WORKER_ENABLED=true              # exactly ONE replica
 MAFHUM_RUN_MIGRATIONS=true                  # exactly ONE replica / one-shot job
+MALWARE_SCAN_REQUIRED=true                  # MANDATORY in production
+CLAMD_HOST=clamd                            # or CLAMD_UNIX_PATH; one is required
+CLAMD_PORT=3310
+METRICS_SCRAPE_TOKEN=<separate random 48+ bytes, >= 32 chars>  # MANDATORY
+AUDIT_RETENTION_DAYS=0                     # 0 = keep forever until policy decided
 ```
 
-Optional: `CLAMD_HOST` / `CLAMD_UNIX_PATH` + `MALWARE_SCAN_REQUIRED=true` **only
-after** a real engine has answered the EICAR probe. Do not claim scanning before
-that. `RESEARCH_RETRIEVAL_ENABLED=false` by default; enabling it permits
-outbound fetches that must be reviewed against `docs/SSRF_REVIEW.md`.
+`deploy/docker-compose.prod.yml` hard-codes the malware flag and the daemon
+address, and requires `METRICS_SCRAPE_TOKEN` as a `${VAR:?...}` interpolation —
+Compose itself refuses to start if it is unset. The token must be **distinct**
+from `SESSION_SECRET` and the database password; it grants access to
+`/api/v1/admin/metrics` only.
+
+`RESEARCH_RETRIEVAL_ENABLED=false` by default; enabling it permits outbound
+fetches that must be reviewed against `docs/SSRF_REVIEW.md`. OCR, an AI provider
+and live-source provenance are **not implemented** in this release.
 
 ---
 
 ## 3. Pre-deploy checklist
+
+0. **Validate the production Compose contract before touching the host.** These
+   commands run in CI on every PR and must also be run once with the operator's
+   real (uncommitted) env file:
+   ```bash
+   docker compose -f deploy/docker-compose.prod.yml \
+     --env-file deploy/.env.prod.example config --quiet
+   python tools/acceptance/prod_compose_contract.py
+   python tools/security_baseline.py
+   ```
+   The contract asserts a real `clamd` service with a SCAN-based healthcheck,
+   `api` gated on `clamd: service_healthy`, a hard-coded
+   `MALWARE_SCAN_REQUIRED=true`, required secret interpolations, pinned image
+   tags, no published ports except Caddy, and alert rules that reference only
+   metrics the API actually emits. **A parseable Compose file is not a passing
+   contract.**
 
 1. **Capture a backup** before any schema change:
    ```bash
@@ -71,8 +106,16 @@ outbound fetches that must be reviewed against `docs/SSRF_REVIEW.md`.
 2. Confirm `alembic upgrade head` succeeds on a copy of production data
    (`0001` → `0009_admin_audit` is linear).
 3. Record the currently deployed image tag / commit SHA — rollback needs it.
-4. Confirm `SESSION_SECRET` and `COOKIE_SECURE` are set; the entrypoint refuses
+4. Confirm `SESSION_SECRET`, `COOKIE_SECURE`, `METRICS_SCRAPE_TOKEN`,
+   `MALWARE_SCAN_REQUIRED=true` and `CLAMD_HOST` are set; the entrypoint refuses
    to start production otherwise.
+5. Confirm the ClamAV volume has a fresh signature set and that the daemon's
+   healthcheck passes a real `clamdscan`. Verify an EICAR probe is rejected by
+   the engine **before** allowing user uploads (see
+   `.github/workflows/production-malware-acceptance.yml` for the exact sequence).
+6. Decide the audit-retention policy with the owner. Do **not** schedule
+   `purge_audit.py --apply` until a legal hold has been ruled out
+   (`docs/DATA_POLICY.md` §8).
 
 ---
 
@@ -102,13 +145,19 @@ the bounded document worker is not shared (`docs/DEPLOYMENT.md`).
 
 ## 5. Verify after deploy
 
-- `/health/ready` reports `database=ok`, `storage=ok`, `processing_worker=ok`.
+- `/health/ready` reports `database=ok`, `storage=ok`, `processing_worker=ok`
+  **and `malware_scanner=ok`**. Anything else means the stack is not ready to
+  accept uploads.
 - `python tools/e2e/compose_smoke.py` prints `ALL COMPOSE SMOKE CHECKS PASSED`.
-- `docker compose ps` shows all three services healthy.
+- `docker compose ps` shows every service healthy, including `clamd`.
 - An admin can read `GET /api/v1/admin/overview` and
   `GET /api/v1/admin/metrics`; a normal user gets `404 resource_not_found`.
-- `GET /api/v1/documents/limits` reports the true
-  `malware_scanning_available` state — do not assert "clean" without an engine.
+- `GET /api/v1/documents/limits` reports
+  `malware_scanning_available: true` — if it is false, stop and fix the engine.
+- With the monitoring stack started, a request carrying
+  `Authorization: Bearer $METRICS_SCRAPE_TOKEN` returns metrics, the same token
+  is rejected on `/admin/overview`, and alerts are visible in Alertmanager.
+  **Delivery to a human is not configured by default** — see §6.
 
 ---
 
@@ -135,13 +184,15 @@ GETs):
 | `GET /api/v1/admin/audit-events` | Append-only trail; filter by `action`/`outcome` |
 | `GET /api/v1/admin/metrics` | Redacted Prometheus-style counters (no PII) |
 
-**Honest limit:** a free scheduled uptime probe now exists
-(`.github/workflows/uptime-monitor.yml`, `docs/MONITORING.md`), and GitHub
-Actions failure notifications are its alert channel. There is still no
-Prometheus scrape credential, dashboard, log aggregation or external alerting;
-the metrics endpoint remains a scrape source, not a monitoring system. Wiring it
-to a real alertmanager and retaining the redacted `app_env=production` JSON logs
-is an operator action that remains open.
+**Honest limit:** a free scheduled uptime probe exists, and a scoped metrics
+token plus `deploy/prometheus/prometheus.yml`, `alert.rules.yml` and an optional
+`deploy/docker-compose.monitoring.yml` are now available. **They are templates,
+not a running monitoring system.** `deploy/prometheus/alertmanager.yml` has an
+`unconfigured` receiver with **no delivery destination**: alerts are grouped and
+visible in the UI but reach nobody until the owner adds real `email_configs` or
+`webhook_configs` with credentials. There is still no dashboard, no log
+aggregation, no container-image scanning and no penetration test. See
+`docs/MONITORING.md` and `docs/PENTEST_READINESS.md`.
 
 ---
 

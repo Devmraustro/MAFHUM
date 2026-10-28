@@ -4,6 +4,16 @@ Status is recorded from verification, not intent. "Done" means implemented **and
 covered by a test that actually ran; see [`docs/THREAT_MODEL.md`](THREAT_MODEL.md)
 for what remains a residual risk.
 
+**Current status (2026-10-28):** the review branch adds production ClamAV wiring
+with real engine acceptance, bounded account export, configurable audit retention,
+an encryption design (interfaces only, NOT enabled), a scoped metrics token with
+Prometheus/alert templates, a security CI gate, a headless LibreOffice render
+gate, Windows URL portability, doc corrections and a Compose contract validator.
+`docker compose up` HAS been executed on CI (rehearsal `40530008866` and later
+`40593579965`); the *production* blueprint has only been config-validated. There
+is still **no public API, no production deployment, no delivered alerting and no
+penetration test**. The project is not complete.
+
 | Phase | Status |
 |---|---|
 | 0 — Architecture and governance | Done |
@@ -183,10 +193,14 @@ See `docs/MONITORING.md`, `docs/FULL_STACK_DEPLOYMENT.md` and
 
 **Still open:** no public API origin (the Vercel deployment is deliberately
 frontend-only, and the user chose to keep it that way); no managed PostgreSQL,
-TLS terminator, secrets manager or private object store; no Prometheus scrape
-credential, dashboard or external alerting; no pixel-level PPTX render check
-(no LibreOffice/PowerPoint available); no `LICENSE` (owner decision recorded as
-"not now"). The `deploy/` stack is configuration, not an executed deployment.
+TLS terminator, secrets manager, private object store or volume encryption; no
+**deployed** monitoring stack and no alert destination (a scoped token,
+`prometheus.yml`, alert rules and an optional monitoring Compose file now exist
+as templates); no Microsoft PowerPoint visual-parity check on Windows (a
+headless LibreOffice CI render now exists); no production encryption at rest
+(ADR 0006 is design-only); no DAST/pentest; no OCR, AI provider or live-source
+retrieval; no `LICENSE` (owner decision recorded as "not now"). The
+`deploy/` stack is configuration, not an executed deployment.
 
 ---
 

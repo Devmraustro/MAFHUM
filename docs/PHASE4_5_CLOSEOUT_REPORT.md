@@ -1,5 +1,10 @@
 # Phase 4 Security & Grounding Gates / Phase 5 Integration — Completion Report
 
+> **Historical report (2026-10-23), superseded.** PR #1 merged on
+> 2026-10-27 and Phases 6–7 are implemented. Git state, PR status and
+> "not started" claims below describe that earlier tree only. Current
+> state: `docs/STATUS_REPORT_2026-10-27.md` §15 and `docs/ROADMAP.md`.
+
 Date: 2026-10-23 · Branch: `arena/1cb7b9d2-mafhum` · Final commit: `34a1d6d`
 
 ## 1. Verified repository state
