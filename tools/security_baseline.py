@@ -73,6 +73,47 @@ REQUIRED_DOCS = (
     "docs/ADR/0006-encryption-at-rest.md",
 )
 
+# Rules that MUST exist in .gitattributes: every path class the LF byte scan
+# below covers, pinned so a fresh Windows checkout with the installer default
+# `core.autocrlf=true` still materialises LF. Each regex matches exactly ONE
+# attribute line — note the `[ \t]` after `Dockerfile` so the `Dockerfile` rule
+# cannot also be satisfied by the `Dockerfile.*` line — so the negative tests
+# in apps/api/tests/test_security_baseline.py can attribute a failure to the
+# one rule that was removed.
+REQUIRED_LF_RULES: tuple[tuple[str, str], ...] = (
+    ("*.sh", r"(?m)^\*\.sh[ \t][^#\n]*\beol=lf\b"),
+    ("Dockerfile", r"(?m)^Dockerfile[ \t][^#\n]*\beol=lf\b"),
+    ("Dockerfile.*", r"(?m)^Dockerfile\.\*[ \t][^#\n]*\beol=lf\b"),
+    ("*.dockerfile", r"(?m)^\*\.dockerfile[ \t][^#\n]*\beol=lf\b"),
+    ("Caddyfile", r"(?m)^Caddyfile[ \t][^#\n]*\beol=lf\b"),
+    ("deploy/clamd/*.conf", r"(?m)^deploy/clamd/\*\.conf[ \t][^#\n]*\beol=lf\b"),
+)
+
+
+def missing_lf_rules(attributes: str) -> list[str]:
+    """Return the labels of required `.gitattributes` LF rules that are absent."""
+    return [
+        label
+        for label, pattern in REQUIRED_LF_RULES
+        if re.search(pattern, attributes) is None
+    ]
+
+
+def _is_lf_enforced(relative_posix_path: str) -> bool:
+    """True for tracked paths the LF byte scan must cover (mirrors the rules).
+
+    Windows-native files are deliberately absent: their line endings are the
+    user's local choice and nobody executes them in a Linux container.
+    """
+    name = relative_posix_path.rsplit("/", 1)[-1]
+    return (
+        name.endswith((".sh", ".dockerfile"))
+        or name == "Caddyfile"
+        or name == "Dockerfile"
+        or name.startswith("Dockerfile.")
+        or (relative_posix_path.startswith("deploy/clamd/") and name.endswith(".conf"))
+    )
+
 
 def _tracked_files() -> list[Path]:
     git = shutil.which("git")
@@ -220,25 +261,13 @@ def check() -> list[str]:
     )
     if gitattributes_path.is_file():
         attributes = gitattributes_path.read_text(encoding="utf-8")
-        for pattern, label in (
-            (r"(?m)^\*\.sh\b[^#\n]*\beol=lf\b", "*.sh"),
-            (r"(?m)^Dockerfile(\.\*)?\b[^#\n]*\beol=lf\b", "Dockerfile"),
-        ):
-            require(
-                re.search(pattern, attributes) is not None,
-                f".gitattributes must pin {label} to eol=lf (Windows checkouts must stay LF)",
-            )
+        failures.extend(
+            f".gitattributes must pin {label} to eol=lf (Windows checkouts must stay LF)"
+            for label in missing_lf_rules(attributes)
+        )
     for path in tracked:
         relative = path.relative_to(REPO_ROOT).as_posix()
-        name = path.name
-        enforced = (
-            name.endswith((".sh", ".dockerfile"))
-            or name == "Caddyfile"
-            or name == "Dockerfile"
-            or name.startswith("Dockerfile.")
-            or (relative.startswith("deploy/clamd/") and name.endswith(".conf"))
-        )
-        if not enforced:
+        if not _is_lf_enforced(relative):
             continue
         if b"\r" in path.read_bytes():
             failures.append(

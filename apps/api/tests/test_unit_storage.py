@@ -35,6 +35,19 @@ WINDOWS_ONLY = pytest.mark.skipif(
 )
 
 
+def _symlink_privilege_denied(exc: OSError) -> bool:
+    """True ONLY for Windows' symlink-privilege denial (WinError 1314).
+
+    ``winerror`` is populated only on Windows builds, so on POSIX this is
+    always False: any symlink-creation failure there fails the test instead
+    of skipping it. On Windows, every other OSError (access denied, invalid
+    function, ...) also fails — only the one condition the verification pass
+    actually hit (an account without elevation or Developer Mode) may skip.
+    """
+    windows = sys.platform == "win32" or os.name == "nt"
+    return windows and getattr(exc, "winerror", None) == 1314
+
+
 @pytest.fixture
 def storage(tmp_path: Path) -> LocalFileStorage:
     return LocalFileStorage(tmp_path / "store")
@@ -91,14 +104,22 @@ class TestResolution:
         try:
             link.symlink_to(outside)
         except OSError as exc:
-            # A Windows account without elevation or Developer Mode cannot
-            # create symlinks (WinError 1314, observed 2026-10-30 — see
-            # docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md §2.4). Only the
-            # symlink-specific FIXTURE is skipped: the out-of-root component
-            # property itself is still asserted on this host by
-            # test_junction_component_rejected below, which needs no
-            # privilege, and on POSIX (CI) by this test.
-            pytest.skip(f"the OS denies symlink creation ({exc})")
+            # Skip ONLY the specific Windows privilege denial (WinError 1314 =
+            # ERROR_PRIVILEGE_NOT_HELD: an account without elevation or
+            # Developer Mode cannot create symlinks — observed 2026-10-30,
+            # docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md §2.4). Any other
+            # OSError, on any platform, is a real failure and must surface:
+            # a broad except would silently hide breakage. The escape
+            # property itself is still asserted on a skipping host by
+            # test_junction_component_rejected below (no privilege needed),
+            # and on POSIX CI by this test.
+            if _symlink_privilege_denied(exc):
+                pytest.skip(
+                    "the OS denies symlink creation (WinError 1314); the "
+                    "out-of-root component property stays asserted by "
+                    "test_junction_component_rejected on this host"
+                )
+            raise
         with pytest.raises(StorageKeyError):
             storage.resolve("aa/file.bin")
 
@@ -132,6 +153,28 @@ class TestResolution:
         assert link.is_junction() and not link.is_symlink()
         with pytest.raises(StorageKeyError):
             storage.resolve("aa/file.bin")
+
+
+class TestSymlinkSkipClassification:
+    """The fixture skip may fire ONLY for the Windows privilege denial."""
+
+    def test_winerror_1314_is_classified_as_denied(self) -> None:
+        if not (sys.platform == "win32" or os.name == "nt"):
+            pytest.skip("winerror exists only on Windows builds")
+        # The 4-argument OSError form populates winerror on Windows builds;
+        # 1314 = ERROR_PRIVILEGE_NOT_HELD.
+        exc = OSError(13, "A required privilege is not held by the client", None, 1314)
+        assert _symlink_privilege_denied(exc) is True
+
+    def test_a_different_windows_oserror_is_not_skippable(self) -> None:
+        if sys.platform == "win32" or os.name == "nt":
+            exc = OSError(5, "Access is denied", None, 5)
+        else:
+            exc = OSError(13, "Permission denied")
+        assert _symlink_privilege_denied(exc) is False
+
+    def test_a_plain_posix_style_oserror_is_not_skippable(self) -> None:
+        assert _symlink_privilege_denied(OSError(13, "Permission denied")) is False
 
 
 class TestWriteRead:

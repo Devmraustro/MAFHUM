@@ -96,18 +96,40 @@ python tools/security_baseline.py
 
 A pre-existing working tree keeps its CRLF bytes until re-checked-out (git
 status stays clean because the *index* is already LF; only the working-tree
-bytes are stale). From the repo root:
+bytes are stale). The repair touches **only the enforced files** — never the
+whole tree. From the repo root:
 
 ```powershell
-# Re-check-out the enforced files so the attribute re-applies (PowerShell):
-git ls-files "*.sh" "Dockerfile*" "Caddyfile" "deploy/clamd/*.conf" |
-  ForEach-Object { Remove-Item $_ -Force }
-git checkout -- .
-git ls-files --eol apps/api/entrypoint.sh deploy/clamd   # must now read w/lf
+# 1. Snapshot the working tree. If the output is not empty, STOP: commit or
+#    stash your work first, and keep a copy of this output to compare at step 5.
+git status --short
+
+# 2. Collect exactly the enforced paths (the same set the security baseline's
+#    byte scan covers). Inspect the list: it must contain only shell scripts,
+#    Dockerfiles, the Caddyfile and the clamd configuration files.
+$paths = @(git ls-files "*.sh" "Dockerfile*" "*.dockerfile" "Caddyfile" "deploy/clamd/*.conf")
+$paths
+
+# 3. WARNING: the next step discards UNCOMMITTED edits to these files — and
+#    ONLY these files. If you have uncommitted work in any of them that you
+#    want to keep, commit or stash it before continuing.
+$paths | ForEach-Object { Remove-Item -LiteralPath $_ -Force }
+
+# 4. Re-check out ONLY the enumerated paths. Do NOT use `git checkout -- .`,
+#    `git reset --hard` or `git clean` here: those would also discard
+#    unrelated uncommitted changes anywhere in the working tree.
+git checkout -- $paths
+
+# 5. Verify. The status output must be identical to the step-1 snapshot, and
+#    every line of the eol listing must read `i/lf  w/lf  attr/text eol=lf`.
+git status --short
+git ls-files --eol $paths
 ```
 
-Deleting and re-checking-out only these files is safe: the index content is
-unchanged, no history is rewritten, and `git status` must be clean afterwards.
+`git checkout -- $paths` restores only the enumerated files from the index;
+the index content is unchanged, no history is rewritten, and no other file is
+touched. `apps/api/tests/test_windows_setup_doc.py` guards this document so
+the destructive shortcuts cannot quietly return.
 
 ## 2. Create the environment
 
