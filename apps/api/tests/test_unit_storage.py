@@ -1,8 +1,8 @@
 """Unit tests for the private storage backend.
 
 These cover the properties that stop a storage key from becoming an arbitrary
-file-read/write primitive: in-tree resolution only, no symlink escape, no
-overwrite, restrictive permissions and orphan reconciliation.
+file-read/write primitive: in-tree resolution only, no symlink or junction
+escape, no overwrite, restrictive permissions and orphan reconciliation.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +23,15 @@ from mafhum_api.services.documents.storage import (
     StorageObjectNotFoundError,
     file_mode_is_restrictive,
     new_storage_key,
+)
+
+# NTFS junctions are the Windows-specific hazard: unlike symlinks they need no
+# privilege to create, and Path.is_symlink() does not report them. The tests
+# that exercise them only make sense on Windows; everything else in this
+# module runs on every platform.
+WINDOWS_ONLY = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="NTFS junction behaviour is Windows-only",
 )
 
 
@@ -78,7 +88,48 @@ class TestResolution:
         outside.mkdir()
         link = storage.root / "aa"
         link.parent.mkdir(parents=True, exist_ok=True)
-        link.symlink_to(outside)
+        try:
+            link.symlink_to(outside)
+        except OSError as exc:
+            # A Windows account without elevation or Developer Mode cannot
+            # create symlinks (WinError 1314, observed 2026-10-30 — see
+            # docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md §2.4). Only the
+            # symlink-specific FIXTURE is skipped: the out-of-root component
+            # property itself is still asserted on this host by
+            # test_junction_component_rejected below, which needs no
+            # privilege, and on POSIX (CI) by this test.
+            pytest.skip(f"the OS denies symlink creation ({exc})")
+        with pytest.raises(StorageKeyError):
+            storage.resolve("aa/file.bin")
+
+    @WINDOWS_ONLY
+    def test_junction_component_rejected(self, storage: LocalFileStorage, tmp_path: Path) -> None:
+        """A privilege-free NTFS junction must not buy a path escape either.
+
+        `Path.is_symlink()` returns False for a junction, so ``resolve``'s
+        explicit symlink-component loop does not even see one; the check that
+        rejects it is containment of the RESOLVED absolute path. This test
+        pins that containment on the platform where junctions exist, so the
+        security property holds on every host even where the symlink fixture
+        above has to skip. Evidence: the same probe was run manually on
+        Windows 11 during the 2026-10-30 verification pass (report §2.4).
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = storage.root / "aa"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        # mklink is a cmd.exe builtin, not an executable, and needs the /J
+        # junction form: junctions require no privilege, unlike symlinks.
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            pytest.skip(
+                "could not create an NTFS junction on this host/filesystem "
+                f"(exit {completed.returncode})"
+            )
+        assert link.is_junction() and not link.is_symlink()
         with pytest.raises(StorageKeyError):
             storage.resolve("aa/file.bin")
 
