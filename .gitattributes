@@ -1,0 +1,28 @@
+# Line-ending policy for files that Linux containers and /bin/sh consume.
+#
+# Why this file exists: a Windows checkout made with the installer default
+# `core.autocrlf=true` converts every LF file to CRLF in the working tree. For
+# shell scripts that means `#!/bin/sh\r`, which a Linux container refuses to
+# execute — the production ClamAV image (built from `deploy/clamd/`) and the
+# API image (built from `apps/api/`) would both fail at start. This was
+# observed on a real Windows 11 host on 2026-10-30; see
+# docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md, defect D1.
+#
+# The rules below override `core.autocrlf` per path (`eol=lf` forces LF both on
+# check-in and on check-out, on every platform), so a fresh Windows clone gets
+# LF in these files regardless of the local git configuration. Everything NOT
+# listed here keeps the user's normal settings — Windows-native files
+# (PowerShell, .bat, Visual Studio files) are deliberately untouched.
+#
+# Regression guard: tools/security_baseline.py asserts these rules exist and
+# that every tracked file they cover is LF in the working tree.
+
+# Shell scripts — executed by /bin/sh inside Linux containers or on POSIX CI.
+*.sh text eol=lf
+
+# Container image definitions and their COPY-ed configs.
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+*.dockerfile text eol=lf
+Caddyfile text eol=lf
+deploy/clamd/*.conf text eol=lf
