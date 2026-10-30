@@ -12,6 +12,35 @@ Contract
 * The backend returns a ``StorageObject`` handle; callers open a *stream*, not a
   whole-file ``bytes`` blob, so large documents never have to fit in memory.
 
+Path-escape defences
+--------------------
+``resolve`` applies two independent checks, in this order:
+
+1. **Resolved-path containment** (the load-bearing one). The key is joined to
+   the root and :meth:`~pathlib.Path.resolve` is called, which follows every
+   symlink, junction and ``..`` the filesystem knows about; the absolute result
+   must be strictly below the root, or the key is rejected. Because this runs
+   *after* resolution, it catches reparse points too — including Windows NTFS
+   junctions, which :meth:`~pathlib.Path.is_symlink` does **not** report.
+2. **Symlink-component rejection** (defence in depth). Every component between
+   the root and the resolved path is checked with
+   :meth:`~pathlib.Path.is_symlink`; any hit is rejected even if the destination
+   would have stayed inside the root. This makes intra-root symlink replanting
+   impossible rather than merely harmless.
+
+Platform notes, with the evidence they rest on (2026-10-30 native Windows run —
+see ``docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md`` §2.4):
+
+* POSIX/Linux: check 1 is asserted by ``test_symlink_component_rejected`` and
+  the traversal parametrisation in ``tests/test_unit_storage.py``.
+* Windows: creating a symlink needs elevation or Developer Mode, so on an
+  unprivileged host that test skips at its fixture — the *assertion* is not
+  weakened, because ``test_junction_component_rejected`` creates a privilege-
+  free NTFS junction and proves check 1 rejects it (verified live: junction
+  ``store/aa`` → outside dir, ``resolve("aa/file.bin")`` raised
+  ``StorageKeyError``). Check 2 is a no-op for junctions by pathlib's own
+  semantics; that is exactly why containment is the load-bearing check.
+
 The interface is deliberately provider-agnostic: an S3-compatible backend could
 implement the same protocol without touching document business logic.
 """
