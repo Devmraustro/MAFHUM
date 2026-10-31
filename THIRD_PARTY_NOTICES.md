@@ -69,6 +69,9 @@ These are **never** part of a production install (`pip install .` excludes them)
 | fonttools | 4.67.0 | MIT | Builds the synthetic PDF fixtures |
 | types-setuptools | 84.0.0.20261006 | MIT | Type stubs |
 | pgserver | 0.1.4 | Apache-2.0 | See the note below |
+| bandit | 1.9.4 | Apache-2.0 | Independent second SAST pass in CI |
+| PyYAML | 6.0.3 | MIT | Parses the Compose template and monitoring configs as data |
+| promql-parser | 0.11.0 | MIT | PromQL syntax validation for the alert-rule gate in CI |
 
 ### Note on pgserver (Apache-2.0)
 

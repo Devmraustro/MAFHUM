@@ -43,6 +43,10 @@ dev = [
     # Used by tools/acceptance/prod_compose_contract.py to parse the Compose
     # template as data instead of shelling out to Docker in the pytest suite.
     "PyYAML==6.0.3",
+    # Used by tools/monitoring/validate_monitoring.py: validates every alert
+    # rule's PromQL syntax offline (promtool stays the authoritative check on
+    # the monitoring host). MIT; Rust-based PromQL grammar parser.
+    "promql-parser==0.11.0",
     "types-setuptools==84.0.0.20261006",
 ]
 

@@ -133,7 +133,15 @@ jobs:
         run: bandit -r apps/api/src -ll -q
 
       - name: Ruff security rules on repository tooling
-        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/
+        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/ tools/monitoring/
+
+      - name: Monitoring configuration validation
+        # YAML structure, PromQL syntax of every alert rule (promql-parser),
+        # rule-metric ↔ exporter contract, Alertmanager routing consistency
+        # and firing/non-firing scenarios for all seven rules. promtool on the
+        # monitoring host remains the authoritative check; this gate keeps the
+        # committed configuration from regressing between host checks.
+        run: python tools/monitoring/validate_monitoring.py
 
       # Secret scan, workflow permission check, pinned dependencies, no :latest
       # images, .gitignore exclusions and the fail-closed Compose contract.
