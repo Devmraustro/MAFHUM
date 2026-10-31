@@ -113,6 +113,13 @@ and live-source provenance are **not implemented** in this release.
    healthcheck passes a real `clamdscan`. Verify an EICAR probe is rejected by
    the engine **before** allowing user uploads (see
    `.github/workflows/production-malware-acceptance.yml` for the exact sequence).
+   The entire Phase-2 gate — build, cold bootstrap timing to SCAN-READY,
+   three-case acceptance, outage fail-closed, recovery with volume reuse, the
+   12 h refresh loop and (with `--full`) a repeat cold bootstrap — is automated
+   as one command for any Docker host:
+   `python tools/clamav/production_bootstrap_acceptance.py --env-file <env>`
+   (exit 0 = every phase passed; a timed report is written to
+   `.clamav-acceptance/report.md`).
 6. Decide the audit-retention policy with the owner. Do **not** schedule
    `purge_audit.py --apply` until a legal hold has been ruled out
    (`docs/DATA_POLICY.md` §8).

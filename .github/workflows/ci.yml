@@ -133,7 +133,7 @@ jobs:
         run: bandit -r apps/api/src -ll -q
 
       - name: Ruff security rules on repository tooling
-        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/ tools/monitoring/ tools/dast/
+        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/ tools/monitoring/ tools/dast/ tools/clamav/
 
       - name: Monitoring configuration validation
         # YAML structure, PromQL syntax of every alert rule (promql-parser),
