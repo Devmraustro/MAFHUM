@@ -174,18 +174,32 @@ def run_main(
     argv: list[str] | None = None,
     *,
     project: str = SAFE_PROJECT,
+    acceptance_runner: Any = None,
+    http_probe: Any = None,
+    port_free: Any = None,
 ) -> int:
     env_file = tmp_path / "env"
     env_file.write_text(ENV_CONTENT, encoding="utf-8")
+
+    def default_runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
+        return PBA.CommandResult(0, "", "")
+
+    def default_probe(url: str) -> tuple[int, str]:
+        return (200, READY_BODY)
+
+    def default_port_free(port: int) -> bool:
+        return True
+
     return PBA.main(
         ["--env-file", str(env_file), *(argv or [])],
         docker=docker,
         workdir=tmp_path / "acc",
         python="python",
-        acceptance_runner=lambda python, api, origin, mode: PBA.CommandResult(0, "", ""),
-        http_probe=lambda url: (200, READY_BODY),
+        acceptance_runner=acceptance_runner or default_runner,
+        http_probe=http_probe or default_probe,
         sleep=lambda seconds: None,
         project_name=project,
+        port_free=port_free or default_port_free,
     )
 
 
@@ -433,6 +447,68 @@ def test_keep_stack_leaves_the_isolated_project_running(tmp_path: Path) -> None:
     assert not any(
         argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations
     )
+
+
+# ---------------------------------------------------- loopback port ownership
+def test_occupied_loopback_port_aborts_before_anything_runs(tmp_path: Path) -> None:
+    """A foreign service on 127.0.0.1:<port> must abort the run up front.
+
+    The development Compose stack publishes 127.0.0.1:8000:8000 — the tool's
+    default port. Without this gate the acceptance uploads could reach a stack
+    this run did not create.
+    """
+    docker = make_docker()
+    code = run_main(docker, tmp_path, port_free=lambda port: False)
+    assert code == 2
+    # The abort happened before any docker call: nothing was probed or created.
+    assert docker.invocations == []
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_acceptance_uploads_never_run_when_the_stack_failed_to_start(
+    tmp_path: Path,
+) -> None:
+    """`up` failed (e.g. port taken between preflight and up): no uploads."""
+    docker = make_docker(fail_substrings=("up -d db api",))
+    sent: list[str] = []
+
+    def runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
+        sent.append(mode)
+        return PBA.CommandResult(0, "", "")
+
+    code = run_main(docker, tmp_path, acceptance_runner=runner)
+    assert code == 1  # the failure was recorded…
+    assert sent == []  # …and NOTHING was sent to the loopback port
+    # Cleanup still ran, non-destructively, scoped to the isolated project.
+    downs = [
+        argv for argv in docker.invocations if argv[:2] == ["docker", "compose"] and "down" in argv
+    ]
+    assert downs
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_acceptance_uploads_never_run_when_the_api_never_became_ready(
+    tmp_path: Path,
+) -> None:
+    """`up` succeeded but readiness never passed: still no uploads."""
+    docker = make_docker()
+    sent: list[str] = []
+
+    def runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
+        sent.append(mode)
+        return PBA.CommandResult(0, "", "")
+
+    code = run_main(
+        docker,
+        tmp_path,
+        acceptance_runner=runner,
+        http_probe=lambda url: (503, '{"status": "unavailable"}'),
+    )
+    assert code == 1
+    assert sent == []
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
 
 
 # ------------------------------------------------------------------- self-audit

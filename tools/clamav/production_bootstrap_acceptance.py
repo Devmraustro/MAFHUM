@@ -43,8 +43,14 @@ Safety model (enforced structurally, not by convention)
 7. **Failure cleanup is never destructive.** ``try/finally`` brings down only
    the isolated project; volumes are never deleted during cleanup, so failure
    evidence survives.
-8. **Loopback-only API exposure.** The generated Compose override binds the
-   api to ``127.0.0.1:<port>`` (default 8000, ``--api-port`` to change).
+8. **Loopback-only API exposure, with ownership proof.** The generated
+   Compose override binds the api to ``127.0.0.1:<port>`` (default 8000,
+   ``--api-port`` to change). The preflight verifies the port is free before
+   anything is created, and the acceptance uploads run only when this run's
+   ``up`` succeeded and its own api answered readiness — so a foreign service
+   already squatting the loopback port (the development stack publishes
+   ``127.0.0.1:8000``) can never receive the uploads: the run aborts first,
+   or ``up`` fails and the upload phases are skipped entirely.
 9. **Self-audit.** After cleanup the tool scans every docker invocation it
    made: if any targeted a production identifier, or any compose command
    lacked the isolated ``--project-name``, the run is marked FAILED even if
@@ -78,6 +84,15 @@ The env file must define the variables the production template requires
 is used as the Origin header for the acceptance uploads; it only has to match
 what the api expects, it does not need to resolve.
 
+``--api-port`` selects the loopback port (default 8000; the development
+Compose stack uses 8000, so pick another port when it is running). The env
+file is read only as configuration input; none of its values are printed or
+written to the report. ``--keep-stack`` skips the final ``down`` and leaves
+the isolated stack running for inspection — no volume is deleted either way,
+and the exact manual removal command is printed; remove it with
+``docker compose --project-name <isolated-project> down`` (add ``-v`` only
+if you also want the isolated volumes gone).
+
 Exit codes: 0 = all checks passed; 1 = at least one check failed; 2 = preflight
 aborted (nothing was created). The timed report is written to
 ``.clamav-acceptance/<isolated-project>/report.md`` (gitignored).
@@ -93,6 +108,7 @@ import datetime
 import json
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -334,7 +350,26 @@ def _volume_missing(result: CommandResult) -> bool:
 
 
 # ------------------------------------------------------------------- preflight
-def preflight(docker: DockerCli, plan: IsolationPlan) -> list[str]:
+def loopback_port_free(port: int) -> bool:
+    """True when nothing is listening on 127.0.0.1:<port> (no payload sent).
+
+    A bare TCP connect attempt: if a connection succeeds, some other service
+    already owns the loopback port and the acceptance run must not use it —
+    not only would ``compose up`` fail to publish it, the readiness probe and
+    the acceptance uploads could otherwise reach a stack this run did not
+    create (the development Compose stack publishes 127.0.0.1:8000:8000, the
+    tool's default port).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(2)
+        return probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def preflight(
+    docker: DockerCli,
+    plan: IsolationPlan,
+    port_free: Callable[[int], bool] | None = None,
+) -> list[str]:
     """Prove the isolated project is safe to create. Returns problems.
 
     Read-only: no container, volume, network or image is created, stopped,
@@ -343,6 +378,7 @@ def preflight(docker: DockerCli, plan: IsolationPlan) -> list[str]:
     scoped to the generated unique name or its ownership label.
     """
     problems: list[str] = []
+    check_port = port_free or loopback_port_free
 
     # Reserved names are rejected before ANY docker call is made, so a
     # production project name can never even be probed.
@@ -350,6 +386,16 @@ def preflight(docker: DockerCli, plan: IsolationPlan) -> list[str]:
         problems.append(
             f"project name {plan.project!r} is reserved for the real deployment "
             "and can never be used by the acceptance tool"
+        )
+        return problems
+
+    # The loopback port must be free before anything is created: if another
+    # service owns it, the acceptance uploads could reach a stack this run did
+    # not start. Checked before any docker call so the abort costs nothing.
+    if not check_port(plan.api_port):
+        problems.append(
+            f"127.0.0.1:{plan.api_port} is already in use by another service; "
+            "pass --api-port <free port> (the development stack uses 8000)"
         )
         return problems
 
@@ -725,13 +771,15 @@ def main(
     project_name: str | None = None,
     now: datetime.datetime | None = None,
     nonce: str | None = None,
+    port_free: Callable[[int], bool] | None = None,
 ) -> int:
     """Run the isolated acceptance gate. See the module docstring for safety.
 
     The keyword-only parameters exist for the safety tests (hermetic, mocked
     Docker) and are not CLI flags: ``docker`` (mocked CLI), ``workdir``,
     ``python`` (acceptance interpreter), ``acceptance_runner``, ``http_probe``,
-    ``sleep``, and deterministic ``project_name``/``now``/``nonce``.
+    ``sleep``, ``port_free`` (loopback-port probe), and deterministic
+    ``project_name``/``now``/``nonce``.
     """
     parser = argparse.ArgumentParser(description="Isolated ClamAV acceptance gate")
     parser.add_argument(
@@ -801,7 +849,7 @@ def main(
     print(f"[isolation] project: {plan.project}")
     print(f"[isolation] this run may only touch: {plan.clamd_container}, {plan.clamd_volume}")
 
-    problems = preflight(docker, plan)
+    problems = preflight(docker, plan, port_free=port_free)
     if problems:
         for problem in problems:
             print(f"[abort] preflight: {problem}")
@@ -840,68 +888,83 @@ def main(
 
         print("\n== phase 3: start db + api on the loopback interface ==")
         up = docker.compose(plan.project, [*flags, "up", "-d", "db", "api"], timeout=900)
-        reporter.check(
-            "db + api started (isolated project)", up.returncode == 0, up.stderr.strip()[:200]
-        )
+        stack_up = up.returncode == 0
+        reporter.check("db + api started (isolated project)", stack_up, up.stderr.strip()[:200])
         refresh_created_volumes(docker, plan, created_volumes)
         api_ready = False
-        for _ in range(60):
-            status, body = http_probe(plan.api_url + "/health/ready")
-            if status == 200 and '"malware_scanner": "ok"' in body.replace("\n", " "):
-                api_ready = True
-                break
-            sleep(5)
+        if stack_up:
+            # Only probe once OUR containers hold the port: a successful
+            # `up` means Docker published 127.0.0.1:<port> for this project's
+            # api container, so the listener behind it is ours.
+            for _ in range(60):
+                status, body = http_probe(plan.api_url + "/health/ready")
+                if status == 200 and '"malware_scanner": "ok"' in body.replace("\n", " "):
+                    api_ready = True
+                    break
+                sleep(5)
         reporter.check("api /health/ready reports malware_scanner=ok", api_ready)
 
-        print("\n== phase 4: three-case acceptance (engine up) ==")
-        engine_up = acceptance_runner(python, plan.api_url, origin, "engine-up")
-        reporter.check(
-            "engine-up acceptance: clean accepted + EICAR rejected (malware_detected)",
-            engine_up.returncode == 0,
-            engine_up.stderr.strip()[-200:],
-        )
+        if not (stack_up and api_ready):
+            # Hard gate: if the isolated api did not come up, NOTHING may be
+            # sent to 127.0.0.1:<port> — a foreign service squatting the port
+            # (the dev stack uses 8000) must never receive the acceptance
+            # uploads. Phases 4-7 are skipped; cleanup still runs.
+            reporter.note(
+                "refusing to run the acceptance uploads: the isolated api did "
+                f"not come up; nothing was sent to {plan.api_url}"
+            )
+        else:
+            print("\n== phase 4: three-case acceptance (engine up) ==")
+            engine_up = acceptance_runner(python, plan.api_url, origin, "engine-up")
+            reporter.check(
+                "engine-up acceptance: clean accepted + EICAR rejected (malware_detected)",
+                engine_up.returncode == 0,
+                engine_up.stderr.strip()[-200:],
+            )
 
-        print("\n== phase 5: engine outage fails closed (isolated engine only) ==")
-        stop = docker.compose(plan.project, [*flags, "stop", "clamd"], timeout=300)
-        reporter.check(
-            "this run's clamd container stopped", stop.returncode == 0, stop.stderr.strip()[:200]
-        )
-        sleep(5)
-        outage = acceptance_runner(python, plan.api_url, origin, "engine-outage")
-        reporter.check(
-            "engine-outage acceptance: uploads rejected with scan_* "
-            "(never CLEAN, never malware_detected)",
-            outage.returncode == 0,
-            outage.stderr.strip()[-200:],
-        )
+            print("\n== phase 5: engine outage fails closed (isolated engine only) ==")
+            stop = docker.compose(plan.project, [*flags, "stop", "clamd"], timeout=300)
+            reporter.check(
+                "this run's clamd container stopped",
+                stop.returncode == 0,
+                stop.stderr.strip()[:200],
+            )
+            sleep(5)
+            outage = acceptance_runner(python, plan.api_url, origin, "engine-outage")
+            reporter.check(
+                "engine-outage acceptance: uploads rejected with scan_* "
+                "(never CLEAN, never malware_detected)",
+                outage.returncode == 0,
+                outage.stderr.strip()[-200:],
+            )
 
-        print("\n== phase 6: recovery reuses the signature volume ==")
-        boot_started = time.time()
-        start = docker.compose(plan.project, [*flags, "start", "clamd"], timeout=300)
-        reporter.check(
-            "this run's clamd container restarted",
-            start.returncode == 0,
-            start.stderr.strip()[:200],
-        )
-        healthy, elapsed = wait_healthy(docker, plan, boot_started, "phase 6", reporter, sleep)
-        reporter.check("health returned after restart", healthy, f"{elapsed:.0f} s")
-        logs = docker.container_logs(plan.clamd_container)
-        text = logs.stdout + logs.stderr
-        reporter.check(
-            "signature volume REUSED (no fresh bootstrap)",
-            "reusing the signature database on the volume" in text,
-        )
-        recovered = acceptance_runner(python, plan.api_url, origin, "engine-up")
-        reporter.check("clean upload accepted again after recovery", recovered.returncode == 0)
+            print("\n== phase 6: recovery reuses the signature volume ==")
+            boot_started = time.time()
+            start = docker.compose(plan.project, [*flags, "start", "clamd"], timeout=300)
+            reporter.check(
+                "this run's clamd container restarted",
+                start.returncode == 0,
+                start.stderr.strip()[:200],
+            )
+            healthy, elapsed = wait_healthy(docker, plan, boot_started, "phase 6", reporter, sleep)
+            reporter.check("health returned after restart", healthy, f"{elapsed:.0f} s")
+            logs = docker.container_logs(plan.clamd_container)
+            text = logs.stdout + logs.stderr
+            reporter.check(
+                "signature volume REUSED (no fresh bootstrap)",
+                "reusing the signature database on the volume" in text,
+            )
+            recovered = acceptance_runner(python, plan.api_url, origin, "engine-up")
+            reporter.check("clean upload accepted again after recovery", recovered.returncode == 0)
 
-        print("\n== phase 7: 12-hour refresh loop is alive ==")
-        probe = docker.exec_refresh_probe(plan.clamd_container)
-        reporter.check(
-            "freshclam refresh loop (sleep 43200) running in this run's container",
-            probe.returncode == 0,
-            "verified via /proc cmdlines; the 12 h cadence itself is verified by "
-            "inspecting `docker logs` after 12 h of uptime",
-        )
+            print("\n== phase 7: 12-hour refresh loop is alive ==")
+            probe = docker.exec_refresh_probe(plan.clamd_container)
+            reporter.check(
+                "freshclam refresh loop (sleep 43200) running in this run's container",
+                probe.returncode == 0,
+                "verified via /proc cmdlines; the 12 h cadence itself is verified by "
+                "inspecting `docker logs` after 12 h of uptime",
+            )
 
         if args.full:
             print("\n== phase 8 (--full): second cold bootstrap (triple-gated) ==")

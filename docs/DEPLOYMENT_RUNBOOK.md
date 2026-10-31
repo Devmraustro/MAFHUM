@@ -127,12 +127,20 @@ and live-source provenance are **not implemented** in this release.
    `mafhum` are reserved and rejected, including by prefix. Every compose
    command carries an explicit `--project-name` for the isolated project;
    images are built under run-unique tags (the production tags are never
-   rebuilt); the api is published on `127.0.0.1` only. A preflight aborts on
-   any ambiguity (project-name collision, containers or volumes already
-   carrying the run's label, resource-name collisions). By default **no
-   volume is ever deleted** — the isolated project's first `up` *is* the cold
-   bootstrap, and cleanup is `docker compose down` without `-v` (evidence is
-   preserved). The only volume deletion is the optional second cold bootstrap
+   rebuilt); the api is published on `127.0.0.1` only, on a port the preflight
+   proves is free (the development stack uses 8000 — pass `--api-port` when it
+   is running), and the acceptance uploads run only after this run's own api
+   answered readiness, so a foreign service squatting the port can never
+   receive them. A preflight aborts on any ambiguity (project-name collision,
+   containers or volumes already carrying the run's label, resource-name
+   collisions, loopback port occupied). By default **no volume is ever
+   deleted** — the isolated project's first `up` *is* the cold bootstrap, and
+   cleanup is `docker compose down` without `-v` (evidence is preserved).
+   `--keep-stack` skips that final `down` and leaves the isolated stack for
+   inspection; the run prints the exact
+   `docker compose --project-name <isolated-project> down` command to remove
+   it afterwards (still without deleting volumes unless you add `-v`
+   yourself). The only volume deletion is the optional second cold bootstrap
    (`--full`), which additionally requires `--confirm-isolated-test` and a
    triple gate: the volume was created by this run, its
    `com.docker.compose.project` label matches the isolated project, and its
