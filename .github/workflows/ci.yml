@@ -133,7 +133,7 @@ jobs:
         run: bandit -r apps/api/src -ll -q
 
       - name: Ruff security rules on repository tooling
-        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/ tools/monitoring/
+        run: ruff check --config apps/api/pyproject.toml tools/security_baseline.py tools/acceptance/ tools/monitoring/ tools/dast/
 
       - name: Monitoring configuration validation
         # YAML structure, PromQL syntax of every alert rule (promql-parser),
@@ -154,6 +154,33 @@ jobs:
       # Note: `pip-audit` is deliberately NOT run with --strict here. The local
       # editable `mafhum-api` package is not on PyPI, and --strict turns that
       # expected skip into a hard failure. The backend job runs plain pip-audit.
+
+  local-dast:
+    name: Local authenticated DAST (production posture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e "apps/api[dev]"
+
+      # Executes docs/PENTEST_READINESS.md §4 against a locally booted stack:
+      # real PostgreSQL (pgserver), two uvicorn instances in production posture
+      # over self-signed HTTPS, a clamd *protocol stub* (no detection claim —
+      # real-engine EICAR is proven by production-malware-acceptance.yml).
+      # Covers authn, session/CSRF, tenant isolation, admin surface, scoped
+      # metrics, upload validation, fail-closed malware policy, export
+      # isolation, deletion, error hygiene, login throttle and Caddy headers.
+      - name: Run the local DAST
+        run: python tools/dast/local_dast.py
 
   backend-migrations:
     name: Migrations — upgrade and downgrade
