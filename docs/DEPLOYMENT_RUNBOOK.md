@@ -143,7 +143,9 @@ and live-source provenance are **not implemented** in this release.
    failed config validation, image build or cold bootstrap prevents every
    dependent phase (a cold bootstrap succeeds only when SCAN-READY was reached
    *and* the logs prove the fresh-database path ran — health alone is not cold
-   evidence). By default **no volume is ever deleted** — the isolated
+   evidence; likewise, after an engine restart, the recovery evidence, the
+   recovery upload and the refresh-loop probe run only once SCAN-READY has
+   actually returned). By default **no volume is ever deleted** — the isolated
    project's first `up` *is* the cold bootstrap, and cleanup is
    `docker compose down` without `-v` (evidence is preserved). `--keep-stack`
    skips that final `down` and prints the exact, fully qualified compose

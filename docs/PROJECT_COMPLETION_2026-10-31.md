@@ -259,3 +259,24 @@ re-verified via the Vercel API: production `mafhum-web.vercel.app` serves
 `main` @ 9dcbc7c; `MAFHUM_API_URL` remains the deliberate
 `https://mafhum-api.invalid` placeholder (owner decision, see
 `docs/FULL_STACK_DEPLOYMENT.md` step 8). No production-readiness claim.
+
+## 10. Phase-6 health gate (final review correction, same PR #12 branch)
+
+The final independent review of `d50f72b` found one remaining fail-fast gap:
+in phase 6, after `compose start clamd` succeeded, `wait_healthy()`'s result
+was recorded but not enforced — an engine that never returned to SCAN-READY
+still had its recovery logs inspected, its signature-volume reuse claimed,
+the recovery upload executed, and the 12-hour refresh-loop probe run.
+
+Phase 6 now requires BOTH a successful start command AND a healthy
+SCAN-READY result before any dependent recovery check runs. When health does
+not return, the run records the failure, skips the recovery evidence, the
+recovery upload and the refresh-loop probe, preserves the volume, and
+continues only with safe isolated cleanup.
+
+New hermetic regression tests (suite: 45 checks): unhealthy recovery skips
+the recovery upload; unhealthy recovery skips the refresh-loop probe;
+unhealthy recovery reports no passing recovery evidence; healthy recovery
+still executes every recovery check (reuse evidence, recovery upload,
+refresh probe). Every failure path also asserts no production resource was
+addressed. No production-readiness claim.

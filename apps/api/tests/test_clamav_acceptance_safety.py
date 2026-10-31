@@ -93,6 +93,9 @@ class FakeRunner:
         api_port: int = 8000,
         # Health reported by `docker inspect --format` for the clamd container.
         clamd_health: str = "healthy",
+        # Optional ordered health answers (consumed in order, last repeats):
+        # lets phase 2 see "healthy" while phase 6's recovery poll does not.
+        health_sequence: list[str] | None = None,
         # Log text returned by `docker logs <clamd container>` (None = the
         # standard fixture text with both cold and reuse evidence).
         clamd_logs: str | None = None,
@@ -110,6 +113,7 @@ class FakeRunner:
         self.api_inspect = api_inspect
         self.api_port = api_port
         self.clamd_health = clamd_health
+        self.health_sequence = list(health_sequence) if health_sequence else []
         self.clamd_logs = clamd_logs
         self.ups = 0  # compose `up` commands executed so far
 
@@ -177,6 +181,14 @@ class FakeRunner:
         if args[:2] == ["docker", "inspect"]:
             if "--format" in args:
                 # health-status probe for the clamd container
+                if self.health_sequence:
+                    # consume in order; the last value repeats (sticky)
+                    answer = (
+                        self.health_sequence.pop(0)
+                        if len(self.health_sequence) > 1
+                        else (self.health_sequence[0])
+                    )
+                    return PBA.CommandResult(0, answer, "")
                 return PBA.CommandResult(0, self.clamd_health, "")
             # full container inspect: the api ownership proof
             info = self.api_inspect or {
@@ -859,6 +871,77 @@ def test_phase6_start_failure_skips_recovery_upload_and_refresh_probe(tmp_path: 
     report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
     assert "did not restart" in report
     assert_never_targets_production(docker, make_plan())
+
+
+def _run_unhealthy_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[int, PBA.DockerCli, list[str]]:
+    """Full run where the engine starts and the cold bootstrap is healthy,
+    but health never returns after the phase-6 restart."""
+    # Do not really wait out the recovery health timeout in a unit test.
+    monkeypatch.setattr(PBA, "HEALTH_TIMEOUT_SECONDS", 0.05)
+    # Phase 2's first health probe answers healthy; every later probe
+    # (phase 6's recovery poll) answers unhealthy, stickily.
+    docker = make_docker(health_sequence=["healthy", "unhealthy"])
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    return code, docker, sent
+
+
+def test_unhealthy_recovery_skips_the_recovery_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start succeeded but SCAN-READY never returned: no recovery upload."""
+    code, docker, sent = _run_unhealthy_recovery(tmp_path, monkeypatch)
+    assert code == 1
+    # Phases 4 and 5 ran; the phase-6 recovery upload did not.
+    assert sent == ["engine-up", "engine-outage"]
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_unhealthy_recovery_skips_the_refresh_loop_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start succeeded but SCAN-READY never returned: no refresh-loop probe."""
+    code, docker, sent = _run_unhealthy_recovery(tmp_path, monkeypatch)
+    assert code == 1
+    assert sent == ["engine-up", "engine-outage"]
+    assert not any(argv[:2] == ["docker", "exec"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_unhealthy_recovery_reports_no_passing_recovery_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start succeeded but SCAN-READY never returned: the reuse evidence is
+    recorded as a failure-skipped item, never as a pass; the volume survives."""
+    code, docker, _sent = _run_unhealthy_recovery(tmp_path, monkeypatch)
+    assert code == 1
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "[ ] health returned after restart" in report
+    assert "[x] signature volume REUSED" not in report
+    assert "[x] clean upload accepted again after recovery" not in report
+    assert "health did not return to SCAN-READY after the restart" in report
+    # Safe cleanup only: isolated down, no volume deletion, no production op.
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_healthy_recovery_executes_every_recovery_check(tmp_path: Path) -> None:
+    """Healthy recovery still runs the whole chain: reuse evidence from the
+    logs, the recovery upload, and the 12-hour refresh-loop probe."""
+    docker = make_docker()
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 0
+    assert sent == ["engine-up", "engine-outage", "engine-up"]
+    assert any(argv[:2] == ["docker", "exec"] for argv in docker.invocations)
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "[x] health returned after restart" in report
+    assert "[x] signature volume REUSED (no fresh bootstrap)" in report
+    assert "[x] clean upload accepted again after recovery" in report
+    assert "[x] freshclam refresh loop (sleep 43200) running" in report
 
 
 def test_cleanup_failure_is_recorded_and_never_deletes_volumes(tmp_path: Path) -> None:

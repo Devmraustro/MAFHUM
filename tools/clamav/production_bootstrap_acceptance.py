@@ -53,9 +53,11 @@ Safety model (enforced structurally, not by convention)
    phase (including the acceptance uploads). A cold bootstrap counts as
    successful only when the container reached SCAN-READY **and** the logs
    prove the fresh-database path ran — health alone is not cold evidence.
-   A failed engine stop or restart similarly skips the uploads and probes
-   that depend on it. ``try/finally`` brings down only the isolated project;
-   volumes are never deleted during cleanup, so failure evidence survives.
+   A failed engine stop or restart — or a restart after which health does
+   not return to SCAN-READY — similarly skips the uploads, evidence checks
+   and probes that depend on it. ``try/finally`` brings down only the
+   isolated project; volumes are never deleted during cleanup, so failure
+   evidence survives.
 8. **Loopback-only API exposure, with engine and ownership proofs.** The
    generated Compose override binds the api to ``127.0.0.1:<port>``
    (default 8000, ``--api-port`` to change). Before anything is created the
@@ -1261,25 +1263,39 @@ def main(
                     docker, plan, boot_started, "phase 6", reporter, sleep
                 )
                 reporter.check("health returned after restart", healthy, f"{elapsed:.0f} s")
-                logs = docker.container_logs(plan.clamd_container)
-                text = logs.stdout + logs.stderr
-                reporter.check(
-                    "signature volume REUSED (no fresh bootstrap)",
-                    "reusing the signature database on the volume" in text,
-                )
-                recovered = acceptance_runner(python, plan.api_url, origin, "engine-up")
-                reporter.check(
-                    "clean upload accepted again after recovery", recovered.returncode == 0
-                )
+                if not healthy:
+                    # A successful `compose start` proves nothing about the
+                    # engine's readiness: without SCAN-READY the reuse
+                    # evidence is unprovable, the recovery upload could not
+                    # demonstrate recovery, and the refresh-loop probe would
+                    # inspect a container that is not serving. Skip every
+                    # dependent recovery check; the volume is preserved and
+                    # only safe cleanup continues.
+                    reporter.note(
+                        "skipping the recovery evidence, the recovery upload and "
+                        "the refresh-loop probe: health did not return to "
+                        "SCAN-READY after the restart"
+                    )
+                else:
+                    logs = docker.container_logs(plan.clamd_container)
+                    text = logs.stdout + logs.stderr
+                    reporter.check(
+                        "signature volume REUSED (no fresh bootstrap)",
+                        "reusing the signature database on the volume" in text,
+                    )
+                    recovered = acceptance_runner(python, plan.api_url, origin, "engine-up")
+                    reporter.check(
+                        "clean upload accepted again after recovery", recovered.returncode == 0
+                    )
 
-                print("\n== phase 7: 12-hour refresh loop is alive ==")
-                probe = docker.exec_refresh_probe(plan.clamd_container)
-                reporter.check(
-                    "freshclam refresh loop (sleep 43200) running in this run's container",
-                    probe.returncode == 0,
-                    "verified via /proc cmdlines; the 12 h cadence itself is verified by "
-                    "inspecting `docker logs` after 12 h of uptime",
-                )
+                    print("\n== phase 7: 12-hour refresh loop is alive ==")
+                    probe = docker.exec_refresh_probe(plan.clamd_container)
+                    reporter.check(
+                        "freshclam refresh loop (sleep 43200) running in this run's container",
+                        probe.returncode == 0,
+                        "verified via /proc cmdlines; the 12 h cadence itself is verified by "
+                        "inspecting `docker logs` after 12 h of uptime",
+                    )
 
         if args.full:
             if not bootstrap_ok:
