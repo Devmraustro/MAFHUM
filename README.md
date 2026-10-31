@@ -100,6 +100,20 @@ npm run build
 npm audit --omit=dev && npm audit
 ```
 
+Two further CI gates live outside the backend/frontend suites:
+
+```bash
+# Monitoring configuration: YAML structure, PromQL syntax of every alert rule,
+# rule-metric ↔ exporter contract, Alertmanager consistency and firing /
+# non-firing scenarios for all seven rules.
+.venv/bin/python tools/monitoring/validate_monitoring.py
+
+# Local authenticated DAST: boots a production-posture stack (real PostgreSQL,
+# self-signed TLS, clamd protocol stub) and executes the security scope of
+# docs/PENTEST_READINESS.md — 86 checks.
+.venv/bin/python tools/dast/local_dast.py
+```
+
 The backend test suite starts a real PostgreSQL server via `pgserver` (a
 dev-only dependency) and runs the real Alembic migrations against it.
 

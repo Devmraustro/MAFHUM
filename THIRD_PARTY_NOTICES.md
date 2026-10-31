@@ -23,7 +23,7 @@ as declared dependencies.
 | alembic | 1.20.0 | MIT | Migrations |
 | **psycopg[binary]** | 3.3.6 | **LGPL-3.0-only** | See the note below |
 | python-multipart | 0.0.32 | Apache-2.0 | Multipart upload parsing |
-| pypdf | 6.21.2 | BSD-3-Clause | PDF text extraction |
+| pypdf | 6.21.4 | BSD-3-Clause | PDF text extraction |
 | python-docx | 1.2.0 | MIT | DOCX text extraction |
 | **python-pptx** | 1.0.2 | MIT | Editable PPTX generation (Phase 6); pulls in lxml, Pillow, XlsxWriter |
 | lxml | 6.1.3 | BSD-3-Clause | Pulled in by python-docx |
@@ -69,6 +69,9 @@ These are **never** part of a production install (`pip install .` excludes them)
 | fonttools | 4.67.0 | MIT | Builds the synthetic PDF fixtures |
 | types-setuptools | 84.0.0.20261006 | MIT | Type stubs |
 | pgserver | 0.1.4 | Apache-2.0 | See the note below |
+| bandit | 1.9.4 | Apache-2.0 | Independent second SAST pass in CI |
+| PyYAML | 6.0.3 | MIT | Parses the Compose template and monitoring configs as data |
+| promql-parser | 0.11.0 | MIT | PromQL syntax validation for the alert-rule gate in CI |
 
 ### Note on pgserver (Apache-2.0)
 

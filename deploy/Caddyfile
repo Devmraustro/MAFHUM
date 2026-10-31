@@ -13,12 +13,20 @@
 	encode zstd gzip
 
 	# Security headers. The API also sets its own; Caddy adds them for the
-	# static/Next responses that the API never sees.
+	# static/Next responses the API never sees.
+	#
+	# The CSP is deliberately conservative: it locks every fetch directive to
+	# 'self' plus only what Next.js needs for hydration (inline scripts/styles)
+	# and blocks embedding, plugins and base-uri tampering. It is part of the
+	# deployment rehearsal to open the site in a real browser under this header
+	# before going live; tightening it further (nonces instead of 'unsafe-inline')
+	# is an owner follow-up, not something this template can verify on its own.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 		-Server
 	}
 

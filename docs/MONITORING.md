@@ -100,6 +100,29 @@ Prometheus and Alertmanager are Apache-2.0. Grafana is AGPL-3.0 and is
 intentionally not bundled; adding a dashboard would impose its licence
 obligations and needs an owner decision.
 
+### Offline validation gate (runs in CI on every commit)
+
+`python tools/monitoring/validate_monitoring.py` validates the committed
+configuration without needing Prometheus binaries:
+
+* YAML structure of all three files, plus internal references (rule files
+  exist, every route/inhibit receiver exists, every matcher parses).
+* **PromQL syntax of every alert rule**, checked with the `promql-parser`
+  grammar (MIT, Rust-based). This is the repository-side equivalent of
+  `promtool check rules`; promtool on the monitoring host remains the
+  authoritative check.
+* **Rule ↔ exporter contract**: every metric a rule references is emitted by
+  `apps/api/src/mafhum_api/api/v1/admin.py` (or is Prometheus' own `up`).
+* **Rule behaviour scenarios**: every rule is evaluated over synthetic series
+  by a small AST-driven evaluator, asserting both the documented firing case
+  and the documented non-firing case (including `for:` persistence, strict `>`
+  thresholds, and label-selective matching).
+* With `--live URL --token TOKEN`, it scrapes a running exporter and verifies
+  every referenced metric is actually present in the live exposition.
+
+The gate fails loudly (`RESULT: MONITORING VALIDATION FAILED`) on any
+regression. It does **not** prove delivery — see the operator steps below.
+
 ### Operator steps (not done — requires the owner)
 
 1. Create `deploy/secrets/` on the host (it is gitignored) and write the token
