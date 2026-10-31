@@ -141,7 +141,9 @@ and live-source provenance are **not implemented** in this release.
    `127.0.0.1:<port> -> 8000/tcp` binding — so a foreign local service (the
    development stack uses 8000) can never receive them. Phases fail fast: a
    failed config validation, image build or cold bootstrap prevents every
-   dependent phase. By default **no volume is ever deleted** — the isolated
+   dependent phase (a cold bootstrap succeeds only when SCAN-READY was reached
+   *and* the logs prove the fresh-database path ran — health alone is not cold
+   evidence). By default **no volume is ever deleted** — the isolated
    project's first `up` *is* the cold bootstrap, and cleanup is
    `docker compose down` without `-v` (evidence is preserved). `--keep-stack`
    skips that final `down` and prints the exact, fully qualified compose
@@ -149,9 +151,10 @@ and live-source provenance are **not implemented** in this release.
    Recorded command output is redacted against the env file's values before
    it reaches the report. The only volume deletion is the optional second
    cold bootstrap (`--full`), which additionally requires
-   `--confirm-isolated-test` and a triple gate: the volume was created by
-   this run, its `com.docker.compose.project` label matches the isolated
-   project, and its exact name is re-verified immediately before removal.
+   `--confirm-isolated-test`, a proven container stop and removal, and a
+   triple gate: the volume was created by this run, its
+   `com.docker.compose.project` label matches the isolated project, and its
+   exact name is re-verified immediately before removal.
    After cleanup the tool audits every docker command it issued and fails
    the run if any could have addressed a production resource. This is
    enforced by `apps/api/tests/test_clamav_acceptance_safety.py` (mocked

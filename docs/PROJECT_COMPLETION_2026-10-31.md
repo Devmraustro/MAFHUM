@@ -218,3 +218,44 @@ paths; keep-stack command reproduction). Every failure case asserts the
 acceptance runner was never invoked. The runbook (§3 step 5) documents the
 same safety model. This addendum records code changes only — no
 production-readiness claim is made or implied.
+
+## 9. Master-execution pass (2026-10-31, same PR #12 branch)
+
+A further independent pass over PR #12 (§4 of the master execution prompt)
+found and fixed two remaining correctness gaps in the acceptance tool, both
+now regression-tested:
+
+1. **`cold_bootstrap()` returned health only.** It recorded three conditions
+   (container started, SCAN-READY reached, freshclam cold-path evidence) but
+   returned only `healthy` — a healthy container whose logs lacked the
+   fresh-database evidence still counted as a successful cold bootstrap. It
+   now returns success only when the health check AND the cold-path evidence
+   both passed, so missing evidence fails the run, skips db/api and the
+   uploads, and still cleans up non-destructively.
+2. **`--full` did not prove the stop/removal prerequisites.** The volume
+   deletion was attempted regardless of whether the container `stop` and
+   `rm` actually succeeded. Both are now proven first; a failed stop or
+   removal aborts the destructive sub-operation and leaves the volume in
+   place. Volumes are never deleted as cleanup.
+
+Additionally: phase 5 skips the engine-outage upload when the stop failed
+(a failed stop demonstrates nothing about fail-closed behavior); phase 6
+skips the recovery evidence, recovery upload and refresh-loop probe when
+the restart failed; a report that cannot be written is recorded as a run
+failure instead of crashing with a traceback that masks the check results;
+and short values of sensitive-named env keys (secret/password/token/...)
+are redacted at any length, not only values of 4+ characters.
+
+New regression tests (suite now 41 checks): unhealthy engine; missing cold
+evidence; `--full` stop failure; `--full` removal failure; phase-6 restart
+failure; cleanup (`down`) failure; keyboard interrupt (cleanup + report
+still happen); unwritable report path; short-secret redaction.
+
+Verified on the exact final commit: backend 1014 passed / 7 environmental
+skips (exit 0); frontend lint, typecheck, 107/107 tests, production build;
+ruff check + format on both roots; strict mypy; security baseline; compose
+contract; monitoring (81 checks); local DAST 86/86. Live deployment state
+re-verified via the Vercel API: production `mafhum-web.vercel.app` serves
+`main` @ 9dcbc7c; `MAFHUM_API_URL` remains the deliberate
+`https://mafhum-api.invalid` placeholder (owner decision, see
+`docs/FULL_STACK_DEPLOYMENT.md` step 8). No production-readiness claim.

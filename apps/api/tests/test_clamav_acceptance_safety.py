@@ -91,6 +91,11 @@ class FakeRunner:
         # The api container's inspect document (identity, labels, bindings).
         api_inspect: dict[str, Any] | None = None,
         api_port: int = 8000,
+        # Health reported by `docker inspect --format` for the clamd container.
+        clamd_health: str = "healthy",
+        # Log text returned by `docker logs <clamd container>` (None = the
+        # standard fixture text with both cold and reuse evidence).
+        clamd_logs: str | None = None,
     ) -> None:
         self.calls: list[list[str]] = []
         self.projects = list(projects or [])
@@ -104,6 +109,8 @@ class FakeRunner:
         self.context_endpoints = context_endpoints or {"default": "unix:///var/run/docker.sock"}
         self.api_inspect = api_inspect
         self.api_port = api_port
+        self.clamd_health = clamd_health
+        self.clamd_logs = clamd_logs
         self.ups = 0  # compose `up` commands executed so far
 
     def __call__(self, args: list[str], timeout: float = 1800) -> PBA.CommandResult:
@@ -170,7 +177,7 @@ class FakeRunner:
         if args[:2] == ["docker", "inspect"]:
             if "--format" in args:
                 # health-status probe for the clamd container
-                return PBA.CommandResult(0, "healthy", "")
+                return PBA.CommandResult(0, self.clamd_health, "")
             # full container inspect: the api ownership proof
             info = self.api_inspect or {
                 "Name": f"/{SAFE_PROJECT}-api-1",
@@ -184,10 +191,14 @@ class FakeRunner:
         if args[:2] == ["docker", "logs"]:
             return PBA.CommandResult(
                 0,
-                "[clamd] no signature database on the volume; running freshclam\n"
-                "[clamd] daily.cvd updated (signature evidence)\n"
-                "[clamd] reusing the signature database on the volume\n"
-                "[clamd] starting daemon on TCP 3310\n",
+                self.clamd_logs
+                if self.clamd_logs is not None
+                else (
+                    "[clamd] no signature database on the volume; running freshclam\n"
+                    "[clamd] daily.cvd updated (signature evidence)\n"
+                    "[clamd] reusing the signature database on the volume\n"
+                    "[clamd] starting daemon on TCP 3310\n"
+                ),
                 "",
             )
         if args[:2] == ["docker", "exec"]:
@@ -770,6 +781,128 @@ def test_full_skips_second_bootstrap_when_first_failed(tmp_path: Path) -> None:
     assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
 
 
+# ----------------------- bootstrap evidence + stop/rm gates (final findings)
+def test_unhealthy_engine_fails_bootstrap_and_prevents_dependent_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container that never reaches SCAN-READY must fail the cold bootstrap."""
+    # Do not really wait out the health timeout in a unit test.
+    monkeypatch.setattr(PBA, "HEALTH_TIMEOUT_SECONDS", 0)
+    docker = make_docker(clamd_health="unhealthy")
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    assert sent == []  # no acceptance upload was attempted
+    assert not any("up -d db" in " ".join(argv) for argv in docker.invocations)
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_missing_cold_bootstrap_evidence_prevents_dependent_phases(tmp_path: Path) -> None:
+    """Regression: a healthy container WITHOUT the freshclam cold-path log
+    evidence must fail the bootstrap (health alone proved nothing about the
+    cold path), skip db/api and the uploads, and still clean up safely."""
+    docker = make_docker(
+        clamd_logs=(
+            "[clamd] reusing the signature database on the volume\n"
+            "[clamd] starting daemon on TCP 3310\n"
+        )
+    )
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "phase 2: cold path logged the freshclam bootstrap" in report
+    assert "[x] phase 2: cold path logged the freshclam bootstrap" not in report
+    assert sent == []
+    assert not any("up -d db" in " ".join(argv) for argv in docker.invocations)
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_full_aborts_volume_deletion_when_container_stop_fails(tmp_path: Path) -> None:
+    """--full: a failed stop must abort the destructive volume deletion."""
+    docker = make_docker(fail_substrings=("stop clamd",))
+    code = run_main(docker, tmp_path, ["--full", "--confirm-isolated-test"])
+    assert code == 1
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "aborting the volume deletion sub-operation" in report
+    # The phase-5 outage upload was skipped too: a failed stop demonstrates
+    # nothing about fail-closed behavior.
+    assert "skipping the engine-outage upload" in report
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_full_aborts_volume_deletion_when_container_removal_fails(tmp_path: Path) -> None:
+    """--full: a failed container removal must abort the volume deletion."""
+    docker = make_docker(fail_substrings=("rm -f clamd",))
+    code = run_main(docker, tmp_path, ["--full", "--confirm-isolated-test"])
+    assert code == 1
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "aborting the volume deletion sub-operation" in report
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_phase6_start_failure_skips_recovery_upload_and_refresh_probe(tmp_path: Path) -> None:
+    """A failed restart must skip the recovery upload and the refresh probe."""
+    docker = make_docker(fail_substrings=("start clamd",))
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    assert sent == ["engine-up", "engine-outage"]  # phase 4 + phase 5 only:
+    # the phase-6 recovery upload was skipped because the restart failed
+    assert not any(argv[:2] == ["docker", "exec"] for argv in docker.invocations)
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "did not restart" in report
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_cleanup_failure_is_recorded_and_never_deletes_volumes(tmp_path: Path) -> None:
+    """A failed `down` is recorded as a failure and never turns destructive."""
+    docker = make_docker(fail_substrings=("down --remove-orphans",))
+    code = run_main(docker, tmp_path)
+    assert code == 1
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert "isolated stack brought down" in report
+    assert "self-audit" in report  # the full check log was still recorded
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_keyboard_interrupt_still_cleans_up_and_preserves_evidence(tmp_path: Path) -> None:
+    """Ctrl-C mid-run: isolated cleanup and the report still happen."""
+    docker = make_docker()
+
+    def interrupting_runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_main(docker, tmp_path, acceptance_runner=interrupting_runner)
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert (tmp_path / "acc" / "report.md").exists()
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_report_write_failure_records_failure_without_crashing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unwritable report path must fail the run, not crash with a traceback
+    that masks the check results — and cleanup must still have happened."""
+    docker = make_docker()
+    report_path = tmp_path / "acc" / "report.md"
+    report_path.mkdir(parents=True)  # a directory cannot be written as a file
+    code = run_main(docker, tmp_path)
+    assert code == 1  # every check passed, but the evidence file failed
+    assert "could not be written" in capsys.readouterr().out
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+
+
 # -------------------------------------------------- report redaction (Finding 4)
 def test_redaction_protects_generated_tokens_but_not_env_values() -> None:
     """Regression: a short env value (POSTGRES_USER=mafhum) must not corrupt
@@ -780,6 +913,16 @@ def test_redaction_protects_generated_tokens_but_not_env_values() -> None:
     assert "mafhum-clamav-acc-1" in out  # the generated token survives verbatim
     assert " owned by mafhum " not in out  # the standalone value is redacted
     assert "zz-secret-marker" not in out
+    assert out.count("***REDACTED***") == 2
+
+
+def test_redaction_covers_short_values_of_sensitive_keys() -> None:
+    """A pathologically short secret (e.g. a 3-char password) is still
+    redacted, while ordinary short values are not mangled."""
+    env = {"POSTGRES_PASSWORD": "abc", "SESSION_SECRET": "xyz", "POSTGRES_USER": "db"}
+    out = PBA.redact_env_values("password=abc secret=xyz user=db", env)
+    assert "abc" not in out and "xyz" not in out
+    assert "user=db" in out  # an ordinary 2-char username is not a secret
     assert out.count("***REDACTED***") == 2
 
 
