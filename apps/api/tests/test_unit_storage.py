@@ -1,8 +1,8 @@
 """Unit tests for the private storage backend.
 
 These cover the properties that stop a storage key from becoming an arbitrary
-file-read/write primitive: in-tree resolution only, no symlink escape, no
-overwrite, restrictive permissions and orphan reconciliation.
+file-read/write primitive: in-tree resolution only, no symlink or junction
+escape, no overwrite, restrictive permissions and orphan reconciliation.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +24,28 @@ from mafhum_api.services.documents.storage import (
     file_mode_is_restrictive,
     new_storage_key,
 )
+
+# NTFS junctions are the Windows-specific hazard: unlike symlinks they need no
+# privilege to create, and Path.is_symlink() does not report them. The tests
+# that exercise them only make sense on Windows; everything else in this
+# module runs on every platform.
+WINDOWS_ONLY = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="NTFS junction behaviour is Windows-only",
+)
+
+
+def _symlink_privilege_denied(exc: OSError) -> bool:
+    """True ONLY for Windows' symlink-privilege denial (WinError 1314).
+
+    ``winerror`` is populated only on Windows builds, so on POSIX this is
+    always False: any symlink-creation failure there fails the test instead
+    of skipping it. On Windows, every other OSError (access denied, invalid
+    function, ...) also fails — only the one condition the verification pass
+    actually hit (an account without elevation or Developer Mode) may skip.
+    """
+    windows = sys.platform == "win32" or os.name == "nt"
+    return windows and getattr(exc, "winerror", None) == 1314
 
 
 @pytest.fixture
@@ -78,9 +101,80 @@ class TestResolution:
         outside.mkdir()
         link = storage.root / "aa"
         link.parent.mkdir(parents=True, exist_ok=True)
-        link.symlink_to(outside)
+        try:
+            link.symlink_to(outside)
+        except OSError as exc:
+            # Skip ONLY the specific Windows privilege denial (WinError 1314 =
+            # ERROR_PRIVILEGE_NOT_HELD: an account without elevation or
+            # Developer Mode cannot create symlinks — observed 2026-10-30,
+            # docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md §2.4). Any other
+            # OSError, on any platform, is a real failure and must surface:
+            # a broad except would silently hide breakage. The escape
+            # property itself is still asserted on a skipping host by
+            # test_junction_component_rejected below (no privilege needed),
+            # and on POSIX CI by this test.
+            if _symlink_privilege_denied(exc):
+                pytest.skip(
+                    "the OS denies symlink creation (WinError 1314); the "
+                    "out-of-root component property stays asserted by "
+                    "test_junction_component_rejected on this host"
+                )
+            raise
         with pytest.raises(StorageKeyError):
             storage.resolve("aa/file.bin")
+
+    @WINDOWS_ONLY
+    def test_junction_component_rejected(self, storage: LocalFileStorage, tmp_path: Path) -> None:
+        """A privilege-free NTFS junction must not buy a path escape either.
+
+        `Path.is_symlink()` returns False for a junction, so ``resolve``'s
+        explicit symlink-component loop does not even see one; the check that
+        rejects it is containment of the RESOLVED absolute path. This test
+        pins that containment on the platform where junctions exist, so the
+        security property holds on every host even where the symlink fixture
+        above has to skip. Evidence: the same probe was run manually on
+        Windows 11 during the 2026-10-30 verification pass (report §2.4).
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = storage.root / "aa"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        # mklink is a cmd.exe builtin, not an executable, and needs the /J
+        # junction form: junctions require no privilege, unlike symlinks.
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            pytest.skip(
+                "could not create an NTFS junction on this host/filesystem "
+                f"(exit {completed.returncode})"
+            )
+        assert link.is_junction() and not link.is_symlink()
+        with pytest.raises(StorageKeyError):
+            storage.resolve("aa/file.bin")
+
+
+class TestSymlinkSkipClassification:
+    """The fixture skip may fire ONLY for the Windows privilege denial."""
+
+    def test_winerror_1314_is_classified_as_denied(self) -> None:
+        if not (sys.platform == "win32" or os.name == "nt"):
+            pytest.skip("winerror exists only on Windows builds")
+        # The 4-argument OSError form populates winerror on Windows builds;
+        # 1314 = ERROR_PRIVILEGE_NOT_HELD.
+        exc = OSError(13, "A required privilege is not held by the client", None, 1314)
+        assert _symlink_privilege_denied(exc) is True
+
+    def test_a_different_windows_oserror_is_not_skippable(self) -> None:
+        if sys.platform == "win32" or os.name == "nt":
+            exc = OSError(5, "Access is denied", None, 5)
+        else:
+            exc = OSError(13, "Permission denied")
+        assert _symlink_privilege_denied(exc) is False
+
+    def test_a_plain_posix_style_oserror_is_not_skippable(self) -> None:
+        assert _symlink_privilege_denied(OSError(13, "Permission denied")) is False
 
 
 class TestWriteRead:
