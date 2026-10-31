@@ -367,10 +367,39 @@ explicitly:
 
 ---
 
-## 6. What this document does not claim
+## 6. Local authenticated DAST — EXECUTED 2026-10-31
+
+Recorded per `docs/PENTEST_READINESS.md` §8. Full findings report:
+`docs/DAST_LOCAL_REPORT_2026-10-31.md`.
+
+* **Commit under test:** `17d6313dd9fada2629b0997aa995141691282e3a`
+  (branch `arena/37adf787-mafhum`).
+* **Command:** `.venv/bin/python tools/dast/local_dast.py` (also a required
+  CI job, `Local authenticated DAST (production posture)`, in `ci.yml`).
+* **Tool versions:** Python 3.11.2, httpx 0.28.1, pgserver 0.1.4
+  (PostgreSQL 16.2), uvicorn 0.54.0, cryptography 50.0.2, FastAPI 0.159.1,
+  SQLAlchemy 2.1.6, psycopg 3.3.6.
+* **Target:** two local uvicorn instances in production posture over
+  self-signed HTTPS against one real PostgreSQL; instance A with a clamd
+  *protocol stub* (no detection claim), instance B with the engine
+  unreachable. Synthetic accounts and documents only; EICAR string only.
+* **Result:** 86 checks passed, 0 failed. Findings: **F-1 (low,
+  remediated)** — no `Content-Security-Policy` in the transport template;
+  fixed in `deploy/Caddyfile` with a conservative self-only CSP and pinned
+  by a DAST assertion. No medium/high/critical findings in the executed
+  scope.
+* **Boundaries:** engine-level detection, interactive ZAP/Burp proxying and
+  live-TLS header verification were NOT part of this execution (no Docker
+  engine or browser in the environment); they remain staging-host tasks.
+
+---
+
+## 7. What this document does not claim
 
 A passing test suite does not prove the absence of vulnerabilities. The suite
 demonstrates that the specified behaviours hold — ownership, concurrency,
-configuration refusal, disclosure — and says nothing about unspecified ones. No
-penetration test, fuzzing campaign or formal review has been performed on this
-codebase.
+configuration refusal, disclosure — and says nothing about unspecified ones.
+The 2026-10-31 local DAST executed the documented scope against a local
+target with a protocol stub and self-signed TLS; the full staging-host
+penetration test with a real engine, real TLS and interactive tooling has
+not been performed on this codebase.
