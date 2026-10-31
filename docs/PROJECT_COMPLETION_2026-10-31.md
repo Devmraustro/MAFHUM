@@ -90,14 +90,48 @@ ZAP/Burp; TLS header posture was verified at the configuration level.
 
 `tools/clamav/production_bootstrap_acceptance.py` (new, committed) automates
 the whole Phase-2 runbook on any Docker host: compose config validation,
-timed build, cold bootstrap with an empty signature volume (health polling,
+timed build, cold bootstrap with a fresh signature volume (health polling,
 SCAN-READY timing, freshclam evidence), db+api start via a generated gitignored
 port override, the three-case acceptance through the real API (reusing the
 exact `malware_fail_closed.py` helpers), engine-outage fail-closed, recovery
-with volume-reuse proof, the 43 200 s refresh-loop liveness check, and `--full`
-for a repeat cold bootstrap. Cross-platform Python because the owner host is
-Windows without WSL. **Not executed here** — this sandbox has no Docker engine
-(verified: `docker`/`docker compose` absent, `command not found`).
+with volume-reuse proof, the 43 200 s refresh-loop liveness check, and
+`--full --confirm-isolated-test` for a repeat cold bootstrap. Cross-platform
+Python because the owner host is Windows without WSL. **Not executed here** —
+this sandbox has no Docker engine (verified: `docker`/`docker compose` absent,
+`command not found`).
+
+**Safety remediation (same day, 2026-10-31).** The first revision of that
+tool hardcoded the *production* project name (`mafhum-prod`, the `name:` in
+`deploy/docker-compose.prod.yml`), so running it on the production host would
+have stopped the production engine and force-deleted the production signature
+volume. It was rewritten before any execution (it was never run anywhere) with
+a verified-isolation architecture:
+
+- every run generates a unique Compose project
+  `mafhum-clamav-acc-<timestamp>-<nonce>`; `mafhum-prod`/`mafhum` (and any
+  `mafhum-prod*` prefix) are reserved and rejected before any docker call;
+- every compose command is issued through one wrapper that injects the
+  isolated `--project-name` and refuses reserved names; images build under
+  run-unique tags; the api is published on `127.0.0.1` only;
+- a read-only preflight aborts (exit 2, nothing created) on project-name
+  collision, existing containers/volumes carrying the run's label, or
+  resource-name collisions;
+- **the default run deletes no volume ever** — the isolated project's first
+  `up` is the cold bootstrap, and cleanup is `down` without `-v`;
+- the only deletion is the `--full` second bootstrap, which additionally
+  requires `--confirm-isolated-test` and a triple gate (created by this run ∧
+  ownership label matches the isolated project ∧ exact name re-verified
+  immediately before `docker volume rm`);
+- failure cleanup never deletes volumes (evidence preserved), and a post-run
+  self-audit fails the run if any issued command could have addressed a
+  production resource.
+
+Pinned by `apps/api/tests/test_clamav_acceptance_safety.py` (17 tests, mocked
+Docker CLI — no Docker or production environment needed), which also holds an
+AST-level proof that no executable string in the tool names a production
+resource. See `docs/DEPLOYMENT_RUNBOOK.md` §3 step 5 for the distinction
+between CI engine tests, isolated local acceptance and production-host
+acceptance.
 
 ## 6. Git: the PR stack landed, then protection
 
@@ -133,7 +167,7 @@ Each commit landed exactly once; no rebase, no force-push, no branch deletion.
 
 | # | Item | What exists now | What the owner must do |
 |---|---|---|---|
-| 1 | **Production ClamAV container evidence** (the top blocker) | `tools/clamav/production_bootstrap_acceptance.py` — the full gate in one command | run it on a Docker host with a real env file; attach the timed report |
+| 1 | **Production ClamAV container evidence** (the top blocker) | `tools/clamav/production_bootstrap_acceptance.py` — the full gate in one command, isolated from production by construction (v2, see §5) | run it on a Docker host with a real env file (it never touches `mafhum-prod`); attach the timed report from `.clamav-acceptance/<project>/report.md` |
 | 2 | **Live alert delivery** | validated configs + CI gate + `--live` contract check | supply `deploy/secrets/metrics_token`, a real Alertmanager destination, start `docker-compose.monitoring.yml`, fire one rehearsal alert and prove receipt |
 | 3 | **PowerPoint visual parity** | OOXML/RTL/benchmark gates green in CI (`pptx-render.yml` does headless LibreOffice) | open the benchmark decks in real PowerPoint on Windows and confirm appearance |
 | 4 | **Staging DAST (full claim)** | local DAST executed + in CI; scope table rehearsed | authorize + run ZAP baseline and authenticated scan against a real staging stack with a real engine and real TLS |

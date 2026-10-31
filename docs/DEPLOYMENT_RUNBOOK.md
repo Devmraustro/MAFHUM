@@ -115,11 +115,55 @@ and live-source provenance are **not implemented** in this release.
    `.github/workflows/production-malware-acceptance.yml` for the exact sequence).
    The entire Phase-2 gate — build, cold bootstrap timing to SCAN-READY,
    three-case acceptance, outage fail-closed, recovery with volume reuse, the
-   12 h refresh loop and (with `--full`) a repeat cold bootstrap — is automated
-   as one command for any Docker host:
+   12 h refresh loop and (with `--full --confirm-isolated-test`) a repeat cold
+   bootstrap — is automated as one command for any Docker host:
    `python tools/clamav/production_bootstrap_acceptance.py --env-file <env>`
    (exit 0 = every phase passed; a timed report is written to
-   `.clamav-acceptance/report.md`).
+   `.clamav-acceptance/<isolated-project>/report.md`).
+
+   **Safety model (v2, remediated 2026-10-31).** The tool never touches the
+   production stack. Each run creates its own throwaway Compose project
+   (`mafhum-clamav-acc-<timestamp>-<nonce>`); the names `mafhum-prod` and
+   `mafhum` are reserved and rejected, including by prefix. Every compose
+   command carries an explicit `--project-name` for the isolated project;
+   images are built under run-unique tags (the production tags are never
+   rebuilt); the api is published on `127.0.0.1` only, on a port the preflight
+   proves is free (the development stack uses 8000 — pass `--api-port` when it
+   is running), and the acceptance uploads run only after this run's own api
+   answered readiness, so a foreign service squatting the port can never
+   receive them. A preflight aborts on any ambiguity (project-name collision,
+   containers or volumes already carrying the run's label, resource-name
+   collisions, loopback port occupied). By default **no volume is ever
+   deleted** — the isolated project's first `up` *is* the cold bootstrap, and
+   cleanup is `docker compose down` without `-v` (evidence is preserved).
+   `--keep-stack` skips that final `down` and leaves the isolated stack for
+   inspection; the run prints the exact
+   `docker compose --project-name <isolated-project> down` command to remove
+   it afterwards (still without deleting volumes unless you add `-v`
+   yourself). The only volume deletion is the optional second cold bootstrap
+   (`--full`), which additionally requires `--confirm-isolated-test` and a
+   triple gate: the volume was created by this run, its
+   `com.docker.compose.project` label matches the isolated project, and its
+   exact name is re-verified immediately before removal. After cleanup the
+   tool audits every docker command it issued and fails the run if any could
+   have addressed a production resource. This is enforced by
+   `apps/api/tests/test_clamav_acceptance_safety.py` (mocked Docker CLI, no
+   real host needed) on every commit.
+
+   **Three levels of malware-gate evidence — do not conflate them:**
+   - *CI engine tests* (`.github/workflows/production-malware-acceptance.yml`,
+     ubuntu runner with its own Docker): prove the compose contract and the
+     real fail-closed behaviour on a fresh, throwaway stack. They prove
+     nothing about your production host.
+   - *Isolated local acceptance* (this tool, any Docker host, default flags):
+     proves the same phases on hardware you control, still without touching
+     any existing deployment.
+   - *Production-host acceptance*: the only evidence that the real
+     `mafhum-prod` stack behaves as designed. It is an owner action — run the
+     tool on the production host (it stays isolated by construction), then
+     confirm the live engine with `docker exec mafhum-prod-clamd-1 clamdscan
+     --version` and an EICAR probe through the public API before enabling
+     uploads.
 6. Decide the audit-retention policy with the owner. Do **not** schedule
    `purge_audit.py --apply` until a legal hold has been ruled out
    (`docs/DATA_POLICY.md` §8).

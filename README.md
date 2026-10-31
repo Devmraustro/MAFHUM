@@ -161,7 +161,14 @@ HTTP — not mocks:
    Gate A and `production-malware-acceptance.yml` verified real EICAR detection
    on CI runners. **No owner host has been verified.** Until an operator runs
    that engine on their own deployment and repeats the EICAR check, do not
-   describe that deployment as scanning for malware.
+   describe that deployment as scanning for malware. The sanctioned way to
+   produce that evidence is
+   `tools/clamav/production_bootstrap_acceptance.py`, which runs the full gate
+   in a throwaway Compose project (`mafhum-clamav-acc-<timestamp>-<nonce>`)
+   that cannot address `mafhum-prod` or any other existing deployment — CI
+   runner evidence, isolated local acceptance and production-host acceptance
+   are three distinct proof levels (see `docs/DEPLOYMENT_RUNBOOK.md` §3
+   step 5).
    `GET /api/v1/documents/limits` discloses the live
    `malware_scanning_available` state.
 3. **The processing worker pool is per-process, with one worker per database.**
