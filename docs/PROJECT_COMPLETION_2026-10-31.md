@@ -10,10 +10,11 @@ advisories), the entire CI matrix was reproduced green locally on Linux, the
 monitoring configuration gained an executed offline validation gate, the local
 authenticated DAST was **executed for the first time** (86/86, one low finding
 remediated), the production ClamAV gate became a one-command runbook, and the
-PR stack was landed on `main` with branch protection enabled. What still cannot
-be done from a sandbox without Docker — real-engine container evidence, live
-alert delivery to a real destination, PowerPoint visual parity, and the staging
-DAST — is precisely enumerated in §7.
+whole PR stack was landed on `main` (PRs #6, #7, #8, #9 and #10, every merge
+record preserved). What still cannot be done from here — real-engine container
+evidence, live alert delivery to a real destination, PowerPoint visual parity,
+the staging DAST, and enabling branch protection (the session token lacks
+Administration write) — is precisely enumerated in §6–§7.
 
 ## 1. CI regression found and fixed (before any merge)
 
@@ -109,9 +110,22 @@ PR #8), preserving every PR's own merge record:
 4. **New PR `verification/operational-review-2026-10-31` → `main`** (the 7
    outstanding commits: report + 5 remediation + review docs), merged.
 5. **This branch's PR → `main`** (the completion commits of this session).
-6. **Branch protection enabled on `main`**: pull requests required, the six
-   always-running CI jobs required as status checks, no force-pushes, no
-   deletions; administrators not forced (documented owner lever).
+6. **Branch protection on `main`: attempted, blocked by the credential.**
+   Both `PUT /branches/main/protection` and `POST /rulesets` returned
+   `403 Resource not accessible by integration` — the session's GitHub token
+   can merge PRs but has no Administration write permission. `main` therefore
+   remains unprotected, and enabling it is an owner action; the exact payload
+   to apply (require PRs, the six always-running CI jobs as required status
+   checks, no force-pushes, no deletions) is:
+   `gh api -X PUT repos/Devmraustro/MAFHUM/branches/main/protection` with
+   `required_status_checks.contexts` =
+   `["Repository baseline", "Backend — lint, types, tests", "Security — SAST,
+   secrets, config contract", "Local authenticated DAST (production
+   posture)", "Migrations — upgrade and downgrade", "Frontend — lint, types,
+   tests, build"]`, `strict=false`, `enforce_admins=false`,
+   `allow_force_pushes=false`, `allow_deletions=false`. The path-filtered
+   workflows (PPTX render, production malware acceptance) must NOT be made
+   required, or PRs outside their paths could never merge.
 
 Each commit landed exactly once; no rebase, no force-push, no branch deletion.
 
@@ -124,6 +138,7 @@ Each commit landed exactly once; no rebase, no force-push, no branch deletion.
 | 3 | **PowerPoint visual parity** | OOXML/RTL/benchmark gates green in CI (`pptx-render.yml` does headless LibreOffice) | open the benchmark decks in real PowerPoint on Windows and confirm appearance |
 | 4 | **Staging DAST (full claim)** | local DAST executed + in CI; scope table rehearsed | authorize + run ZAP baseline and authenticated scan against a real staging stack with a real engine and real TLS |
 | 5 | **Deployment decisions** | `docs/FULL_STACK_DEPLOYMENT.md`, runbook, rollback guide | domain, secrets, retention, KMS, digest pinning, licence, visibility |
+| 6 | **Branch protection on `main`** | exact API payload prepared (§6) | enable it with an owner credential that has Administration write |
 
 **Production-readiness statement:** MAFHUM remains **not production-ready**
 until item 1 (and then 2–4) is executed by the owner. Everything executable
