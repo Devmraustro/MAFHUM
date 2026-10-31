@@ -39,22 +39,35 @@ Safety model (enforced structurally, not by convention)
 6. **Preflight aborts on ambiguity.** Docker/Compose availability, project-name
    uniqueness (``docker compose ls``), container/volume label queries, and
    resource-name collisions are all checked before anything is created; any
-   failure or ambiguity aborts with exit code 2 before mutation.
-7. **Failure cleanup is never destructive.** ``try/finally`` brings down only
+   failure or ambiguity aborts with exit code 2 before mutation. The preflight
+   also refuses remote Docker Engines: the effective endpoint is resolved with
+   the CLI's precedence (``DOCKER_HOST`` first, then ``DOCKER_CONTEXT`` or the
+   persisted context, whose endpoint is read from ``docker context inspect``
+   — never inferred from the context name), and anything other than a
+   ``unix://`` socket or a Windows ``npipe:`` named pipe aborts the run.
+7. **Failure cleanup is never destructive, and phases fail fast.** A failed
+   config validation, image build or cold bootstrap prevents every dependent
+   phase (including the acceptance uploads). ``try/finally`` brings down only
    the isolated project; volumes are never deleted during cleanup, so failure
    evidence survives.
-8. **Loopback-only API exposure, with ownership proof.** The generated
-   Compose override binds the api to ``127.0.0.1:<port>`` (default 8000,
-   ``--api-port`` to change). The preflight verifies the port is free before
-   anything is created, and the acceptance uploads run only when this run's
-   ``up`` succeeded and its own api answered readiness — so a foreign service
-   already squatting the loopback port (the development stack publishes
-   ``127.0.0.1:8000``) can never receive the uploads: the run aborts first,
-   or ``up`` fails and the upload phases are skipped entirely.
-9. **Self-audit.** After cleanup the tool scans every docker invocation it
-   made: if any targeted a production identifier, or any compose command
-   lacked the isolated ``--project-name``, the run is marked FAILED even if
-   the commands themselves succeeded.
+8. **Loopback-only API exposure, with engine and ownership proofs.** The
+   generated Compose override binds the api to ``127.0.0.1:<port>``
+   (default 8000, ``--api-port`` to change). Before anything is created the
+   preflight proves the port is free and the engine is local; the acceptance
+   uploads run only when this run's ``up`` succeeded, its own api answered
+   readiness, and ``docker inspect`` proved that the api container carries
+   this run's exact name and project label and owns the
+   ``127.0.0.1:<port> -> 8000/tcp`` host binding. A foreign local service
+   can therefore never receive the uploads: it cannot hold the port once
+   Docker bound it, and readiness alone authorises nothing.
+9. **Reports are redacted.** Every check detail, note and failure reason
+   passes through a redactor that replaces each env-file value with
+   ``***REDACTED***``, so a docker error echoing a configured value can never
+   reach the report.
+10. **Self-audit.** After cleanup the tool scans every docker invocation it
+    made: if any targeted a production identifier, or any compose command
+    lacked the isolated ``--project-name``, the run is marked FAILED even if
+    the commands themselves succeeded.
 
 What the run does
 -----------------
@@ -85,13 +98,17 @@ is used as the Origin header for the acceptance uploads; it only has to match
 what the api expects, it does not need to resolve.
 
 ``--api-port`` selects the loopback port (default 8000; the development
-Compose stack uses 8000, so pick another port when it is running). The env
-file is read only as configuration input; none of its values are printed or
-written to the report. ``--keep-stack`` skips the final ``down`` and leaves
-the isolated stack running for inspection — no volume is deleted either way,
-and the exact manual removal command is printed; remove it with
-``docker compose --project-name <isolated-project> down`` (add ``-v`` only
-if you also want the isolated volumes gone).
+Compose stack uses 8000, so pick another port when it is running). The tool
+requires a **local** Docker Engine: a ``DOCKER_HOST``/``DOCKER_CONTEXT``
+pointing at a remote engine aborts the run before anything is created. The
+env file is read only as configuration input; none of its values are printed
+or written to the report (recorded command output is redacted against them).
+``--keep-stack`` skips the final ``down`` and leaves the isolated stack
+running for inspection — no volume is deleted either way, and the run prints
+the exact, fully qualified ``docker compose --project-name <project> -f
+<compose> --env-file <env> -f <override> down`` command that reproduces the
+run's configuration; add ``-v`` to it only if you also want the isolated
+volumes gone.
 
 Exit codes: 0 = all checks passed; 1 = at least one check failed; 2 = preflight
 aborted (nothing was created). The timed report is written to
@@ -106,13 +123,14 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import secrets
 import shutil
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -227,6 +245,10 @@ class IsolationPlan:
         return f"{self.project}-clamd-1"
 
     @property
+    def api_container(self) -> str:
+        return f"{self.project}-api-1"
+
+    @property
     def clamd_volume(self) -> str:
         return f"{self.project}_clamd_db"
 
@@ -278,6 +300,18 @@ class DockerCli:
     def compose_projects(self) -> CommandResult:
         """Names of every Compose project on this host (``docker compose ls``)."""
         return self._run(["docker", "compose", "ls", "--all", "--format", "json"], 60)
+
+    def context_show(self) -> CommandResult:
+        """Name of the active Docker context (may be ``default``)."""
+        return self._run(["docker", "context", "show"], 60)
+
+    def context_inspect(self, name: str) -> CommandResult:
+        """Full JSON of one Docker context, incl. its engine endpoint."""
+        return self._run(["docker", "context", "inspect", name], 60)
+
+    def container_inspect(self, container: str) -> CommandResult:
+        """Full JSON of one container (identity, labels, state, port bindings)."""
+        return self._run(["docker", "inspect", container], 60)
 
     def containers_with_label(self, project: str) -> CommandResult:
         """Container names carrying this project's ownership label."""
@@ -349,6 +383,148 @@ def _volume_missing(result: CommandResult) -> bool:
     return result.returncode != 0 and "no such volume" in result.stderr.lower()
 
 
+# -------------------------------------------------------- engine locality gate
+# Fail-closed: only these endpoint schemes prove the engine is local. Anything
+# else — tcp://, http(s)://, ssh://, fd://, or an empty endpoint — is refused,
+# because with a remote engine `compose up` succeeds remotely while
+# 127.0.0.1:<port> on this machine is NOT bound by the run's container.
+LOCAL_ENDPOINT_PREFIXES = ("unix://", "npipe:")  # npipe = Windows named pipe
+
+
+def is_local_endpoint(endpoint: str) -> bool:
+    """True only for endpoint schemes that prove a local Docker Engine."""
+    normalised = endpoint.strip().lower()
+    return normalised.startswith(LOCAL_ENDPOINT_PREFIXES)
+
+
+def resolve_engine_endpoint(
+    docker: DockerCli,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str, list[str]]:
+    """Resolve the effective Docker Engine endpoint like the docker CLI does.
+
+    Precedence (mirrors the CLI): the ``DOCKER_HOST`` environment variable
+    first, then the context selected by ``DOCKER_CONTEXT`` (or the persisted
+    ``docker context show``), whose endpoint is read from ``docker context
+    inspect`` — the *endpoint*, never the context *name*, decides locality.
+
+    Returns ``(endpoint, source, problems)``; problems mean "unknown, abort".
+    """
+    effective = os.environ if env is None else env
+    problems: list[str] = []
+
+    docker_host = (effective.get("DOCKER_HOST") or "").strip()
+    if docker_host:
+        return docker_host, "DOCKER_HOST", problems
+
+    context_name = (effective.get("DOCKER_CONTEXT") or "").strip()
+    if not context_name:
+        shown = docker.context_show()
+        if shown.returncode != 0:
+            return (
+                "",
+                "",
+                [
+                    "cannot determine the active Docker context (docker context show "
+                    "failed): " + shown.stderr.strip()[:120]
+                ],
+            )
+        context_name = shown.stdout.strip() or "default"
+
+    inspected = docker.context_inspect(context_name)
+    if inspected.returncode != 0:
+        return (
+            "",
+            "",
+            [f"cannot inspect Docker context {context_name!r}: " + inspected.stderr.strip()[:120]],
+        )
+    try:
+        endpoint = str(json.loads(inspected.stdout)[0]["Endpoints"]["docker"]["Host"])
+    except (ValueError, IndexError, KeyError, TypeError):
+        return "", "", [f"Docker context {context_name!r} has an unparseable engine endpoint"]
+    return endpoint, f"context {context_name!r}", problems
+
+
+# ------------------------------------------------------- api ownership proof
+def verify_api_ownership(docker: DockerCli, plan: IsolationPlan) -> tuple[bool, str]:
+    """Prove the api listener on 127.0.0.1:<port> is this run's container.
+
+    Checks the container's exact name, its Compose ownership label, that it is
+    running, and that Docker published 127.0.0.1:<port> for its 8000/tcp port.
+    A local unrelated service answering readiness can never pass this gate:
+    the gate is about who owns the port binding, not about who answers.
+    """
+    result = docker.container_inspect(plan.api_container)
+    if result.returncode != 0:
+        return False, f"cannot inspect the api container (rc={result.returncode})"
+    try:
+        info = json.loads(result.stdout)[0]
+    except (ValueError, IndexError, TypeError):
+        return False, "api container inspect output was unparseable"
+    if info.get("Name") != f"/{plan.api_container}":
+        return False, "api container identity mismatch"
+    labels = (info.get("Config") or {}).get("Labels") or {}
+    if labels.get(COMPOSE_PROJECT_LABEL) != plan.project:
+        return False, "api container ownership label does not match the isolated project"
+    if not (info.get("State") or {}).get("Running"):
+        return False, "api container is not running"
+    bindings = ((info.get("NetworkSettings") or {}).get("Ports") or {}).get("8000/tcp")
+    bindings = bindings or []
+    expected = {"HostIp": "127.0.0.1", "HostPort": str(plan.api_port)}
+    if expected not in bindings:
+        return False, (
+            f"the isolated api does not own the 127.0.0.1:{plan.api_port} host binding: {bindings}"
+        )
+    return True, ""
+
+
+# ------------------------------------------------------------- secret redaction
+def redact_env_values(text: str, env: Mapping[str, str], protect: tuple[str, ...] = ()) -> str:
+    """Replace every configured env-file value in ``text`` with a placeholder.
+
+    Applied to everything the Reporter records (check details, notes, failure
+    reasons), so an excerpt of docker output that happens to echo an env-file
+    value can never reach the report. Values shorter than 4 characters are
+    skipped to avoid mangling ordinary words.
+
+    ``protect`` lists the run's own generated tokens (project, container,
+    volume and image names, the api url). The text is split on those tokens
+    and only the unprotected segments are redacted, so that, e.g., a short
+    ``POSTGRES_USER`` value that happens to be a substring of the generated
+    project name cannot corrupt the reproducible cleanup command. Protected
+    tokens are generated by this tool and provably contain no env-file values.
+    """
+    values = sorted({v for v in env.values() if v and len(v) >= 4}, key=len, reverse=True)
+    if not values:
+        return text
+    # Split the text into (segment, guarded) parts along the protected tokens.
+    parts: list[tuple[str, bool]] = [(text, False)]
+    for token in protect:
+        if not token:
+            continue
+        rebuilt: list[tuple[str, bool]] = []
+        for chunk, guarded in parts:
+            if guarded:
+                rebuilt.append((chunk, True))
+                continue
+            pieces = chunk.split(token)
+            for index, piece in enumerate(pieces):
+                rebuilt.append((piece, False))
+                if index < len(pieces) - 1:
+                    rebuilt.append((token, True))
+        parts = rebuilt
+    out: list[str] = []
+    for chunk, guarded in parts:
+        if guarded:
+            out.append(chunk)
+            continue
+        redacted = chunk
+        for value in values:
+            redacted = redacted.replace(value, "***REDACTED***")
+        out.append(redacted)
+    return "".join(out)
+
+
 # ------------------------------------------------------------------- preflight
 def loopback_port_free(port: int) -> bool:
     """True when nothing is listening on 127.0.0.1:<port> (no payload sent).
@@ -369,13 +545,16 @@ def preflight(
     docker: DockerCli,
     plan: IsolationPlan,
     port_free: Callable[[int], bool] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Prove the isolated project is safe to create. Returns problems.
 
     Read-only: no container, volume, network or image is created, stopped,
     removed or modified here. Any ambiguity aborts the run (exit 2) before
     mutation. Resources of OTHER projects are never inspected: every query is
-    scoped to the generated unique name or its ownership label.
+    scoped to the generated unique name or its ownership label. ``env`` is the
+    process environment used to resolve the Docker engine endpoint
+    (``DOCKER_HOST`` / ``DOCKER_CONTEXT``); it defaults to ``os.environ``.
     """
     problems: list[str] = []
     check_port = port_free or loopback_port_free
@@ -406,6 +585,23 @@ def preflight(
     compose_version = docker.compose_version()
     if compose_version.returncode != 0:
         problems.append(f"docker compose v2 unavailable: {compose_version.stderr.strip()[:200]}")
+        return problems
+
+    # Remote engines are refused outright (fail-closed). With DOCKER_HOST /
+    # DOCKER_CONTEXT pointing at a remote engine, `compose up` succeeds
+    # remotely while 127.0.0.1:<port> on THIS machine is bound by no one (or
+    # by an unrelated local service), so the ownership proof below would be
+    # meaningless. Locality is decided by the resolved endpoint, never by the
+    # context name.
+    endpoint, source, endpoint_problems = resolve_engine_endpoint(docker, env)
+    if endpoint_problems:
+        return problems + endpoint_problems
+    if not is_local_endpoint(endpoint):
+        problems.append(
+            f"remote Docker engine refused: endpoint {endpoint!r} (from {source}); "
+            "this tool requires a local engine (unix socket or Windows named "
+            "pipe). Run it on the Docker host itself."
+        )
         return problems
 
     projects = docker.compose_projects()
@@ -526,15 +722,23 @@ def audit_invocations(invocations: list[list[str]], plan: IsolationPlan) -> list
 
 
 # -------------------------------------------------------------------- reporting
+def _no_redaction(text: str) -> str:
+    return text
+
+
 @dataclass
 class Reporter:
     passes: int = 0
     failures: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+    # Every recorded detail/note passes through this before it reaches the
+    # report or stdout, so configured env-file values are always redacted.
+    redactor: Callable[[str], str] = field(default=_no_redaction)
 
     def check(self, label: str, condition: bool, detail: str = "") -> bool:
         mark = "PASS" if condition else "FAIL"
-        suffix = f" — {detail}" if detail else ""
+        safe_detail = self.redactor(detail)
+        suffix = f" — {safe_detail}" if safe_detail else ""
         print(f"[{mark}] {label}{suffix}", flush=True)
         self.lines.append(f"- [{'x' if condition else ' '}] {label}{suffix}")
         if condition:
@@ -544,8 +748,9 @@ class Reporter:
         return condition
 
     def note(self, text: str) -> None:
-        print(f"[note] {text}", flush=True)
-        self.lines.append(f"- {text}")
+        safe_text = self.redactor(text)
+        print(f"[note] {safe_text}", flush=True)
+        self.lines.append(f"- {safe_text}")
 
 
 # ------------------------------------------------------------- override / env
@@ -772,13 +977,15 @@ def main(
     now: datetime.datetime | None = None,
     nonce: str | None = None,
     port_free: Callable[[int], bool] | None = None,
+    docker_env: Mapping[str, str] | None = None,
 ) -> int:
     """Run the isolated acceptance gate. See the module docstring for safety.
 
     The keyword-only parameters exist for the safety tests (hermetic, mocked
     Docker) and are not CLI flags: ``docker`` (mocked CLI), ``workdir``,
     ``python`` (acceptance interpreter), ``acceptance_runner``, ``http_probe``,
-    ``sleep``, ``port_free`` (loopback-port probe), and deterministic
+    ``sleep``, ``port_free`` (loopback-port probe), ``docker_env`` (process
+    environment for DOCKER_HOST/DOCKER_CONTEXT resolution), and deterministic
     ``project_name``/``now``/``nonce``.
     """
     parser = argparse.ArgumentParser(description="Isolated ClamAV acceptance gate")
@@ -827,13 +1034,10 @@ def main(
     acceptance_runner = acceptance_runner or _default_acceptance_runner
     python = python or python_with_httpx()
     workdir = workdir or WORKDIR_ROOT / plan.project
-    reporter = Reporter()
-    reporter.lines.append(f"# Isolated ClamAV acceptance — {started_at.isoformat()}")
-    reporter.lines.append(f"- isolated Compose project: `{plan.project}`")
-    reporter.lines.append(f"- engine container: `{plan.clamd_container}` (this run only)")
-    reporter.lines.append(f"- signature volume: `{plan.clamd_volume}` (this run only)")
-    reporter.lines.append(f"- api published on: `127.0.0.1:{plan.api_port}` (loopback only)")
 
+    # The env file is validated and loaded before anything is reported: its
+    # values feed the redactor that scrubs every recorded detail, so a value
+    # echoed by a failing docker command can never reach the report.
     env_file = Path(args.env_file)
     if not env_file.is_absolute():
         env_file = REPO_ROOT / env_file
@@ -845,11 +1049,34 @@ def main(
     env = load_env(env_file)
     origin = env["ALLOWED_ORIGINS"].split(",")[0].strip()
 
+    def redact(text: str) -> str:
+        return redact_env_values(
+            text,
+            env,
+            protect=(
+                plan.project,
+                plan.clamd_container,
+                plan.api_container,
+                plan.clamd_volume,
+                plan.clamd_image,
+                plan.api_image,
+                plan.api_url,
+            ),
+        )
+
+    reporter = Reporter(redactor=redact)
+    reporter.lines.append(f"# Isolated ClamAV acceptance — {started_at.isoformat()}")
+    reporter.lines.append(f"- isolated Compose project: `{plan.project}`")
+    reporter.lines.append(f"- engine container: `{plan.clamd_container}` (this run only)")
+    reporter.lines.append(f"- api container: `{plan.api_container}` (this run only)")
+    reporter.lines.append(f"- signature volume: `{plan.clamd_volume}` (this run only)")
+    reporter.lines.append(f"- api published on: `127.0.0.1:{plan.api_port}` (loopback only)")
+
     print("== MAFHUM isolated ClamAV acceptance (Phase 2) ==")
     print(f"[isolation] project: {plan.project}")
     print(f"[isolation] this run may only touch: {plan.clamd_container}, {plan.clamd_volume}")
 
-    problems = preflight(docker, plan, port_free=port_free)
+    problems = preflight(docker, plan, port_free=port_free, env=docker_env)
     if problems:
         for problem in problems:
             print(f"[abort] preflight: {problem}")
@@ -864,56 +1091,93 @@ def main(
     override = write_override(workdir, plan)
     flags = compose_flags(env_file, override)
     try:
+        # Fail-fast sequencing: each phase runs only if every phase it depends
+        # on succeeded. A failed config validation, image build or cold
+        # bootstrap prevents all dependent phases, and the run still cleans up
+        # non-destructively in the finally block below.
         print("\n== phase 0: compose config validation ==")
         cfg = docker.compose(plan.project, [*flags, "config", "-q"])
-        reporter.check(
+        config_ok = reporter.check(
             "docker compose config -q passes with the operator env",
             cfg.returncode == 0,
             cfg.stderr.strip()[:200],
         )
-
-        print("\n== phase 1: build the clamd image (run-unique tag) ==")
-        build_started = time.time()
-        build = docker.compose(plan.project, [*flags, "build", "clamd"], timeout=3600)
-        reporter.check(
-            "clamd image built",
-            build.returncode == 0,
-            f"{time.time() - build_started:.0f} s -> {plan.clamd_image}",
-        )
-
-        print("\n== phase 2: cold bootstrap (fresh isolated volume) ==")
-        if cold_bootstrap(docker, plan, flags, "phase 2", reporter, sleep):
-            refresh_created_volumes(docker, plan, created_volumes)
-            reporter.note(f"volumes created by this run: {sorted(created_volumes)}")
-
-        print("\n== phase 3: start db + api on the loopback interface ==")
-        up = docker.compose(plan.project, [*flags, "up", "-d", "db", "api"], timeout=900)
-        stack_up = up.returncode == 0
-        reporter.check("db + api started (isolated project)", stack_up, up.stderr.strip()[:200])
-        refresh_created_volumes(docker, plan, created_volumes)
-        api_ready = False
-        if stack_up:
-            # Only probe once OUR containers hold the port: a successful
-            # `up` means Docker published 127.0.0.1:<port> for this project's
-            # api container, so the listener behind it is ours.
-            for _ in range(60):
-                status, body = http_probe(plan.api_url + "/health/ready")
-                if status == 200 and '"malware_scanner": "ok"' in body.replace("\n", " "):
-                    api_ready = True
-                    break
-                sleep(5)
-        reporter.check("api /health/ready reports malware_scanner=ok", api_ready)
-
-        if not (stack_up and api_ready):
-            # Hard gate: if the isolated api did not come up, NOTHING may be
-            # sent to 127.0.0.1:<port> — a foreign service squatting the port
-            # (the dev stack uses 8000) must never receive the acceptance
-            # uploads. Phases 4-7 are skipped; cleanup still runs.
+        if not config_ok:
             reporter.note(
-                "refusing to run the acceptance uploads: the isolated api did "
-                f"not come up; nothing was sent to {plan.api_url}"
+                "skipping the image build and every dependent phase: compose "
+                "config validation failed"
             )
-        else:
+
+        build_ok = False
+        bootstrap_ok = False
+        stack_verified = False
+
+        if config_ok:
+            print("\n== phase 1: build the clamd image (run-unique tag) ==")
+            build_started = time.time()
+            build = docker.compose(plan.project, [*flags, "build", "clamd"], timeout=3600)
+            if build.returncode == 0:
+                detail = f"{time.time() - build_started:.0f} s -> {plan.clamd_image}"
+            else:
+                detail = build.stderr.strip()[:200]
+            build_ok = reporter.check("clamd image built", build.returncode == 0, detail)
+            if not build_ok:
+                reporter.note(
+                    "skipping the cold bootstrap and every dependent phase: the "
+                    "clamd image build failed"
+                )
+
+        if build_ok:
+            print("\n== phase 2: cold bootstrap (fresh isolated volume) ==")
+            bootstrap_ok = cold_bootstrap(docker, plan, flags, "phase 2", reporter, sleep)
+            if bootstrap_ok:
+                refresh_created_volumes(docker, plan, created_volumes)
+                reporter.note(f"volumes created by this run: {sorted(created_volumes)}")
+            else:
+                reporter.note(
+                    "skipping db/api start and the acceptance phases: the cold "
+                    "bootstrap did not reach SCAN-READY"
+                )
+
+        if bootstrap_ok:
+            print("\n== phase 3: start db + api on the loopback interface ==")
+            up = docker.compose(plan.project, [*flags, "up", "-d", "db", "api"], timeout=900)
+            stack_up = up.returncode == 0
+            reporter.check("db + api started (isolated project)", stack_up, up.stderr.strip()[:200])
+            refresh_created_volumes(docker, plan, created_volumes)
+            api_ready = False
+            if stack_up:
+                # Probe only once this run's `up` succeeded: Docker then owns
+                # the 127.0.0.1:<port> binding for this project's api.
+                for _ in range(60):
+                    status, body = http_probe(plan.api_url + "/health/ready")
+                    if status == 200 and '"malware_scanner": "ok"' in body.replace("\n", " "):
+                        api_ready = True
+                        break
+                    sleep(5)
+            reporter.check("api /health/ready reports malware_scanner=ok", api_ready)
+
+            # Ownership proof: readiness alone authorises nothing. The api
+            # container must carry this run's exact name and project label and
+            # must own the 127.0.0.1:<port> host binding, so a foreign local
+            # service answering readiness can never pass this gate.
+            owned, why = False, "the isolated api did not come up"
+            if stack_up and api_ready:
+                owned, why = verify_api_ownership(docker, plan)
+            reporter.check(
+                "api ownership proven: container identity, project label and "
+                f"the 127.0.0.1:{plan.api_port} port mapping belong to this run",
+                owned,
+                why,
+            )
+            stack_verified = bool(stack_up and api_ready and owned)
+            if not stack_verified:
+                reporter.note(
+                    "refusing to run the acceptance uploads: this run's api is not "
+                    f"proven to own {plan.api_url}; nothing was sent to it"
+                )
+
+        if stack_verified:
             print("\n== phase 4: three-case acceptance (engine up) ==")
             engine_up = acceptance_runner(python, plan.api_url, origin, "engine-up")
             reporter.check(
@@ -967,28 +1231,36 @@ def main(
             )
 
         if args.full:
-            print("\n== phase 8 (--full): second cold bootstrap (triple-gated) ==")
-            reporter.note(
-                "phase 8 will stop this run's own engine, then delete this run's "
-                "own signature volume after verifying creation-by-this-run, "
-                "ownership label and exact name"
-            )
-            # Stop and remove THIS RUN's container first so the volume is
-            # actually removable; nothing outside the isolated project is
-            # addressed. If the triple gate then refuses, nothing has been
-            # deleted and the second bootstrap is simply skipped.
-            docker.compose(plan.project, [*flags, "stop", "clamd"], timeout=300)
-            docker.compose(plan.project, [*flags, "rm", "-f", "clamd"], timeout=300)
-            removed, why = delete_volume_safely(docker, plan.clamd_volume, plan, created_volumes)
-            if not reporter.check(
-                "volume deletion triple gate passed for this run's volume",
-                removed,
-                why or plan.clamd_volume,
-            ):
-                reporter.note("no volume was deleted; skipping the second bootstrap")
+            if not bootstrap_ok:
+                reporter.note(
+                    "skipping the second cold bootstrap (--full): the first "
+                    "bootstrap did not succeed"
+                )
             else:
-                cold_bootstrap(docker, plan, flags, "phase 8", reporter, sleep)
-                refresh_created_volumes(docker, plan, created_volumes)
+                print("\n== phase 8 (--full): second cold bootstrap (triple-gated) ==")
+                reporter.note(
+                    "phase 8 will stop this run's own engine, then delete this run's "
+                    "own signature volume after verifying creation-by-this-run, "
+                    "ownership label and exact name"
+                )
+                # Stop and remove THIS RUN's container first so the volume is
+                # actually removable; nothing outside the isolated project is
+                # addressed. If the triple gate then refuses, nothing has been
+                # deleted and the second bootstrap is simply skipped.
+                docker.compose(plan.project, [*flags, "stop", "clamd"], timeout=300)
+                docker.compose(plan.project, [*flags, "rm", "-f", "clamd"], timeout=300)
+                removed, why = delete_volume_safely(
+                    docker, plan.clamd_volume, plan, created_volumes
+                )
+                if not reporter.check(
+                    "volume deletion triple gate passed for this run's volume",
+                    removed,
+                    why or plan.clamd_volume,
+                ):
+                    reporter.note("no volume was deleted; skipping the second bootstrap")
+                else:
+                    cold_bootstrap(docker, plan, flags, "phase 8", reporter, sleep)
+                    refresh_created_volumes(docker, plan, created_volumes)
     finally:
         if not args.keep_stack:
             print("\n== cleanup: isolated project only, volumes preserved ==")
@@ -999,9 +1271,13 @@ def main(
                 down.stderr.strip()[:200],
             )
         else:
+            # Finding: the manual cleanup command must reproduce the exact
+            # Compose configuration of this run (files, env file, override and
+            # project), so the operator can remove the kept stack verbatim.
+            manual = " ".join(["docker", "compose", "--project-name", plan.project, *flags, "down"])
             reporter.note(
-                "--keep-stack: the isolated stack is still running; remove it "
-                f"deliberately with: docker compose --project-name {plan.project} down"
+                "--keep-stack: the isolated stack is still running. Remove it "
+                f"with exactly this command: {manual}"
             )
         audit_problems = audit_invocations(docker.invocations, plan)
         reporter.check(

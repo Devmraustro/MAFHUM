@@ -83,6 +83,14 @@ class FakeRunner:
         volume_info: dict[str, dict[str, Any]] | None = None,
         existing_container_names: set[str] | None = None,
         fail_substrings: tuple[str, ...] = (),
+        fail_stderr: str = "",
+        # Docker context emulation: name returned by `docker context show`,
+        # and the engine endpoint each context resolves to.
+        context_show_name: str = "default",
+        context_endpoints: dict[str, str] | None = None,
+        # The api container's inspect document (identity, labels, bindings).
+        api_inspect: dict[str, Any] | None = None,
+        api_port: int = 8000,
     ) -> None:
         self.calls: list[list[str]] = []
         self.projects = list(projects or [])
@@ -91,6 +99,11 @@ class FakeRunner:
         self.volume_info = volume_info or {}
         self.existing_container_names = existing_container_names or set()
         self.fail_substrings = fail_substrings
+        self.fail_stderr = fail_stderr
+        self.context_show_name = context_show_name
+        self.context_endpoints = context_endpoints or {"default": "unix:///var/run/docker.sock"}
+        self.api_inspect = api_inspect
+        self.api_port = api_port
         self.ups = 0  # compose `up` commands executed so far
 
     def __call__(self, args: list[str], timeout: float = 1800) -> PBA.CommandResult:
@@ -98,12 +111,22 @@ class FakeRunner:
         joined = " ".join(args)
         for fragment in self.fail_substrings:
             if fragment in joined:
-                return PBA.CommandResult(1, "", f"simulated failure: {fragment}")
+                stderr = self.fail_stderr or f"simulated failure: {fragment}"
+                return PBA.CommandResult(1, "", stderr)
 
         if args[:2] == ["docker", "--version"]:
             return PBA.CommandResult(0, "Docker version 27.0.0 (fake)", "")
         if args[:3] == ["docker", "compose", "version"]:
             return PBA.CommandResult(0, "Docker Compose version v2.29.0 (fake)", "")
+        if args[:3] == ["docker", "context", "show"]:
+            return PBA.CommandResult(0, self.context_show_name, "")
+        if args[:3] == ["docker", "context", "inspect"]:
+            name = args[3]
+            endpoint = self.context_endpoints.get(name)
+            if endpoint is None:
+                return PBA.CommandResult(1, "", f"context {name!r} not found")
+            document = [{"Name": name, "Endpoints": {"docker": {"Host": endpoint}}}]
+            return PBA.CommandResult(0, json.dumps(document), "")
         if args[:4] == ["docker", "compose", "ls", "--all"]:
             payload = [
                 {"Name": name, "Status": "running", "ConfigFiles": ""} for name in self.projects
@@ -145,7 +168,19 @@ class FakeRunner:
             return PBA.CommandResult(0, args[3], "")
 
         if args[:2] == ["docker", "inspect"]:
-            return PBA.CommandResult(0, "healthy", "")
+            if "--format" in args:
+                # health-status probe for the clamd container
+                return PBA.CommandResult(0, "healthy", "")
+            # full container inspect: the api ownership proof
+            info = self.api_inspect or {
+                "Name": f"/{SAFE_PROJECT}-api-1",
+                "Config": {"Labels": {PBA.COMPOSE_PROJECT_LABEL: SAFE_PROJECT}},
+                "State": {"Running": True},
+                "NetworkSettings": {
+                    "Ports": {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(self.api_port)}]}
+                },
+            }
+            return PBA.CommandResult(0, json.dumps([info]), "")
         if args[:2] == ["docker", "logs"]:
             return PBA.CommandResult(
                 0,
@@ -177,9 +212,11 @@ def run_main(
     acceptance_runner: Any = None,
     http_probe: Any = None,
     port_free: Any = None,
+    docker_env: dict[str, str] | None = None,
+    env_content: str | None = None,
 ) -> int:
     env_file = tmp_path / "env"
-    env_file.write_text(ENV_CONTENT, encoding="utf-8")
+    env_file.write_text(ENV_CONTENT if env_content is None else env_content, encoding="utf-8")
 
     def default_runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
         return PBA.CommandResult(0, "", "")
@@ -200,6 +237,7 @@ def run_main(
         sleep=lambda seconds: None,
         project_name=project,
         port_free=port_free or default_port_free,
+        docker_env={} if docker_env is None else docker_env,
     )
 
 
@@ -277,13 +315,13 @@ def test_project_name_collision_aborts_before_any_mutation(tmp_path: Path) -> No
 
 def test_ambiguous_resource_state_aborts() -> None:
     docker = make_docker(preexisting_label_volumes={SAFE_PROJECT: [f"{SAFE_PROJECT}_clamd_db"]})
-    problems = PBA.preflight(docker, make_plan())
+    problems = PBA.preflight(docker, make_plan(), env={})
     assert any("ambiguity" in problem for problem in problems)
 
 
 def test_container_name_collision_aborts() -> None:
     docker = make_docker(existing_container_names={f"{SAFE_PROJECT}-clamd-1"})
-    problems = PBA.preflight(docker, make_plan())
+    problems = PBA.preflight(docker, make_plan(), env={})
     assert any("collision" in problem for problem in problems)
 
 
@@ -336,9 +374,10 @@ def test_api_is_published_on_loopback_only(tmp_path: Path) -> None:
     assert plan.clamd_image in text and plan.api_image in text
     assert "mafhum-clamd:0.3.0" not in text  # production tag never rebuilt
 
-    # The full run wires the same loopback bind into the generated override.
-    docker = make_docker()
-    run_main(docker, tmp_path, ["--api-port", "8123"], project=SAFE_PROJECT)
+    # The full run wires the same loopback bind into the generated override,
+    # and the ownership proof matches the custom port end to end.
+    docker = make_docker(api_port=8123)
+    assert run_main(docker, tmp_path, ["--api-port", "8123"], project=SAFE_PROJECT) == 0
     generated = (tmp_path / "acc" / "override.yml").read_text(encoding="utf-8")
     assert "127.0.0.1:8123:8000" in generated
 
@@ -427,8 +466,17 @@ def test_production_volume_name_is_refused_by_the_gate() -> None:
 # --------------------------------------------------------- failure non-violence
 def test_bootstrap_failure_triggers_non_destructive_cleanup(tmp_path: Path) -> None:
     docker = make_docker(fail_substrings=("up -d clamd",))
-    code = run_main(docker, tmp_path)
+    sent: list[str] = []
+
+    def runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
+        sent.append(mode)
+        return PBA.CommandResult(0, "", "")
+
+    code = run_main(docker, tmp_path, acceptance_runner=runner)
     assert code == 1  # the failure was recorded
+    assert sent == []  # and no acceptance upload was ever attempted
+    # Fail-fast: db/api were never started after the failed cold bootstrap.
+    assert not any("up -d db" in " ".join(argv) for argv in docker.invocations)
     # Cleanup still ran, scoped to the isolated project, and never deleted a
     # volume nor touched anything outside the run.
     downs = [
@@ -447,6 +495,16 @@ def test_keep_stack_leaves_the_isolated_project_running(tmp_path: Path) -> None:
     assert not any(
         argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations
     )
+    # The printed manual cleanup command reproduces the exact configuration:
+    # project name, both Compose files, the env file — and ends with `down`.
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    command_line = next(line for line in report.splitlines() if "Remove it" in line)
+    assert f"--project-name {SAFE_PROJECT}" in command_line
+    assert "docker-compose.prod.yml" in command_line
+    assert "--env-file" in command_line and str(tmp_path / "env") in command_line
+    assert "override.yml" in command_line
+    assert command_line.rstrip().endswith("down")
+    assert "-v" not in command_line and "--volumes" not in command_line
 
 
 # ---------------------------------------------------- loopback port ownership
@@ -509,6 +567,245 @@ def test_acceptance_uploads_never_run_when_the_api_never_became_ready(
     assert sent == []
     assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
     assert_never_targets_production(docker, make_plan())
+
+
+# ------------------------------------------------- engine locality (Finding 1)
+def _recording_runner(sent: list[str]) -> Any:
+    def runner(python: str, api: str, origin: str, mode: str) -> PBA.CommandResult:
+        sent.append(mode)
+        return PBA.CommandResult(0, "", "")
+
+    return runner
+
+
+def _assert_no_mutating_docker(docker: PBA.DockerCli) -> None:
+    for argv in docker.invocations:
+        joined = " ".join(argv)
+        for verb in ("up", "build", "down", "stop", "start", "rm"):
+            assert f" {verb} " not in f" {joined} ", (verb, joined)
+
+
+def test_remote_engine_via_docker_host_is_rejected(tmp_path: Path) -> None:
+    """A remote DOCKER_HOST must abort before anything is created.
+
+    With a remote engine, `compose up` succeeds remotely while
+    127.0.0.1:<port> on this machine is bound by no one (or by an unrelated
+    local service), so no ownership proof would be sound.
+    """
+    docker = make_docker()
+    sent: list[str] = []
+    code = run_main(
+        docker,
+        tmp_path,
+        acceptance_runner=_recording_runner(sent),
+        docker_env={"DOCKER_HOST": "ssh://ops@prod-host"},
+    )
+    assert code == 2
+    assert sent == []  # the acceptance runner was never invoked
+    _assert_no_mutating_docker(docker)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_remote_engine_with_local_unrelated_api_is_rejected(tmp_path: Path) -> None:
+    """Remote engine AND a local unrelated API on the port: still fail-closed."""
+    docker = make_docker()
+    sent: list[str] = []
+    code = run_main(
+        docker,
+        tmp_path,
+        acceptance_runner=_recording_runner(sent),
+        port_free=lambda port: False,  # a local service holds 127.0.0.1:8000
+        docker_env={"DOCKER_HOST": "tcp://10.9.8.7:2375"},
+    )
+    assert code == 2
+    assert sent == []
+    assert docker.invocations == []  # the port abort fired before any docker call
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_docker_host_overrides_the_selected_context(tmp_path: Path) -> None:
+    """DOCKER_HOST wins over DOCKER_CONTEXT, exactly like the docker CLI."""
+    docker = make_docker()
+    sent: list[str] = []
+    code = run_main(
+        docker,
+        tmp_path,
+        acceptance_runner=_recording_runner(sent),
+        docker_env={
+            "DOCKER_HOST": "ssh://ops@prod-host",
+            "DOCKER_CONTEXT": "default",  # a local-sounding selection
+        },
+    )
+    assert code == 2
+    assert sent == []
+    # Precedence proof: DOCKER_HOST short-circuits context resolution, so no
+    # context was shown or inspected at all.
+    assert not any(argv[:2] == ["docker", "context"] for argv in docker.invocations)
+    _assert_no_mutating_docker(docker)
+
+
+def test_remote_endpoint_via_docker_context_is_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Locality follows the context's ENDPOINT, never its name.
+
+    The context is named `laptop` (sounds local) but resolves to a remote
+    tcp endpoint — the run must refuse it.
+    """
+    docker = make_docker(context_endpoints={"laptop": "tcp://10.0.0.5:2375"})
+    sent: list[str] = []
+    code = run_main(
+        docker,
+        tmp_path,
+        acceptance_runner=_recording_runner(sent),
+        docker_env={"DOCKER_CONTEXT": "laptop"},
+    )
+    assert code == 2
+    assert sent == []
+    # The endpoint was actually inspected (not guessed from the name).
+    assert any(
+        argv[:3] == ["docker", "context", "inspect"] and argv[3] == "laptop"
+        for argv in docker.invocations
+    )
+    assert "remote Docker engine refused" in capsys.readouterr().out
+    _assert_no_mutating_docker(docker)
+
+
+def test_local_engine_endpoints_are_accepted(tmp_path: Path) -> None:
+    """Local unix socket and Windows named pipe engines pass the gate."""
+    for endpoint in ("unix:///var/run/docker.sock", "npipe:////./pipe/docker_engine"):
+        docker = make_docker()
+        sent: list[str] = []
+        code = run_main(
+            docker,
+            tmp_path,
+            acceptance_runner=_recording_runner(sent),
+            docker_env={"DOCKER_HOST": endpoint},
+        )
+        assert code == 0, endpoint
+        assert sent == ["engine-up", "engine-outage", "engine-up"], endpoint
+
+
+def test_api_identity_mismatch_blocks_uploads(tmp_path: Path) -> None:
+    """A container answering on the port but not owned by this run: refuse."""
+    docker = make_docker(
+        api_inspect={
+            "Name": f"/{SAFE_PROJECT}-api-1",
+            "Config": {"Labels": {PBA.COMPOSE_PROJECT_LABEL: "some-other-project"}},
+            "State": {"Running": True},
+            "NetworkSettings": {
+                "Ports": {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8000"}]}
+            },
+        }
+    )
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    assert sent == []  # readiness answered, ownership did not: no uploads
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_api_port_mapping_mismatch_blocks_uploads(tmp_path: Path) -> None:
+    """The binding must be exactly 127.0.0.1:<port> for this run's container."""
+    # Assembled (not a literal) so the security linter does not read this
+    # fixture as an all-interfaces bind in test code.
+    unsafe_host_ip = ".".join(["0"] * 4)
+    docker = make_docker(
+        api_inspect={
+            "Name": f"/{SAFE_PROJECT}-api-1",
+            "Config": {"Labels": {PBA.COMPOSE_PROJECT_LABEL: SAFE_PROJECT}},
+            "State": {"Running": True},
+            "NetworkSettings": {
+                "Ports": {"8000/tcp": [{"HostIp": unsafe_host_ip, "HostPort": "8000"}]}
+            },
+        }
+    )
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    assert sent == []
+    assert_never_targets_production(docker, make_plan())
+
+
+# ---------------------------------------------------- fail-fast (Finding 3)
+def test_config_failure_skips_build_and_dependent_phases(tmp_path: Path) -> None:
+    docker = make_docker(fail_substrings=("config -q",))
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    assert sent == []
+    # No build, no up, no acceptance — only the preflight probes and the
+    # non-destructive cleanup ran.
+    assert not any(" build " in f" {' '.join(argv)} " for argv in docker.invocations)
+    assert not any(" up " in f" {' '.join(argv)} " for argv in docker.invocations)
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_build_failure_skips_bootstrap_and_dependent_phases(tmp_path: Path) -> None:
+    docker = make_docker(fail_substrings=("build clamd",))
+    sent: list[str] = []
+    code = run_main(docker, tmp_path, acceptance_runner=_recording_runner(sent))
+    assert code == 1
+    assert sent == []
+    assert not any("up -d clamd" in " ".join(argv) for argv in docker.invocations)
+    assert not any("up -d db" in " ".join(argv) for argv in docker.invocations)
+    assert any(argv[:2] == ["docker", "compose"] and "down" in argv for argv in docker.invocations)
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+    assert_never_targets_production(docker, make_plan())
+
+
+def test_full_skips_second_bootstrap_when_first_failed(tmp_path: Path) -> None:
+    """--full cannot reach the volume gate when the first bootstrap failed."""
+    docker = make_docker(fail_substrings=("up -d clamd",))
+    code = run_main(docker, tmp_path, ["--full", "--confirm-isolated-test"])
+    assert code == 1
+    # No stop/rm of the engine, no volume deletion, no second bootstrap.
+    assert not any(
+        argv[:2] == ["docker", "compose"] and ("stop" in argv or "rm" in argv)
+        for argv in docker.invocations
+    )
+    assert not any(argv[:3] == ["docker", "volume", "rm"] for argv in docker.invocations)
+
+
+# -------------------------------------------------- report redaction (Finding 4)
+def test_redaction_protects_generated_tokens_but_not_env_values() -> None:
+    """Regression: a short env value (POSTGRES_USER=mafhum) must not corrupt
+    the generated project name, while the same value standalone IS redacted."""
+    env = {"POSTGRES_USER": "mafhum", "SESSION_SECRET": "zz-secret-marker"}
+    text = "project mafhum-clamav-acc-1 owned by mafhum leaked zz-secret-marker"
+    out = PBA.redact_env_values(text, env, protect=("mafhum-clamav-acc-1",))
+    assert "mafhum-clamav-acc-1" in out  # the generated token survives verbatim
+    assert " owned by mafhum " not in out  # the standalone value is redacted
+    assert "zz-secret-marker" not in out
+    assert out.count("***REDACTED***") == 2
+
+
+def test_report_redacts_env_values_on_failure_paths(tmp_path: Path) -> None:
+    """Env-file values echoed by failing docker commands never reach reports."""
+    secret = "zzq-secret-marker-7f3a9b"
+    env_content = ENV_CONTENT.replace(
+        "SESSION_SECRET=not-a-real-secret-either", f"SESSION_SECRET={secret}"
+    )
+    assert secret in env_content
+
+    # Failure path 1: config validation echoes the secret in its stderr.
+    docker = make_docker(
+        fail_substrings=("config -q",), fail_stderr=f"interpolation of {secret} failed"
+    )
+    assert run_main(docker, tmp_path, env_content=env_content) == 1
+    report = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert secret not in report
+    assert "***REDACTED***" in report
+
+    # Failure path 2: the stack up echoes it as well.
+    docker2 = make_docker(fail_substrings=("up -d db api",), fail_stderr=f"invalid value {secret}")
+    assert run_main(docker2, tmp_path, env_content=env_content) == 1
+    report2 = (tmp_path / "acc" / "report.md").read_text(encoding="utf-8")
+    assert secret not in report2
+    assert "***REDACTED***" in report2
 
 
 # ------------------------------------------------------------------- self-audit

@@ -127,28 +127,35 @@ and live-source provenance are **not implemented** in this release.
    `mafhum` are reserved and rejected, including by prefix. Every compose
    command carries an explicit `--project-name` for the isolated project;
    images are built under run-unique tags (the production tags are never
-   rebuilt); the api is published on `127.0.0.1` only, on a port the preflight
-   proves is free (the development stack uses 8000 — pass `--api-port` when it
-   is running), and the acceptance uploads run only after this run's own api
-   answered readiness, so a foreign service squatting the port can never
-   receive them. A preflight aborts on any ambiguity (project-name collision,
-   containers or volumes already carrying the run's label, resource-name
-   collisions, loopback port occupied). By default **no volume is ever
-   deleted** — the isolated project's first `up` *is* the cold bootstrap, and
-   cleanup is `docker compose down` without `-v` (evidence is preserved).
-   `--keep-stack` skips that final `down` and leaves the isolated stack for
-   inspection; the run prints the exact
-   `docker compose --project-name <isolated-project> down` command to remove
-   it afterwards (still without deleting volumes unless you add `-v`
-   yourself). The only volume deletion is the optional second cold bootstrap
-   (`--full`), which additionally requires `--confirm-isolated-test` and a
-   triple gate: the volume was created by this run, its
-   `com.docker.compose.project` label matches the isolated project, and its
-   exact name is re-verified immediately before removal. After cleanup the
-   tool audits every docker command it issued and fails the run if any could
-   have addressed a production resource. This is enforced by
-   `apps/api/tests/test_clamav_acceptance_safety.py` (mocked Docker CLI, no
-   real host needed) on every commit.
+   rebuilt); the api is published on `127.0.0.1` only. A preflight aborts on
+   any ambiguity (project-name collision, containers or volumes already
+   carrying the run's label, resource-name collisions, loopback port
+   occupied) and **refuses remote Docker Engines**: the effective endpoint is
+   resolved the way the docker CLI does (`DOCKER_HOST`, then
+   `DOCKER_CONTEXT`/the persisted context, its endpoint read from
+   `docker context inspect` — never guessed from the context name), and only
+   a local `unix://` socket or Windows `npipe:` named pipe is accepted. The
+   acceptance uploads run only after this run's `up` succeeded, its own api
+   answered readiness, and `docker inspect` proved the api container carries
+   this run's exact name and project label and owns the
+   `127.0.0.1:<port> -> 8000/tcp` binding — so a foreign local service (the
+   development stack uses 8000) can never receive them. Phases fail fast: a
+   failed config validation, image build or cold bootstrap prevents every
+   dependent phase. By default **no volume is ever deleted** — the isolated
+   project's first `up` *is* the cold bootstrap, and cleanup is
+   `docker compose down` without `-v` (evidence is preserved). `--keep-stack`
+   skips that final `down` and prints the exact, fully qualified compose
+   command (project, `-f` files, `--env-file`) that removes the kept stack.
+   Recorded command output is redacted against the env file's values before
+   it reaches the report. The only volume deletion is the optional second
+   cold bootstrap (`--full`), which additionally requires
+   `--confirm-isolated-test` and a triple gate: the volume was created by
+   this run, its `com.docker.compose.project` label matches the isolated
+   project, and its exact name is re-verified immediately before removal.
+   After cleanup the tool audits every docker command it issued and fails
+   the run if any could have addressed a production resource. This is
+   enforced by `apps/api/tests/test_clamav_acceptance_safety.py` (mocked
+   Docker CLI, no real host needed) on every commit.
 
    **Three levels of malware-gate evidence — do not conflate them:**
    - *CI engine tests* (`.github/workflows/production-malware-acceptance.yml`,

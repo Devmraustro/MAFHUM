@@ -177,3 +177,44 @@ Each commit landed exactly once; no rebase, no force-push, no branch deletion.
 **Production-readiness statement:** MAFHUM remains **not production-ready**
 until item 1 (and then 2–4) is executed by the owner. Everything executable
 from this environment has been executed and recorded.
+
+## 8. Final review remediation (2026-10-31, PR #12 follow-up)
+
+The final review of PR #12 raised four findings on the ClamAV acceptance
+tool; all four are remediated on branch `arena/8c435881-mafhum` (PR #12,
+kept open and unmerged):
+
+1. **Engine locality + API ownership proof (blocking).** The tool now
+   resolves the *effective* Docker engine endpoint with CLI precedence
+   (`DOCKER_HOST` over `DOCKER_CONTEXT` over the current context's stored
+   endpoint) and refuses remote engines (anything but `unix://`/`npipe:`)
+   before creating anything — locality is never inferred from a context's
+   name. After readiness, an ownership proof inspects the container that
+   holds the `127.0.0.1:<api-port>` binding: it must be this run's compose
+   project's `api` service, running, with exactly that host binding on
+   `8000/tcp`. A local unrelated service answering readiness can no longer
+   receive acceptance uploads, because uploads additionally require the
+   ownership proof to pass.
+2. **`--keep-stack` reproducibility.** The note now prints the complete
+   manual cleanup command — `docker compose --project-name <isolated
+   project> -f docker-compose.prod.yml --env-file <env> -f <generated
+   override> down` — exactly reproducing the run's configuration.
+3. **Fail-fast sequencing.** Failed config validation, image build, or cold
+   bootstrap now skip every dependent phase (build/up, acceptance uploads,
+   `--full` volume gate) while the non-destructive, isolated cleanup still
+   runs.
+4. **Secret redaction.** Every env-file value is redacted from all captured
+   docker stderr/stdout excerpts before they reach the report or stdout;
+   the tool's own generated tokens (project, containers, volumes, images)
+   are shielded so the cleanup command stays reproducible.
+
+Regression coverage lives in
+`apps/api/tests/test_clamav_acceptance_safety.py` (32 checks: remote engine
+via `DOCKER_HOST`; remote engine + local unrelated API; `DOCKER_HOST`
+overriding `DOCKER_CONTEXT`; remote endpoint via a local-*named* context;
+unix/npipe acceptance; api identity mismatch; port-mapping mismatch; config
+and build failure boundaries; `--full` skip; redaction on two failure
+paths; keep-stack command reproduction). Every failure case asserts the
+acceptance runner was never invoked. The runbook (§3 step 5) documents the
+same safety model. This addendum records code changes only — no
+production-readiness claim is made or implied.
