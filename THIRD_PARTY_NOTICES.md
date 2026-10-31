@@ -23,7 +23,7 @@ as declared dependencies.
 | alembic | 1.20.0 | MIT | Migrations |
 | **psycopg[binary]** | 3.3.6 | **LGPL-3.0-only** | See the note below |
 | python-multipart | 0.0.32 | Apache-2.0 | Multipart upload parsing |
-| pypdf | 6.21.2 | BSD-3-Clause | PDF text extraction |
+| pypdf | 6.21.4 | BSD-3-Clause | PDF text extraction |
 | python-docx | 1.2.0 | MIT | DOCX text extraction |
 | **python-pptx** | 1.0.2 | MIT | Editable PPTX generation (Phase 6); pulls in lxml, Pillow, XlsxWriter |
 | lxml | 6.1.3 | BSD-3-Clause | Pulled in by python-docx |

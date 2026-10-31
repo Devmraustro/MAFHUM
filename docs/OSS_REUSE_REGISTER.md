@@ -12,7 +12,7 @@ version considered — not inferred from popularity or from a package's README.
 
 ## Adopted
 
-### pypdf 6.21.2 — PDF text extraction
+### pypdf 6.21.4 — PDF text extraction
 
 - **License:** BSD-3-Clause (permissive; GitHub reports `NOASSERTION` only because
   the text is the non-canonical variant carrying a name-endorsement clause.
@@ -103,7 +103,7 @@ version considered — not inferred from popularity or from a package's README.
 
 | Need | Decision |
 |---|---|
-| PDF text extraction | pypdf 6.21.2 (BSD-3-Clause) |
+| PDF text extraction | pypdf 6.21.4 (BSD-3-Clause) |
 | DOCX text extraction | python-docx 1.2.0 (MIT) |
 | Scanned-PDF handling | **Detect and report; do not OCR** |
 | Malware scanning | **Not integrated — do not claim it** |
