@@ -93,6 +93,31 @@ class Settings(BaseSettings):
     presentation_max_citations: int = 6
     presentation_max_output_mb: int = 8
 
+    # --- account data export ---------------------------------------------------
+    # A ZIP of the caller's own rows and original blobs. Every one of these caps
+    # is enforced while the archive is built, not afterwards: an account at the
+    # upload quota must not be able to turn one GET into an unbounded read.
+    export_max_files: int = 200
+    export_max_file_bytes_mb: int = 32
+    export_max_total_bytes_mb: int = 128
+    export_spool_memory_mb: int = 4
+    export_max_seconds: float = 60.0
+
+    # --- audit-log retention ---------------------------------------------------
+    # 0 means "keep everything" (the historical behaviour). A positive value is
+    # a retention *window in days* applied only to audit_events rows by an
+    # explicitly invoked, bounded purge command; nothing purges automatically.
+    audit_retention_days: int = 0
+    audit_purge_batch_size: int = 1000
+    audit_purge_max_batches: int = 10
+
+    # --- scoped monitoring -----------------------------------------------------
+    # Empty disables bearer-token access to /admin/metrics entirely (the admin
+    # session path still works). A non-empty value must be a high-entropy secret
+    # supplied by the operator; it grants access to metrics ONLY, never to any
+    # other admin route or to user content.
+    metrics_scrape_token: str = ""
+
     # --- misc -----------------------------------------------------------------
     request_timeout_seconds: int = 30
     default_page_size: int = 20
@@ -146,6 +171,34 @@ class Settings(BaseSettings):
             raise ValueError("max_archive_compression_ratio must be positive")
         return v
 
+    @field_validator(
+        "export_max_files",
+        "export_max_file_bytes_mb",
+        "export_max_total_bytes_mb",
+        "export_spool_memory_mb",
+        "audit_purge_batch_size",
+        "audit_purge_max_batches",
+    )
+    @classmethod
+    def _positive_bound(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("bounded-operation settings must be >= 1")
+        return v
+
+    @field_validator("audit_retention_days")
+    @classmethod
+    def _non_negative_retention(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("audit_retention_days must be >= 0 (0 keeps everything)")
+        return v
+
+    @field_validator("export_max_seconds")
+    @classmethod
+    def _positive_deadline(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("export_max_seconds must be positive")
+        return v
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
@@ -158,8 +211,22 @@ class Settings(BaseSettings):
     def max_total_bytes_per_user(self) -> int:
         return self.max_total_bytes_per_user_mb * 1024 * 1024
 
+    @property
+    def export_max_file_bytes(self) -> int:
+        return self.export_max_file_bytes_mb * 1024 * 1024
+
+    @property
+    def export_max_total_bytes(self) -> int:
+        return self.export_max_total_bytes_mb * 1024 * 1024
+
     def assert_production_ready(self) -> None:
-        """Refuse to boot in production with development defaults."""
+        """Refuse to boot in production with development defaults.
+
+        The malware and metrics checks are *preconditions*, not capability
+        claims: passing them does not prove a daemon is reachable or that a
+        scraper is configured. It proves the deployment cannot silently fall
+        back to the unscanned / unauthenticated-metrics state.
+        """
         if self.app_env != "production":
             return
         problems: list[str] = []
@@ -169,6 +236,12 @@ class Settings(BaseSettings):
             problems.append("COOKIE_SECURE must be true in production")
         if "localhost" in self.database_url:
             problems.append("DATABASE_URL must not point at localhost in production")
+        if not self.malware_scan_required:
+            problems.append("MALWARE_SCAN_REQUIRED must be true in production")
+        elif not (self.clamd_host or self.clamd_unix_path):
+            problems.append("CLAMD_HOST or CLAMD_UNIX_PATH must be set in production")
+        if len(self.metrics_scrape_token) < 32:
+            problems.append("METRICS_SCRAPE_TOKEN must be at least 32 characters in production")
         if problems:
             raise RuntimeError("Insecure production configuration: " + "; ".join(problems))
 

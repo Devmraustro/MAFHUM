@@ -1,0 +1,45 @@
+# Alertmanager configuration — DELIBERATELY HAS NO DELIVERY DESTINATION.
+#
+# Alerts are accepted, grouped and visible in the Alertmanager UI/API, but they
+# are NOT sent to a human until the owner supplies a destination and its
+# credentials. Shipping a fake Slack webhook or a made-up SMTP host would create
+# a monitoring system that looks configured while nothing is delivered.
+#
+# To finish this, add one of the following under `receivers` and reload
+# Alertmanager (see docs/MONITORING.md):
+#
+#   email_configs:
+#     - to: "ops@<owner-domain>"
+#       from: "alerts@<owner-domain>"
+#       smtp_smarthost: "<owner-smtp>:587"
+#       smtp_auth_username: "<from-a-secret-store>"
+#       smtp_auth_password: "<from-a-secret-store>"
+#   webhook_configs:
+#     - url: "https://<owner-webhook-endpoint>"
+#
+# No credential, address, webhook or phone number is stored in this repository.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: unconfigured
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - receiver: unconfigured
+      matchers:
+        - severity =~ "critical|warning"
+
+inhibit_rules:
+  # A dead API makes every other rule noisy; suppress them while it is down.
+  - source_matchers:
+      - alertname = "MafhumApiDown"
+    target_matchers:
+      - severity = "warning"
+    equal: ["service"]
+
+receivers:
+  - name: unconfigured

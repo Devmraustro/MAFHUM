@@ -137,14 +137,17 @@ HTTP — not mocks:
    no text is extracted. OCRmyPDF was evaluated and rejected for the default
    install because it requires the `tesseract` binary plus language packs —
    see [`docs/OSS_REUSE_REGISTER.md`](docs/OSS_REUSE_REGISTER.md).
-2. **No antivirus engine ships.** MAFHUM integrates the ClamAV `clamd` daemon
-   over its socket protocol (`CLAMD_UNIX_PATH` or `CLAMD_HOST`/`CLAMD_PORT`),
-   with a fail-closed switch (`MALWARE_SCAN_REQUIRED=true` rejects uploads when
-   no engine vouches for them). Gate A proved detection on 2026-10-26 against a
-   real engine with fresh signatures in the acceptance environment, but no
-   engine or signature database is bundled. Until an operator provisions
-   `clamd` in their own deployment and verifies it with the EICAR file,
-   **do not describe that deployment as scanning for malware**.
+2. **No engine is bundled in the Python package; production now wires one.**
+   MAFHUM speaks the ClamAV `clamd` socket protocol (`CLAMD_UNIX_PATH` or
+   `CLAMD_HOST`/`CLAMD_PORT`) with a fail-closed switch
+   (`MALWARE_SCAN_REQUIRED=true` rejects uploads when no engine vouches for
+   them). The **production** Compose blueprint builds a real `clamd` service
+   (`deploy/clamd/`), waits for a SCAN-based healthcheck and hard-codes the
+   fail-closed flag; a plain development install still configures no engine.
+   Gate A and `production-malware-acceptance.yml` verified real EICAR detection
+   on CI runners. **No owner host has been verified.** Until an operator runs
+   that engine on their own deployment and repeats the EICAR check, do not
+   describe that deployment as scanning for malware.
    `GET /api/v1/documents/limits` discloses the live
    `malware_scanning_available` state.
 3. **The processing worker pool is per-process, with one worker per database.**
@@ -160,16 +163,19 @@ HTTP — not mocks:
    or punctuation may not round-trip perfectly. This is a limitation of PDF text
    extraction, and it is documented rather than papered over.
 
-6. **Monitoring is minimal.** A free scheduled uptime probe checks the deployed
-   web origin (`docs/MONITORING.md`), and admin metrics exist as a scrape source
-   (`GET /api/v1/admin/metrics`). But there is no Prometheus scrape credential,
-   dashboard, log aggregation or external alerting — GitHub Actions failure
-   notifications are the only alert channel.
-7. **No visual render check for presentations.** The generated decks are
-   validated as OOXML (ZIP integrity, native editable text/chart/table shapes,
-   RTL markers, mixed-script preservation), but no LibreOffice or PowerPoint is
-   available in the verification environment. Open the `.pptx` in a real
-   presentation app before relying on its appearance.
+6. **Monitoring is configured but not deployed.** A free scheduled uptime probe
+   checks the deployed web origin. `GET /api/v1/admin/metrics` now accepts a
+   scoped bearer token (`METRICS_SCRAPE_TOKEN`, mandatory in production) and
+   `deploy/prometheus/` provides a scrape config and alert rules. **No
+   Prometheus/Alertmanager stack is running, no alert destination is configured,
+   and there is no dashboard or log aggregation** — GitHub Actions failure
+   notifications remain the only delivered alert. See `docs/MONITORING.md`.
+7. **Headless render is checked in CI; PowerPoint is not.** The generated decks
+   are validated as OOXML, and `.github/workflows/pptx-render.yml` converts both
+   benchmark decks with LibreOffice Impress, rasterises every page and checks
+   page count, non-blank pages and Arabic glyphs. That is **not** PowerPoint
+   visual parity: open the `.pptx` in Microsoft PowerPoint on Windows before
+   relying on its appearance. See `docs/PPTX_BENCHMARK.md`.
 
 See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and
 [`docs/DATA_POLICY.md`](docs/DATA_POLICY.md) for the security and data-handling

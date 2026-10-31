@@ -70,11 +70,18 @@ results before and after).
 
 ## What this benchmark does NOT prove
 
-- **No pixel-level render was inspected.** Neither LibreOffice nor PowerPoint is
-  installed in this sandbox (`command -v libreoffice soffice` → absent). A human
-  must open both `.pptx` files in a presentation application and confirm Arabic
-  shaping, bullet hanging, chart labels and table column order before any claim
-  about visual fidelity.
+- **The local sandbox still has no renderer** (`command -v libreoffice soffice`
+  → absent), so the numbers above are structural, not visual. A real pixel-level
+  render is now performed in CI by
+  `.github/workflows/pptx-render.yml`: it installs LibreOffice Impress plus
+  Arabic fonts, converts both decks to PDF, rasterises every page at 40 dpi with
+  `pdftoppm`, and `apps/api/tools/check_pptx_render.py` asserts the PDF has one
+  page per slide, every page is non-blank, Arabic codepoints survive text
+  extraction and no U+FFFD tofu glyph appears. That is **headless LibreOffice
+  evidence only**. A human must still open both `.pptx` files in Microsoft
+  PowerPoint on Windows to confirm shaping, bullet hanging, chart labels and
+  table column order before any claim about PowerPoint visual parity — font
+  substitution and layout engine differences are not covered by CI.
 - The citations are synthetic by design. No real publisher, law or page number
   was used, so this is not evidence about retrieval quality.
 - Fonts are not embedded. A machine without an Arabic-capable Arial fallback may

@@ -8,9 +8,21 @@
 
 ## 0. Implementation status (verified)
 
-Phases 0–3 are implemented and tested. Phases 4–7 are not started. See
-[`ROADMAP.md`](ROADMAP.md) for phase detail and
-[`THREAT_MODEL.md`](THREAT_MODEL.md) for residual risk.
+**Phases 0–7 are implemented and tested.** Last merged baseline: `main` =
+`2a15f0c`, CI run `40594776911` (4/4 jobs), 897 backend tests and 107 web tests.
+Sections 1–12 below are the *original Phase 0 plan*, preserved as a design
+record; where they state a limitation that has since been closed, this section
+and the linked reports are authoritative.
+
+The project is **not complete**: there is no public API origin, no production
+deployment, no production encryption at rest, and no delivered alerting. The
+2026-10-28 change set adds a production ClamAV service and fail-closed policy,
+bounded account export, configurable audit retention, an encryption design
+(interfaces only), scoped metrics auth with Prometheus/alert configuration, a
+security CI gate, a headless LibreOffice render gate, and Windows portability.
+See [`ROADMAP.md`](ROADMAP.md) for phase detail,
+[`STATUS_REPORT_2026-10-27.md`](STATUS_REPORT_2026-10-27.md) for merged evidence
+and [`THREAT_MODEL.md`](THREAT_MODEL.md) for residual risk.
 
 ```
 apps/api/    FastAPI application
@@ -31,10 +43,16 @@ apps/api/    FastAPI application
         service.py         upload saga with compensating cleanup
         worker.py          bounded pool, FOR UPDATE SKIP LOCKED, stale recovery
       sources/             catalog with provenance, never fabricates
+      research/            grounded lexical research, insufficient_evidence
+      study/               tutoring, scheduling, flashcards, saved research
+      presentations/       editable RTL PPTX (python-pptx), validation
+      audit/               append-only events, aggregates, bounded retention
+      account/             bounded, ownership-isolated data export
       deletion/            account deletion, resumable, DeletionReport
-    api/v1/                health, auth, projects, documents, sources, account
-  alembic/                 0001_identity, 0002_documents
-  tests/                   435 tests against a real PostgreSQL
+    api/v1/                health, auth, projects, documents, sources,
+                           research, study, presentations, account, admin
+  alembic/                 0001–0009 (identity … admin_audit)
+  tests/                   backend pytest suite against a real PostgreSQL
 
 apps/web/    Next.js 16 + React 19, TypeScript strict
   src/app/                 Arabic-first RTL, lang="ar" dir="rtl"
@@ -42,6 +60,9 @@ apps/web/    Next.js 16 + React 19, TypeScript strict
   src/components/          header, alerts, status badge, confirm dialog
 
 tools/e2e/                 live end-to-end verification over real HTTP
+tools/acceptance/          production Compose contract + real malware acceptance
+tools/security_baseline.py  deterministic, no-network CI security gate
+deploy/                    prod Compose, Caddyfile, clamd/, prometheus/, env template
 ```
 
 ### Where the implementation diverged from this plan
@@ -49,15 +70,17 @@ tools/e2e/                 live end-to-end verification over real HTTP
 | Plan said | Reality | Why |
 |---|---|---|
 | Docling adapter (§7) | pypdf + python-docx | Docling declares 184 dependencies and downloads models at runtime. See [`OSS_REUSE_REGISTER.md`](OSS_REUSE_REGISTER.md) |
-| Docker Compose (§10, Phase 1) | Not provided | Docker is unavailable in the verification environment; an untested Compose file would be a claim without evidence |
+| Docker Compose (§10, Phase 1) | `docker-compose.yml` (dev) and `deploy/docker-compose.prod.yml` (blueprint) both present | The dev stack was built, started and exercised on CI (rehearsal `40530008866`, later `40593579965`). The prod blueprint is validated by `docker compose config` and `tools/acceptance/prod_compose_contract.py` but has **not** been deployed to a real host |
 | Deterministic mock AI provider (§6) | `ENABLE_AI_GATEWAY=false`, no provider code | No Phase 4 retrieval exists to feed it; a mock would risk being mistaken for a real integration |
 | Scanned-document benchmark (§10, Phase 3) | Detect and report only | There is no OCR. See [ADR 0003](ADR/0003-no-ocr-no-malware-scanning.md) |
 
 ### Operational constraints that are load-bearing
 
-- **One API process.** Quotas, the login throttle and the worker pool are
-  process-local. Scaling out requires moving enforcement into the database first.
-  See [ADR 0004](ADR/0004-bounded-in-process-worker.md).
+- **One processing worker per database, not one API process.** Document quotas
+  and the login throttle are enforced **in the database** and hold across API
+  replicas. Only the in-process worker pool is single-writer, guarded by a
+  PostgreSQL advisory lock; set `PROCESSING_WORKER_ENABLED=false` on extra
+  replicas. See [ADR 0004](ADR/0004-bounded-in-process-worker.md).
 - **The browser never learns the API origin.** The frontend issues only relative
   `/api/v1/...` requests, which `next.config.mjs` proxies. Cookies stay
   same-origin, so `SameSite` and the CSRF double-submit work without CORS.
@@ -181,7 +204,11 @@ Approved source adapters, lexical retrieval, evidence-pack schema, cite resolver
 Simplification, alternate examples, comprehension questions, TD problem statement/outline. AI output clearly labelled draft.
 
 ### Phase 6 — editable presentations
-Implemented 2026-10-27 with a `DeckGenerator` protocol. Production uses python-pptx (MIT); PptxGenJS 4.0.1 is measured as a comparison generator on the same six-slide Arabic/French fixture; Marp was rejected as non-editable/experimental. A 6-slide benchmark deck with bullets, two verbatim quotations, a chart, a table, footers and a bibliography is validated for ZIP integrity, native editable objects, paragraph/run/table RTL and mixed-script preservation (`docs/PPTX_BENCHMARK.md`, `docs/ADR/0005-pptx-generator.md`). **Pixel-level RTL rendering in PowerPoint/LibreOffice remains unverified** because neither application is installed in the verification environment.
+Implemented 2026-10-27 with a `DeckGenerator` protocol. Production uses python-pptx (MIT); PptxGenJS 4.0.1 is measured as a comparison generator on the same six-slide Arabic/French fixture; Marp was rejected as non-editable/experimental. A 6-slide benchmark deck with bullets, two verbatim quotations, a chart, a table, footers and a bibliography is validated for ZIP integrity, native editable objects, paragraph/run/table RTL and mixed-script preservation (`docs/PPTX_BENCHMARK.md`, `docs/ADR/0005-pptx-generator.md`). A **headless LibreOffice** render gate now runs in CI
+   (`.github/workflows/pptx-render.yml`): it converts both decks to PDF,
+   rasterises every page with `pdftoppm` and checks page count, non-blank pages
+   and Arabic glyphs. **Microsoft PowerPoint visual parity remains unverified**
+   and requires a Windows host (see `docs/WINDOWS_SETUP.md`).
 
 ### Phase 7 — admin, quotas and deployment rehearsal
 Roles, abuse controls, redacted logs/metrics, backups and restore drill, data deletion, deployment limits and rollback guide. Confirm free-tier limits from current docs; no promise of free 24/7 GPU inference.

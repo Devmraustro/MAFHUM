@@ -11,6 +11,7 @@ filesystem.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -28,6 +29,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from mafhum_api.config import Settings
@@ -37,6 +39,33 @@ from mafhum_api.main import create_app
 warnings.filterwarnings("ignore", message=".*XDG_RUNTIME_DIR.*")
 
 TEST_DB_NAME = "mafhum_test"
+
+
+def database_url_with_name(url: str, name: str) -> str:
+    """Return ``url`` with only its database component replaced by ``name``.
+
+    pgserver produces two different URL shapes: a Unix-socket URL with a query
+    string on POSIX (``.../postgres?host=/tmp/...``) and a plain TCP URL on
+    Windows (``.../postgres``). The old code used
+    ``url.replace("/mafhum_test?", "/postgres?")``, which only matched the first
+    shape and silently returned the unchanged URL on Windows — the backup tests
+    then targeted the wrong database.
+
+    ``make_url`` is used to PARSE and validate the database component, but the
+    replacement is done on the original string: ``URL.render_as_string``
+    percent-encodes the socket path in ``?host=`` (``/tmp/...`` -> ``%2Ftmp``),
+    which would break a genuine Unix-socket connection.
+    """
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"unsafe database name: {name!r}")
+    parsed = make_url(url)
+    if not parsed.database:
+        raise ValueError(f"URL has no database component: {url!r}")
+    head, separator, query = url.partition("?")
+    suffix = f"/{parsed.database}"
+    if not head.endswith(suffix):
+        raise ValueError(f"cannot locate database component in URL: {url!r}")
+    return f"{head[: -len(suffix)]}/{name}{separator}{query}"
 
 
 # --------------------------------------------------------------- postgres server
@@ -58,15 +87,8 @@ def postgres_url() -> Iterator[str]:
             connection.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
     engine.dispose()
 
-    # Rename the target database in the admin URI. The URI shape differs by
-    # platform: pgserver yields a unix-socket URL with a query string on
-    # POSIX (`.../postgres?host=...`) and a plain TCP URL on Windows
-    # (`.../postgres`). Rewriting only `/postgres?` silently failed on the
-    # latter, leaving the whole suite pointed at the `postgres` database.
-    head, sep, query = admin_uri.partition("?")
-    if head.endswith("/postgres"):
-        head = head[: -len("/postgres")] + f"/{TEST_DB_NAME}"
-    yield head + sep + query
+    # Portable database-name substitution — see database_url_with_name().
+    yield database_url_with_name(admin_uri, TEST_DB_NAME)
 
     shutil.rmtree(data_dir, ignore_errors=True)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -155,6 +156,36 @@ def admin_user(
 AdminUser = Annotated[User, Depends(admin_user)]
 
 
+def metrics_access(request: Request, context: Context, db: DbSession) -> User | None:
+    """Authorise ONLY the aggregate metrics endpoint.
+
+    Two disjoint principals:
+
+    * A **scoped bearer token** (``METRICS_SCRAPE_TOKEN``) returns ``None``: a
+      machine principal that can read counters and nothing else. It is accepted
+      on this route only — no other endpoint depends on this function.
+    * Otherwise the normal admin **session** is required, exactly as before.
+
+    A request that supplies an ``Authorization: Bearer`` header is NEVER allowed
+    to fall back to a cookie session: a wrong token must fail loudly instead of
+    silently succeeding because the caller happened to have an admin cookie.
+    Comparison is constant-time. No token is accepted when the setting is empty,
+    so a deployment that never configured monitoring does not grow a secret
+    backdoor.
+    """
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        supplied = header[7:].strip()
+        expected = context.settings.metrics_scrape_token
+        if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+            raise AuthenticationError()
+        return None
+    return admin_user(current_user(request, context, db), context, db)
+
+
+MetricsAccess = Annotated[User | None, Depends(metrics_access)]
+
+
 # ------------------------------------------------------------------------ CSRF
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -269,6 +300,7 @@ __all__ = [
     "CsrfGuardAnnotated",
     "CurrentUser",
     "DbSession",
+    "MetricsAccess",
     "Page",
     "PageSize",
     "RateLimitedError",

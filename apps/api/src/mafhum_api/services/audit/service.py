@@ -21,14 +21,15 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from mafhum_api.core.request_context import get_request_id
-from mafhum_api.db.base import Database
+from mafhum_api.db.base import Database, execute_rowcount
 from mafhum_api.db.models import (
     AuditEvent,
     AuditOutcome,
@@ -48,6 +49,8 @@ ACTIONS: frozenset[str] = frozenset(
         "auth_login_failed",
         "auth_logout",
         "account_deleted",
+        "account_exported",
+        "audit_events_purged",
         "document_uploaded",
         "document_deleted",
         "presentation_created",
@@ -65,6 +68,30 @@ _ALLOWED_DETAIL_KEYS: frozenset[str] = frozenset({"reason", "resource", "status"
 _MAX_DETAIL_CHARS = 120
 _MAX_PAGE_SIZE = 100
 DENIAL_WINDOW_SECONDS = 60
+
+
+@dataclass(frozen=True, slots=True)
+class PruneResult:
+    """Outcome of one bounded retention run. Never a destructive surprise."""
+
+    deleted: int
+    batches: int
+    truncated: bool
+    cutoff: datetime | None
+    retention_days: int
+    reason: str
+    dry_run: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "deleted": self.deleted,
+            "batches": self.batches,
+            "truncated": self.truncated,
+            "cutoff": self.cutoff.isoformat() if self.cutoff else None,
+            "retention_days": self.retention_days,
+            "reason": self.reason,
+            "dry_run": self.dry_run,
+        }
 
 
 def _safe_details(details: dict[str, object] | None) -> dict[str, object]:
@@ -175,6 +202,110 @@ class AuditService:
                 session.commit()
         except Exception:  # audit must never break the request
             logger.error("audit record failed", extra={"event": "audit_write_failed"})
+
+    # -------------------------------------------------------------- retention
+    def prune(
+        self,
+        database: Database,
+        *,
+        retention_days: int,
+        batch_size: int = 1000,
+        max_batches: int = 10,
+        now: datetime | None = None,
+        dry_run: bool = False,
+    ) -> PruneResult:
+        """Delete old audit rows in bounded, independently committed batches.
+
+        Deliberately NOT automatic. Retention is a legal/business decision, so
+        nothing in request handling or startup calls this. An operator runs the
+        CLI (default: dry run) after confirming the policy and any legal hold.
+
+        Safety properties:
+        * ``retention_days == 0`` is a no-op — the historical "keep forever"
+          behaviour is preserved until a policy is explicitly configured.
+        * Only ``audit_events`` rows older than the cutoff are touched. There is
+          no cascade, no TRUNCATE and no foreign key to a dependent table.
+        * Each batch is its own short transaction, capped at ``batch_size``;
+          ``max_batches`` caps the whole run. A large backlog therefore needs
+          several scheduled runs rather than one long lock.
+        * A dry run answers "how many would this batch remove" without deleting.
+        * The purge itself is audited, so an operator cannot silently erase the
+          trail. That row is written after the cutoff and survives the next run.
+        """
+        if retention_days < 0:
+            raise ValueError("retention_days must be >= 0")
+        if batch_size < 1 or max_batches < 1:
+            raise ValueError("batch_size and max_batches must be >= 1")
+        if retention_days == 0:
+            return PruneResult(
+                deleted=0,
+                batches=0,
+                truncated=False,
+                cutoff=None,
+                retention_days=0,
+                reason="retention_disabled",
+                dry_run=dry_run,
+            )
+
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+        deleted = 0
+        batches = 0
+        for _ in range(max_batches):
+            with database.unit_of_work() as session:
+                candidates = (
+                    select(AuditEvent.id)
+                    .where(AuditEvent.created_at < cutoff)
+                    .order_by(AuditEvent.created_at)
+                    .limit(batch_size)
+                )
+                if dry_run:
+                    removed = int(
+                        session.scalar(
+                            select(func.count())
+                            .select_from(AuditEvent)
+                            .where(AuditEvent.created_at < cutoff)
+                        )
+                        or 0
+                    )
+                    removed = min(removed, batch_size)
+                else:
+                    removed = execute_rowcount(
+                        session, delete(AuditEvent).where(AuditEvent.id.in_(candidates))
+                    )
+            batches += 1
+            deleted += removed
+            if dry_run or removed < batch_size:
+                break
+
+        with database.session() as session:
+            remaining = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(AuditEvent)
+                    .where(AuditEvent.created_at < cutoff)
+                )
+                or 0
+            )
+        truncated = remaining > 0
+
+        if not dry_run:
+            with database.unit_of_work() as session:
+                self.record(
+                    session,
+                    action="audit_events_purged",
+                    target_type="audit_event",
+                    details={"count": deleted, "status": "truncated" if truncated else "ok"},
+                )
+
+        return PruneResult(
+            deleted=deleted,
+            batches=batches,
+            truncated=truncated,
+            cutoff=cutoff,
+            retention_days=retention_days,
+            reason="ok" if not truncated else "batch_limit_reached",
+            dry_run=dry_run,
+        )
 
     # ------------------------------------------------------------------ reads
     def list_events(
@@ -321,4 +452,4 @@ def event_to_dict(event: AuditEvent) -> dict[str, Any]:
     }
 
 
-__all__ = ["ACTIONS", "AuditService", "event_to_dict"]
+__all__ = ["ACTIONS", "AuditService", "PruneResult", "event_to_dict"]

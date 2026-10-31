@@ -1,0 +1,143 @@
+name: PPTX render — headless LibreOffice + Arabic/RTL
+
+# The structural pre-flight in ci.yml proves the OOXML is well formed. It cannot
+# prove that a slide is actually visible. This workflow installs a real renderer
+# and rasterises both benchmark decks, then checks page count, non-blank pages,
+# Arabic codepoints and missing-glyph substitution.
+#
+# SCOPE: headless LibreOffice, NOT Microsoft PowerPoint. PowerPoint visual parity
+# remains a manual Windows task (see the Z Code handoff).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/api/tools/check_pptx_render.py"
+      - "apps/api/tools/check_pptx_visual.py"
+      - "apps/api/tools/benchmark_pptx.py"
+      - "apps/api/src/mafhum_api/services/presentations/**"
+      - "apps/slides/**"
+      - "docs/PPTX_BENCHMARK.md"
+      - ".github/workflows/pptx-render.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/tools/check_pptx_render.py"
+      - "apps/api/tools/check_pptx_visual.py"
+      - "apps/api/tools/benchmark_pptx.py"
+      - "apps/api/src/mafhum_api/services/presentations/**"
+      - "apps/slides/**"
+      - ".github/workflows/pptx-render.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pptx-render-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    name: Build decks, render, rasterise, verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a real renderer and Arabic fonts
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libreoffice-impress \
+            poppler-utils \
+            fonts-noto-core \
+            fonts-freefont-ttf \
+            fonts-kacst
+          soffice --version
+          pdfinfo -v 2>&1 || true
+          # Avoid `| head` under `set -o pipefail`: a truncated producer exits
+          # with SIGPIPE (141) and would fail the whole step.
+          fc-list :lang=ar family > /tmp/mafhum-arabic-fonts.txt || true
+          head -8 /tmp/mafhum-arabic-fonts.txt || true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/slides/package-lock.json
+
+      - name: Install Python and Node generators
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install python-pptx==1.0.2
+          npm ci --no-audit --no-fund --prefix apps/slides
+
+      - name: Generate both benchmark decks from the same DeckSpec
+        run: |
+          set -euo pipefail
+          PYTHONPATH=apps/api/src python apps/api/tools/benchmark_pptx.py
+          ls -l artifacts/pptx-benchmark/
+
+      - name: Structural pre-flight must still pass
+        run: |
+          set -euo pipefail
+          PYTHONPATH=apps/api/src python apps/api/tools/check_pptx_visual.py \
+            artifacts/pptx-benchmark/benchmark_python.pptx --rtl
+          PYTHONPATH=apps/api/src python apps/api/tools/check_pptx_visual.py \
+            artifacts/pptx-benchmark/benchmark_pptxgenjs.pptx --rtl
+
+      - name: Convert both decks to PDF with headless LibreOffice
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/pptx-render
+          engine="$(soffice --version 2>&1)"
+          printf '%s\n' "$engine" | tee artifacts/pptx-render/engine.txt
+          timeout 300 soffice \
+            -env:UserInstallation=file:///tmp/mafhum-lo-profile \
+            --headless --norestore --convert-to pdf \
+            --outdir artifacts/pptx-render \
+            artifacts/pptx-benchmark/benchmark_python.pptx \
+            artifacts/pptx-benchmark/benchmark_pptxgenjs.pptx
+          test -s artifacts/pptx-render/benchmark_python.pdf
+          test -s artifacts/pptx-render/benchmark_pptxgenjs.pdf
+          pdfinfo artifacts/pptx-render/benchmark_python.pdf | grep '^Pages:'
+          pdfinfo artifacts/pptx-render/benchmark_pptxgenjs.pdf | grep '^Pages:'
+
+      - name: Rasterise and verify every page
+        run: |
+          set -euo pipefail
+          engine="$(cat artifacts/pptx-render/engine.txt)"
+          for deck in benchmark_python benchmark_pptxgenjs; do
+            echo "=== $deck ==="
+            pdf="artifacts/pptx-render/${deck}.pdf"
+            txt="artifacts/pptx-render/${deck}.txt"
+            out="artifacts/pptx-render/${deck}-pages"
+            mkdir -p "$out"
+            pdftotext -layout "$pdf" "$txt"
+            # 40 dpi keeps the raster small while still making a blank page
+            # trivially distinguishable from one containing text/shapes.
+            pdftoppm -r 40 -gray "$pdf" "$out/page"
+            PYTHONPATH=apps/api/src python apps/api/tools/check_pptx_render.py \
+              --pptx "artifacts/pptx-benchmark/${deck}.pptx" \
+              --pdf "$pdf" \
+              --text "$txt" \
+              --pgm-dir "$out" \
+              --require-arabic \
+              --engine "$engine"
+          done
+          echo "PASS: both decks rendered to real, non-blank Arabic pages"
+
+      - name: Upload render evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pptx-render-evidence
+          path: artifacts/pptx-render/
+          if-no-files-found: warn
+          retention-days: 14

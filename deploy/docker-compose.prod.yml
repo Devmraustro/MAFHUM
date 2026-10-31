@@ -13,12 +13,44 @@
 #     bound to public ports; db/api/web stay on the internal network.
 #   * Blob storage and PostgreSQL data are named volumes on the host, so a
 #     container restart does not erase user data. Back them up together.
-#   * app_env=production; assert_production_ready() refuses insecure settings.
+#   * app_env=production; assert_production_ready() refuses insecure settings —
+#     including MALWARE_SCAN_REQUIRED=false, a missing clamd address and a
+#     missing METRICS_SCRAPE_TOKEN.
+#   * clamd is a real, separately built ClamAV daemon with a healthcheck that
+#     performs an actual SCAN. api waits for `service_healthy`, so the stack
+#     cannot come up in the "scanning required but no engine" state.
 #   * All secrets come from the environment (or a secrets manager), never here.
 
 name: mafhum-prod
 
 services:
+  # Real ClamAV engine. The image is built from deploy/clamd so the daemon
+  # configuration, signature bootstrap, refresh loop and SCAN-based healthcheck
+  # are all reviewable in this repository. It is NOT published to a public port:
+  # only api reaches it over the internal network.
+  clamd:
+    build:
+      context: ./clamd
+      dockerfile: Dockerfile
+    image: mafhum-clamd:0.3.0
+    restart: unless-stopped
+    expose:
+      - "3310"
+    volumes:
+      - clamd_db:/var/lib/clamav
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    # Signature loading takes minutes on a small host (freshclam download plus
+    # clamd's own load). The healthcheck, not a fixed sleep, decides readiness.
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/mafhum-clamd-healthcheck.sh"]
+      interval: 15s
+      timeout: 20s
+      retries: 40
+      start_period: 900s
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -80,6 +112,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      clamd:
+        condition: service_healthy
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER must be set}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-mafhum}
@@ -88,8 +122,17 @@ services:
       # Must be the public HTTPS origin the browser uses, not the internal host.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set}
       STORAGE_ROOT: /var/lib/mafhum/storage
-      MALWARE_SCAN_REQUIRED: ${MALWARE_SCAN_REQUIRED:-false}
-      CLAMD_UNIX_PATH: ${CLAMD_UNIX_PATH:-}
+      # Fail-closed is mandatory in production. assert_production_ready() refuses
+      # to boot if either this flag or the daemon address is missing.
+      MALWARE_SCAN_REQUIRED: "true"
+      CLAMD_HOST: clamd
+      CLAMD_PORT: "3310"
+      CLAMD_TIMEOUT_SECONDS: "10.0"
+      # Scoped, metrics-only bearer credential. Never a session secret, never a
+      # database password; see deploy/prometheus/ and docs/MONITORING.md.
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:?METRICS_SCRAPE_TOKEN must be set}
+      # Retention is a policy input, not a default that silently deletes rows.
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-0}
       MAFHUM_RUN_MIGRATIONS: "true"
       PROCESSING_WORKER_ENABLED: "true"
     volumes:
@@ -124,6 +167,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-mafhum}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-mafhum}"]
       interval: 10s
@@ -135,5 +180,8 @@ services:
 volumes:
   pgdata:
   storage:
+  # ClamAV signature databases. Backing this up is optional (freshclam can
+  # rebuild it), but keeping it avoids a cold download on every container start.
+  clamd_db:
   caddy_data:
   caddy_config:

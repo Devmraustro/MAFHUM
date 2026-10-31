@@ -29,10 +29,17 @@ speaks the clamd `zINSTREAM` socket protocol, so an operator who points
 verdict persisted on the document and `malware_scan_required` able to fail the
 upload closed. A default install still configures no engine and still scans nothing.
 
-The distinction to hold on to: **the fail-closed policy and the protocol are
-verified; detection is not.** No ClamAV engine or signature database was installable
-in this environment, so "this deployment detects malware" is a claim only the
-operator who configures and verifies an engine may make.
+The distinction to hold on to: **the protocol, the fail-closed policy and real
+engine detection in the acceptance environment are verified; no particular
+deployment is verified until its own engine is probed.** The development sandbox
+has no ClamAV, but GitHub-hosted runners do: Gate A installs `clamav-daemon`,
+refreshes signatures with `freshclam`, starts a real `clamd`, confirms the EICAR
+verdict at engine level and then confirms the API rejects the upload. Since
+2026-10-28 the production Compose blueprint also ships a real ClamAV service
+(`deploy/clamd/`) with a SCAN-based healthcheck, and
+`.github/workflows/production-malware-acceptance.yml` exercises clean, EICAR and
+engine-outage cases against it. "This deployment detects malware" still requires
+the operator to verify *their* engine and signature freshness.
 
 ### What the system actually does
 
@@ -86,40 +93,40 @@ The absence is stated by the code, not merely implied by a gap:
 
 ClamAV itself is actively maintained by Cisco Talos (1.4.x LTS and 1.5.x current).
 
-### Blocker
+### Historical blocker (2026-10-23) — resolved on CI
 
-No scanner could be installed or exercised here. Verified absent:
+The original assessment ran in a sandbox with no ClamAV (`command -v clamd
+clamscan clamdscan freshclam yara yarac` returned absent for all) and no way to
+provision a signature database. **That limitation applied to the development
+sandbox only**, not to the product. It was resolved on GitHub-hosted runners:
+staging Gate A installs a real engine and signatures, and
+`.github/workflows/production-malware-acceptance.yml` builds
+`deploy/clamd/Dockerfile`, waits for a SCAN-based healthcheck, verifies EICAR at
+engine level and drives clean / EICAR / engine-outage uploads through the API.
 
-```
-$ command -v clamd clamscan clamdscan freshclam yara yarac
-clamd: absent   clamscan: absent   clamdscan: absent
-freshclam: absent   yara: absent   yarac: absent
-```
+### Implementation plan — status
 
-A signature database (`freshclam`, on the order of hundreds of MB) also cannot
-be provisioned, and the zero-budget constraint rules out a paid service.
-**End-to-end malware detection is therefore UNVERIFIED.** The socket client is
-not written either, because a client that cannot be tested against a real engine
-would only create the impression of scanning.
+1. `clamd` + `freshclam` as a separate service — **DONE** (`deploy/clamd/`, a
+   named signature volume and a 12-hourly refresh loop).
+2. `ClamdScanner` over `zINSTREAM` in bounded chunks — **DONE**
+   (`services/documents/clamd.py`, TCP and Unix socket).
+3. Fail closed on `ERROR`/`NOT_SCANNED` — **DONE** (`requires_clean()`), now also
+   reported by `/health/ready` as `malware_scanner`.
+4. Scan before the blob becomes readable — **DONE**. Quarantine in a separate
+   store is **NOT** implemented: MAFHUM rejects and removes the upload at the
+   boundary instead. A false positive is recoverable only by re-uploading.
+5. Bounded scan time and size — **DONE** (`clamd_timeout_seconds`,
+   `StreamMaxLength`, `max_upload_mb`).
+6. Real-engine EICAR acceptance — **DONE** (Gate A and the production malware
+   acceptance workflow). `malware_scanning_available` is derived from a live
+   `PING`, never from a configuration flag.
 
-### Implementation plan
-
-1. Provision `clamd` plus `freshclam` as a **separate container/service**, not a
-   Python dependency. Signature updates are an operational task with its own
-   schedule and monitoring.
-2. Implement `ClamdScanner(MalwareScanner)` using `zINSTREAM` over a Unix socket,
-   streaming in bounded chunks so a large upload is never buffered whole.
-3. **Fail closed.** Unreachable daemon, timeout or protocol error → `ERROR`.
-   Callers that require scanning must reject `ERROR` and `NOT_SCANNED` exactly as
-   they reject `INFECTED` (`requires_clean()` already encodes this).
-4. Scan **before** the blob becomes readable, and quarantine rather than delete
-   on `INFECTED` so a false positive is recoverable.
-5. Bound scan time and size; a slow engine must not become a denial of service.
-6. Only then flip `malware_scanning_available`, and add tests that run against a
-   real `clamd` with the EICAR test file as a known-positive fixture.
-
-Until step 6 passes against a real engine, no MAFHUM documentation, UI string or
-API response may describe an upload as scanned, clean or safe.
+Production now refuses to boot with `MALWARE_SCAN_REQUIRED=false` or with no
+`clamd` address (`Settings.assert_production_ready()`), and
+`tools/acceptance/prod_compose_contract.py` asserts that the Compose template
+hard-codes the flag and gates the API on a healthy `clamd`. **Not verified on a
+real owner host:** signature freshness, long-running daemon stability, and
+recovery after a ClamAV mirror outage.
 
 ---
 
@@ -294,8 +301,11 @@ These are properties of the current design, not bugs:
 - **No horizontal scaling.** The bounded in-process worker (ADR 0004) claims jobs
   with `FOR UPDATE SKIP LOCKED`, which is multi-process safe for *job claiming*,
   but the surrounding limits are not.
-- **No encryption at rest.** Blob confidentiality relies on filesystem
-  permissions (`0700`/`0600`) and a private root.
+- **No encryption at rest is enabled.** Blob confidentiality relies on
+  filesystem permissions (`0700`/`0600`) and a private root. A design and a
+  tested AEAD interface now exist in `docs/ADR/0006-encryption-at-rest.md`, but
+  **no production column is encrypted, no KMS is configured and no key material
+  is shipped**. Volume/disk encryption is an operator responsibility.
 - **MAFHUM performs no backups.** The database and `STORAGE_ROOT` must be
   captured **together**; a database restore against a stale blob directory
   resurrects rows whose bytes no longer exist.
