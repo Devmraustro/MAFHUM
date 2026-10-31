@@ -9,7 +9,9 @@ Docker daemon or outbound network access:
 * every workflow declares read-only permissions and parses as YAML,
 * the `.gitignore` really excludes secret files,
 * the production Compose fail-closed contract holds,
-* no obviously dangerous shell execution primitive in application source.
+* no obviously dangerous shell execution primitive in application source,
+* shell scripts and container definitions are LF on disk, pinned by
+  `.gitattributes`, so a Windows checkout cannot ship CRLF into a container.
 
 Usage:
     python tools/security_baseline.py
@@ -38,7 +40,10 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("OpenAI-style API key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
     ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
     ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("PEM private key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    (
+        "PEM private key",
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    ),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
     ("hard-coded Fernet key", re.compile(r"['\"][A-Za-z0-9_-]{43}=['\"]")),
 )
@@ -68,6 +73,47 @@ REQUIRED_DOCS = (
     "docs/ADR/0006-encryption-at-rest.md",
 )
 
+# Rules that MUST exist in .gitattributes: every path class the LF byte scan
+# below covers, pinned so a fresh Windows checkout with the installer default
+# `core.autocrlf=true` still materialises LF. Each regex matches exactly ONE
+# attribute line — note the `[ \t]` after `Dockerfile` so the `Dockerfile` rule
+# cannot also be satisfied by the `Dockerfile.*` line — so the negative tests
+# in apps/api/tests/test_security_baseline.py can attribute a failure to the
+# one rule that was removed.
+REQUIRED_LF_RULES: tuple[tuple[str, str], ...] = (
+    ("*.sh", r"(?m)^\*\.sh[ \t][^#\n]*\beol=lf\b"),
+    ("Dockerfile", r"(?m)^Dockerfile[ \t][^#\n]*\beol=lf\b"),
+    ("Dockerfile.*", r"(?m)^Dockerfile\.\*[ \t][^#\n]*\beol=lf\b"),
+    ("*.dockerfile", r"(?m)^\*\.dockerfile[ \t][^#\n]*\beol=lf\b"),
+    ("Caddyfile", r"(?m)^Caddyfile[ \t][^#\n]*\beol=lf\b"),
+    ("deploy/clamd/*.conf", r"(?m)^deploy/clamd/\*\.conf[ \t][^#\n]*\beol=lf\b"),
+)
+
+
+def missing_lf_rules(attributes: str) -> list[str]:
+    """Return the labels of required `.gitattributes` LF rules that are absent."""
+    return [
+        label
+        for label, pattern in REQUIRED_LF_RULES
+        if re.search(pattern, attributes) is None
+    ]
+
+
+def _is_lf_enforced(relative_posix_path: str) -> bool:
+    """True for tracked paths the LF byte scan must cover (mirrors the rules).
+
+    Windows-native files are deliberately absent: their line endings are the
+    user's local choice and nobody executes them in a Linux container.
+    """
+    name = relative_posix_path.rsplit("/", 1)[-1]
+    return (
+        name.endswith((".sh", ".dockerfile"))
+        or name == "Caddyfile"
+        or name == "Dockerfile"
+        or name.startswith("Dockerfile.")
+        or (relative_posix_path.startswith("deploy/clamd/") and name.endswith(".conf"))
+    )
+
 
 def _tracked_files() -> list[Path]:
     git = shutil.which("git")
@@ -80,7 +126,9 @@ def _tracked_files() -> list[Path]:
         check=True,
         capture_output=True,
     )
-    return [REPO_ROOT / Path(raw.decode()) for raw in result.stdout.split(b"\x00") if raw]
+    return [
+        REPO_ROOT / Path(raw.decode()) for raw in result.stdout.split(b"\x00") if raw
+    ]
 
 
 def _config_files(tracked: list[Path]) -> list[Path]:
@@ -126,10 +174,14 @@ def check() -> list[str]:
         relative = path.relative_to(REPO_ROOT).as_posix()
         if not (relative.endswith(".yml") or relative.endswith(".yaml")):
             continue
-        if not (relative.startswith("deploy/") or relative.startswith(".github/workflows/")):
+        if not (
+            relative.startswith("deploy/") or relative.startswith(".github/workflows/")
+        ):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        require(LATEST_IMAGE.search(text) is None, f"{relative}: unpinned ':latest' image")
+        require(
+            LATEST_IMAGE.search(text) is None, f"{relative}: unpinned ':latest' image"
+        )
 
     # 3. Workflows parse, and none requests write permission.
     for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
@@ -137,7 +189,9 @@ def check() -> list[str]:
         permissions = data.get("permissions")
         require(
             permissions == "read-all"
-            or (isinstance(permissions, dict) and permissions.get("contents") == "read"),
+            or (
+                isinstance(permissions, dict) and permissions.get("contents") == "read"
+            ),
             f"{path.name}: permissions must be read-only (contents: read)",
         )
         # PyYAML 1.1 parses the bare key `on` as boolean True; accept either.
@@ -180,7 +234,9 @@ def check() -> list[str]:
             # lines are checked. This is a coarse guard, not a SAST engine.
             source_line = text.splitlines()[line - 1].lstrip()
             if not source_line.startswith(("#", '"', "'")):
-                failures.append(f"{path.relative_to(REPO_ROOT)}:{line}: dangerous shell primitive")
+                failures.append(
+                    f"{path.relative_to(REPO_ROOT)}:{line}: dangerous shell primitive"
+                )
 
     # 6. Security documentation exists.
     for name in REQUIRED_DOCS:
@@ -189,6 +245,36 @@ def check() -> list[str]:
     # 7. Production fail-closed contract.
     for violation in check_stack():
         failures.append(f"compose contract: {violation}")
+
+    # 8. Linux-consumed text files are LF on disk and pinned by .gitattributes.
+    #    A Windows checkout made with the installer default `core.autocrlf=true`
+    #    converts LF files to CRLF; inside a container that turns a shell
+    #    script's shebang into `#!/bin/sh\r`, which the kernel refuses to
+    #    execute — observed live on 2026-10-30 (defect D1 in
+    #    docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md). The byte scan below fails
+    #    on any such checkout until it is re-smudged; the attribute check
+    #    keeps a FRESH clone correct, so the fix is preventive, not cosmetic.
+    gitattributes_path = REPO_ROOT / ".gitattributes"
+    require(
+        gitattributes_path.is_file(),
+        "missing .gitattributes (LF policy for Linux-consumed files)",
+    )
+    if gitattributes_path.is_file():
+        attributes = gitattributes_path.read_text(encoding="utf-8")
+        failures.extend(
+            f".gitattributes must pin {label} to eol=lf (Windows checkouts must stay LF)"
+            for label in missing_lf_rules(attributes)
+        )
+    for path in tracked:
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if not _is_lf_enforced(relative):
+            continue
+        if b"\r" in path.read_bytes():
+            failures.append(
+                f"{relative}: contains CR bytes — /bin/sh and Linux containers "
+                "would break. Re-check the file out so .gitattributes applies "
+                "(docs/WINDOWS_SETUP.md §1)."
+            )
 
     return failures
 

@@ -313,7 +313,61 @@ These are properties of the current design, not bugs:
 
 ---
 
-## 5. What this document does not claim
+## 5. Local storage path-escape defences — symlink and junction rejection
+
+`LocalFileStorage.resolve` (`apps/api/src/mafhum_api/services/documents/storage.py`)
+is the single point that turns a storage key into a filesystem path, and it
+applies two independent checks:
+
+1. **Resolved-path containment (load-bearing).** The key is joined to the
+   storage root and the result is fully resolved with `pathlib.Path.resolve()`,
+   which follows every symlink, junction and `..` the filesystem knows about.
+   The absolute result must be strictly inside the root, or the key is rejected
+   with `StorageKeyError`.
+2. **Symlink-component rejection (defence in depth).** Every component between
+   the root and the resolved path is checked with `Path.is_symlink()`; any hit
+   is rejected even when the destination would have stayed inside the root.
+
+Both checks are covered by tests on every supported platform, but the *coverage
+mechanism differs by platform*, and this section states that difference
+explicitly:
+
+* **POSIX (CI):** `test_symlink_component_rejected` creates a real symlink
+  pointing outside the root and asserts `resolve("aa/file.bin")` raises
+  `StorageKeyError`. The traversal parametrisation (`test_unsafe_keys_rejected`)
+  covers `..`, backslash, NUL, oversized and dot-segment keys everywhere.
+* **Windows (verified on a real host, 2026-10-30 — see
+  `docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md` §2.4):** creating a symlink
+  requires elevation or Developer Mode, so on an unprivileged host the symlink
+  test **skips at its fixture** (WinError 1314) — that skip is a test-setup
+  limitation, not a relaxation of the code. The escape property itself is
+  still asserted there by `test_junction_component_rejected`, which creates a
+  privilege-free **NTFS junction** (junctions need no privilege, and
+  `Path.is_symlink()` does not report them — so the probe specifically
+  exercises the containment check rather than the symlink loop) and asserts
+  the same rejection. That probe was first run as a manual command during the
+  verification pass — junction `store/aa` → directory outside the root,
+  `resolve("aa/file.bin")` raised `StorageKeyError:
+  storage key escapes storage root` — and is now part of the suite.
+
+### What is *not* claimed here
+
+* The symlink-component loop (check 2) has **not** been executed on an
+  unprivileged Windows host — it cannot be, without symlink privilege. On
+  Windows it is containment (check 1) that does the rejecting, as evidenced
+  above; on POSIX CI both checks are exercised.
+* The junction evidence covers directory junctions to local paths. Other
+  reparse-point flavours (mounted volumes, network drives, symlinks created
+  *with* privilege on Windows) are not separately probed; the containment
+  check is reparse-agnostic by construction, but that is reasoning, not a
+  measurement, for the flavours not tested.
+* Production MAFHUM runs in Linux containers; Windows is a development-host
+  concern. These tests exist so the property is *pinned* per platform, not
+  because a Windows deployment topology is supported.
+
+---
+
+## 6. What this document does not claim
 
 A passing test suite does not prove the absence of vulnerabilities. The suite
 demonstrates that the specified behaviours hold — ownership, concurrency,
