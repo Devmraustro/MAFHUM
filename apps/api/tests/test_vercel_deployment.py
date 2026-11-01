@@ -130,7 +130,10 @@ def test_cold_start_starts_no_worker_threads_even_when_env_allows_it(
     migrated_postgres_url: str, storage_root: Path
 ) -> None:
     """start_worker=False is a code-level guarantee: PROCESSING_WORKER_ENABLED
-    cannot accidentally spawn threads inside a serverless instance."""
+    cannot accidentally spawn threads inside a serverless instance. The
+    declared state is forced to match reality too — otherwise the tick (the
+    serverless driver) would refuse to run while no worker exists, leaving
+    the deployment with no driver at all."""
     settings = vercel_settings(
         database_url=migrated_postgres_url,
         storage_root=storage_root,
@@ -140,7 +143,9 @@ def test_cold_start_starts_no_worker_threads_even_when_env_allows_it(
     with TestClient(app) as client:  # lifespan runs, like a function start
         context = app.state.context
         assert context.worker.is_running is False  # and nothing started on shutdown
-        assert context.settings.processing_worker_enabled is True  # env ignored
+        # Env cannot spawn threads (start_worker=False) AND cannot wedge the
+        # tick: the serverless path declares the driver it actually has.
+        assert context.settings.processing_worker_enabled is False
         assert client.get("/health/live").status_code == 200
     assert context.worker.is_running is False  # and nothing started on shutdown
 
@@ -404,3 +409,36 @@ def test_container_default_engine_ignores_recycle_and_keeps_timeouts() -> None:
         assert _engine_connect_timeout(default.engine.pool) == 10
     finally:
         default.dispose()
+
+
+def test_serverless_entrypoint_leaves_the_tick_usable(
+    migrated_postgres_url: str, storage_root: Path
+) -> None:
+    """On the serverless path the tick is the processing driver; nothing in
+    the cold start may disable it (the single-driver guard must see no
+    resident worker)."""
+    settings = vercel_settings(
+        database_url=migrated_postgres_url,
+        storage_root=storage_root,
+        processing_worker_enabled=True,  # even a misconfigured env
+    )
+    app = create_vercel_app(settings)
+    with TestClient(app) as client:
+        register = client.post(
+            settings.api_prefix + "/auth/register",
+            json={
+                "email": "tickable@example.com",
+                "password": "Passw0rd!23",
+                "display_name": "tickable",
+            },
+            headers={"Origin": "http://testserver"},
+        )
+        assert register.status_code == 201, register.text
+        csrf = client.get(settings.api_prefix + "/auth/session").json()["csrf_token"]
+        tick = client.post(
+            settings.api_prefix + "/processing/tick",
+            headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+        )
+        # Not the single-driver 409: the tick ran (empty queue is fine).
+        assert tick.status_code == 200, tick.text
+        assert tick.json()["stopped_reason"] == "drained"

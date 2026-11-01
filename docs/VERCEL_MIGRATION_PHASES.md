@@ -272,7 +272,35 @@ Gaps found and closed for the migration's new paths
   finalize, abort, both ticks); the tick response carries counters only —
   no uuids, filenames, or keys (asserted by shape and content).
 
-## Phase I — PPTX generation — ⬜ (audit planned)
+## Phase I — PPTX generation — ✅ audited; serverless-safe by construction
+
+Audit findings:
+
+* **No background dependency.** Presentation jobs are generated
+  *synchronously inside the request* (`PresentationService.create_job`:
+  running → generate → artifact → succeeded/failed, inline). There is no
+  worker/queue involvement, so nothing about the serverless deployment
+  changes the PPTX path.
+* **Pure-Python generator.** `python-pptx==1.0.2` has no system
+  dependencies and no native extensions — it runs in the Vercel Python
+  runtime. Deck sizes are bounded by `PresentationLimits`.
+* **Storage-backend agnostic.** Artifacts are written through the same
+  `DocumentStorage` protocol as documents (opaque server-generated keys),
+  so they land in Vercel Blob when that backend is configured; downloads
+  stream after an authorization check, never from a public path.
+* **PowerPoint parity vs the web viewer** remains an owner-verification
+  item (see `docs/PROJECT_COMPLETION_2026-10-31.md`); automated PPTX
+  structural tests (12, `tests/test_presentations.py`) stay green.
+
+Fix applied during the audit: the serverless entrypoint
+(`vercel_app.create_vercel_app`) now forces the *declared*
+`processing_worker_enabled` to `False` (the thread-level guarantee was
+already `start_worker=False`). Previously, an env var left on would start
+no threads **and** wedge the processing tick with the single-driver 409 —
+a deployment with no driver at all. Regression-tested: cold start starts
+no threads even when the env allows it, the declared state matches
+reality, and the tick endpoint answers 200 (not 409) on the serverless
+path (23 deployment tests total).
 
 ## Phase J — Frontend integration — ⬜ (verification planned)
 

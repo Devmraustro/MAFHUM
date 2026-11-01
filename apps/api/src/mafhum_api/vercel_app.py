@@ -76,6 +76,13 @@ def create_vercel_app(settings: Settings | None = None) -> FastAPI:
     """
     settings = settings or get_settings()
     assert_postgres_only(settings)
+    # The thread-level guarantee is `start_worker=False` below; this makes the
+    # *declared* state match reality too. If PROCESSING_WORKER_ENABLED were
+    # left on, no thread would start (start_worker=False) but the processing
+    # tick would refuse to drive jobs (single-driver rule) — a deployment
+    # stuck with neither driver. The serverless path declares what it is.
+    if settings.processing_worker_enabled:
+        settings = settings.model_copy(update={"processing_worker_enabled": False})
     application = create_app(settings, start_worker=False)
     application.state.serverless_deployment = True
     return application

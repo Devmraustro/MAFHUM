@@ -155,9 +155,7 @@ class TestNewEndpointIsolation:
         response = getattr(client, method)(url, **kwargs)
         # 401 for protected routes; the scheduler endpoint is disabled
         # outright (404) while no token is configured — both refuse.
-        assert response.status_code in (401, 404), (
-            f"{method} {url}: {response.status_code}"
-        )
+        assert response.status_code in (401, 404), f"{method} {url}: {response.status_code}"
 
     def test_tick_response_carries_no_document_identifiers(
         self, user_a: AuthedClient, app: FastAPI
