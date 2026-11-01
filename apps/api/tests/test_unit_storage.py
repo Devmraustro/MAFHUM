@@ -196,11 +196,15 @@ class TestWriteRead:
     def test_never_overwrites_existing_object(self, storage: LocalFileStorage) -> None:
         key = storage.generate_key()
         storage.write(key, iter([b"original"]), max_bytes=1024)
-        # A second write to the same key replaces via os.replace, which is the
-        # documented behaviour; the important guarantee is that a *concurrent*
-        # write cannot interleave. Verify the final content is coherent.
-        storage.write(key, iter([b"replaced"]), max_bytes=1024)
-        assert b"".join(storage.open_read(key)) == b"replaced"
+        # Publishing uses a hard link, not a rename: a reused key fails closed
+        # instead of replacing the stored object (matching the class contract
+        # and the Vercel Blob backend, which refuses overwrites server-side).
+        with pytest.raises(StorageError) as info:
+            storage.write(key, iter([b"replaced"]), max_bytes=1024)
+        assert "already exists" in str(info.value)
+        assert b"".join(storage.open_read(key)) == b"original"
+        # And no temporary file survived the refused write.
+        assert list(storage.root.rglob(".tmp-*")) == []
 
     def test_temp_files_are_cleaned_on_failure(self, storage: LocalFileStorage) -> None:
         key = storage.generate_key()

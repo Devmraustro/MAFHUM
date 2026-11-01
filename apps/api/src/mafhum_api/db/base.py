@@ -29,6 +29,8 @@ class Database:
         pool_size: int = 5,
         max_overflow: int = 10,
         pool_pre_ping: bool = False,
+        connect_timeout_seconds: int = 10,
+        pool_recycle_seconds: int = -1,
     ) -> None:
         self._url = url
         kwargs: dict[str, object] = {"future": True}
@@ -40,6 +42,11 @@ class Database:
                     "pool_pre_ping": pool_pre_ping,
                 }
             )
+            if pool_recycle_seconds > 0:
+                kwargs["pool_recycle"] = pool_recycle_seconds
+            # psycopg accepts connect_timeout as a connect argument; bound the
+            # worst-case cold-connect latency against unreachable hosts.
+            kwargs["connect_args"] = {"connect_timeout": connect_timeout_seconds}
         self._engine: Engine = create_engine(url, **kwargs)
         self._session_factory = sessionmaker(
             bind=self._engine,

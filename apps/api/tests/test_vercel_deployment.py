@@ -360,3 +360,47 @@ def test_nextjs_proxy_configuration_is_unchanged() -> None:
 
     web_vercel = json.loads((API_ROOT.parent / "web" / "vercel.json").read_text(encoding="utf-8"))
     assert web_vercel["framework"] == "nextjs"
+
+
+# ------------------------------------------------- managed-Postgres (Neon) wiring
+def _engine_connect_timeout(pool: object) -> int | None:
+    """Recover the psycopg connect_timeout from the pool creator closure."""
+    creator = getattr(pool, "_creator", None)
+    for cell in creator.__closure__ or []:
+        contents = cell.cell_contents
+        if isinstance(contents, dict) and "connect_timeout" in contents:
+            return contents["connect_timeout"]
+    return None
+
+
+def test_managed_postgres_engine_bounds_and_timeouts(
+    migrated_postgres_url: str, storage_root: Path
+) -> None:
+    """Neon-shaped settings reach the engine: bounded pool, pre-ping,
+    connect timeout, and optional connection recycling."""
+    settings = vercel_settings(
+        database_url=migrated_postgres_url,
+        storage_root=storage_root,
+        db_connect_timeout_seconds=7,
+        db_pool_recycle_seconds=240,
+    )
+    app = create_vercel_app(settings)
+    pool = app.state.context.database.engine.pool
+    assert pool.size() == 1
+    assert pool._pre_ping is True  # type: ignore[attr-defined]
+    assert pool._recycle == 240  # type: ignore[attr-defined]
+    assert _engine_connect_timeout(pool) == 7
+
+
+def test_container_default_engine_ignores_recycle_and_keeps_timeouts() -> None:
+    """Defaults preserve the long-lived-container pool exactly, except that an
+    unreachable database now fails fast instead of hanging the request."""
+    from mafhum_api.db.base import Database
+
+    default = Database("postgresql+psycopg://u:p@localhost:5432/x")
+    try:
+        assert default.engine.pool._recycle == -1  # type: ignore[attr-defined]
+        assert default.engine.pool._pre_ping is False  # type: ignore[attr-defined]
+        assert _engine_connect_timeout(default.engine.pool) == 10
+    finally:
+        default.dispose()

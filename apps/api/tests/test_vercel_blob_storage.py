@@ -267,3 +267,122 @@ def test_build_context_wires_blob_credentials_from_settings(tmp_path) -> None:
     settings = Settings(storage_backend="vercel_blob", storage_root=tmp_path)
     with pytest.raises(StorageError, match="requires credentials"):
         build_context(settings)
+
+
+# ------------------------------------------------------- provider failure paths
+class _FlakyBlobClient(_FakeBlobClient):
+    """Fake that can be told to fail individual operations."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_put: Exception | None = None
+        self.fail_head: Exception | None = None
+        self.fail_stream: Exception | None = None
+        self.fail_query: Exception | None = None
+
+    def put_blob(self, pathname: str, body: BinaryIO, **kwargs: object) -> object:
+        if self.fail_put is not None:
+            raise self.fail_put
+        return super().put_blob(pathname, body, **kwargs)  # type: ignore[arg-type]
+
+    def head_blob(self, pathname: str) -> _Metadata:
+        if self.fail_head is not None:
+            raise self.fail_head
+        return super().head_blob(pathname)
+
+    @contextmanager
+    def stream_blob(self, pathname: str, *, access: str) -> Iterator[Iterator[bytes]]:
+        if self.fail_stream is not None:
+            raise self.fail_stream
+        with super().stream_blob(pathname, access=access) as download:
+            yield download
+
+    def query_blobs(self, *, prefix: str) -> Iterator[_Metadata]:
+        if self.fail_query is not None:
+            raise self.fail_query
+        yield from super().query_blobs(prefix=prefix)
+
+
+def test_transient_provider_failures_map_to_storage_error() -> None:
+    from vercel.blob.errors import BlobServiceNotAvailable, BlobServiceRateLimited
+
+    client = _FlakyBlobClient()
+    storage = VercelBlobStorage(client)
+    key = "ab/" + "8" * 64
+
+    for failure in (
+        TimeoutError("provider timeout"),
+        BlobServiceNotAvailable(),
+        BlobServiceRateLimited(),
+        RuntimeError("connection reset"),
+    ):
+        client.fail_put = failure
+        with pytest.raises(StorageError):
+            storage.write(key, [b"x"], max_bytes=10)
+        client.fail_head = failure
+        with pytest.raises(StorageError):
+            storage.stat(key)
+        client.fail_stream = failure
+        with pytest.raises(StorageError):
+            list(storage.open_read(key))
+        client.fail_query = failure
+        with pytest.raises(StorageError):
+            storage.reconcile_orphans([])
+
+    client.fail_put = client.fail_head = client.fail_stream = client.fail_query = None
+    assert client.objects == {}  # nothing was ever published
+
+
+def test_content_length_mismatch_is_refused() -> None:
+    from vercel.blob.errors import BlobContentLengthError
+
+    client = _FlakyBlobClient()
+    storage = VercelBlobStorage(client)
+    client.fail_put = BlobContentLengthError("declared 5 bytes but received 4")
+
+    # The provider reports the mismatch (the SDK's real error for this case);
+    # the adapter maps it to StorageError and never publishes the object.
+    with pytest.raises(StorageError):
+        storage.write("ab/" + "9" * 64, [b"12345"], max_bytes=5)
+    assert client.objects == {}
+
+
+def test_malformed_provider_metadata_is_rejected() -> None:
+    client = _FakeBlobClient()
+    storage = VercelBlobStorage(client)
+    key = "cd/" + "1" * 64
+    storage.write(key, [b"payload"], max_bytes=100)
+
+    for bad in (
+        _Metadata("mafhum/someone-elses-key", 7),  # pathname mismatch
+        _Metadata("mafhum/" + key, -1),  # negative size
+        _Metadata("mafhum/" + key, "seven"),  # non-int size
+    ):
+        client.head_blob = lambda pathname, _bad=bad: _bad  # type: ignore[assignment]
+        with pytest.raises(StorageError):
+            storage.stat(key)
+
+
+def test_delete_many_reports_partial_failure_and_keeps_rest() -> None:
+    client = _FlakyBlobClient()
+    storage = VercelBlobStorage(client)
+    keys = ["ab/" + "2" * 64, "cd/" + "3" * 64, "ef/" + "4" * 64]
+    for key in keys:
+        storage.write(key, [b"x"], max_bytes=10)
+
+    original_head = client.head_blob
+    state = {"calls": 0}
+
+    def _failing_head(pathname: str) -> _Metadata:
+        state["calls"] += 1
+        if pathname.endswith(keys[1][3:]):
+            raise RuntimeError("provider outage mid-batch")
+        return original_head(pathname)
+
+    client.head_blob = _failing_head  # type: ignore[assignment]
+    deleted, failed = storage.delete_many(keys)
+
+    assert deleted == [keys[0], keys[2]]
+    assert failed == [keys[1]]
+    # The failed object is still there, awaiting reconciliation.
+    assert "mafhum/" + keys[1] in client.objects

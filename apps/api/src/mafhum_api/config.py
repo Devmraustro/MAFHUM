@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     # can go stale between invocations; off by default to keep the
     # long-lived-container behaviour (and its per-request latency) unchanged.
     db_pool_pre_ping: bool = False
+    # Bound how long establishing a PostgreSQL connection may take. Pure
+    # fail-fast improvement: reachable databases connect well inside this;
+    # unreachable ones abort instead of hanging a request indefinitely.
+    db_connect_timeout_seconds: int = 10
+    # Recycle pooled connections older than this many seconds. -1 (disabled)
+    # preserves the long-lived-container default; managed providers that close
+    # idle connections (e.g. Neon) should set it just below the provider's
+    # idle limit. Pair with DB_POOL_PRE_PING=true on serverless.
+    db_pool_recycle_seconds: int = -1
 
     # --- private blob storage -------------------------------------------------
     # Files live OUTSIDE any static/public directory and are never served directly.

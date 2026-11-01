@@ -78,6 +78,8 @@ def build_context(settings: Settings | None = None) -> AppContext:
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=settings.db_pool_pre_ping,
+        connect_timeout_seconds=settings.db_connect_timeout_seconds,
+        pool_recycle_seconds=settings.db_pool_recycle_seconds,
     )
     storage: DocumentStorage
     if settings.storage_backend == "vercel_blob":

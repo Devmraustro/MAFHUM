@@ -70,20 +70,52 @@ are also skipped in CI's backend job.
   claimed as tested.
 - Phase-2 additions re-verified within the full suite above.
 
-## Phase C — Neon PostgreSQL integration — ⬜ (planned)
+## Phase C — Neon PostgreSQL integration — ✅ code-side; real acceptance ⛔ owner
 
-Code-side connection/pooling behavior is already exercised against real
-PostgreSQL (pgserver locally, postgres service in CI); the Neon-specific
-runbook and acceptance checklist are pending. Real Neon acceptance will be
-**BLOCKED — OWNER ACTION REQUIRED** (no paid resources or credentials may be
-created by this session).
+- New settings `DB_CONNECT_TIMEOUT_SECONDS` (default 10, fail-fast on
+  unreachable databases) and `DB_POOL_RECYCLE_SECONDS` (default −1 = disabled,
+  preserving container behavior; set just below the provider's idle limit for
+  Neon) wired into the engine; both documented in `.env.example`.
+- Engine propagation regression-tested (`tests/test_vercel_deployment.py`):
+  pool bounds, pre-ping, recycle, and the psycopg `connect_timeout` reaching
+  the pool creator.
+- Transaction/rollback semantics (`unit_of_work`), credential-free health
+  reporting, and migration-as-release-step controls were audited and are
+  unchanged.
+- `docs/NEON_DATABASE_RUNBOOK.md`: exact env vars, TLS requirement, pooled vs
+  direct endpoints, migration runbook, acceptance checklist, backup/restore.
+- **Real Neon acceptance: BLOCKED — OWNER ACTION REQUIRED** (no paid resources
+  or credentials in this session). Distinction kept explicit: everything
+  above is verified against real PostgreSQL (pgserver/CI service), which is
+  *not* a Neon acceptance test.
 
-## Phase D — Vercel Blob private storage — ⬜ (planned; adapter exists)
+## Phase D — Vercel Blob private storage — ✅ adapter complete; real-store acceptance ⛔ owner
 
-The adapter and fake-client tests exist; remaining work per
-`docs/VERCEL_PHASE2_BLOB_DESIGN.md` §6 (shared contract tests, malformed SDK
-responses, partial-write and timeout paths, batch deletion review). Real-store
-acceptance will be **BLOCKED — OWNER ACTION REQUIRED**.
+- **Shared backend contract** (`tests/test_storage_backend_contract.py`): the
+  same behavioral suite runs against `LocalFileStorage` and
+  `VercelBlobStorage` — round trips, empty uploads, over-limit refusal,
+  interrupted chunk streams leaving no object, no-overwrite, invalid-key
+  refusal, not-found mapping, idempotent delete, delete-many reporting,
+  report-only orphan reconciliation.
+- **Found and fixed a real divergence:** `LocalFileStorage.write` published
+  with `os.replace`, silently overwriting an existing key — contradicting its
+  own docstring ("never clobber an existing object") and the Blob backend's
+  fail-closed contract. Publishing now uses a hard link (`os.link`), which
+  fails closed with `StorageError("storage key already exists")`; temp files
+  still never survive failures. One test that relied on the old
+  overwrite-as-corruption-simulation was updated to delete-then-write.
+- **Provider failure paths** (`tests/test_vercel_blob_storage.py`): transient
+  failures (timeout, 503, 429, connection reset) map to `StorageError` with
+  nothing published; `BlobContentLengthError` mapping; malformed provider
+  metadata (pathname mismatch, negative/non-int size) rejected; delete-many
+  partial failure keeps failed keys for reconciliation.
+- SDK review recorded: pinned `vercel-blob==0.5.0` sync surface matches the
+  adapter protocol; `delete_blob` accepts 1–1000 pathnames per call (unused —
+  per-key deletion is deliberately conservative); no client-upload-token API
+  (constrains Phase E).
+- **Real-store acceptance: BLOCKED — OWNER ACTION REQUIRED** (store
+  provisioning + token are owner actions; fake-client tests are explicit test
+  doubles, not real-service claims).
 
 ## Phase E — Direct upload architecture — ⬜ (planned)
 
