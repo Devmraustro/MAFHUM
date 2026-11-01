@@ -327,7 +327,33 @@ Verified: web lint clean, `tsc --noEmit` clean, 112 vitest tests pass
 no-leak request audit, rejected-part propagation, tick call + CSRF,
 threshold constant), production build succeeds.
 
-## Phase K — Observability, security, operations — ⬜ (planned)
+## Phase K — Observability, security, operations — ✅ code-side; production wiring ⛔ owner
+
+* **Correlation IDs** (pre-existing, re-verified): every error response
+  carries `request_id`; audit events and structured JSON logs record it.
+* **Health** (pre-existing, re-verified): `/health/ready` degrades honestly
+  (database, storage writability, worker state, scanner availability when
+  scanning is mandatory); the serverless path reports
+  `processing_worker: stopped` because that is true — the tick is the
+  driver.
+* **Metrics extended** (`/api/v1/admin/metrics`, token-scrapable):
+  `mafhum_processing_jobs_total{status}` (queue depth for the tick era),
+  `mafhum_upload_sessions_total{state}` (chunked-upload backlog), and
+  `mafhum_processing_driver{mode="worker"|"tick"}` (misconfiguration
+  signal). Counters only — regression-tested that identifiers, session
+  ids, and storage keys never appear.
+* **Runbook** (`docs/VERCEL_SERVERLESS_RUNBOOK.md`): container vs serverless
+  architecture table, full env-var table (pooled vs direct Neon endpoints),
+  owner deployment sequence, scheduled-tick setup (self-skipping until
+  configured), alert table (queue growth, scanner-down while fail-closed,
+  denial spikes), honest limitations (ClamAV cannot run on Vercel — the
+  single hard blocker for production traffic; Hobby cron daily-only;
+  Function budget; body limit), and an incident playbook (stuck pending,
+  stale jobs, abandoned uploads, suspended Blob store, bad release).
+
+Production wiring — scraping, alert delivery, scheduled tick secrets — is
+**BLOCKED — OWNER ACTION REQUIRED** (needs the real deployment's URLs and
+tokens; nothing was executed against production).
 
 ## Phase L — Production-readiness audit — ⬜ (`docs/PRODUCTION_READINESS_REPORT.md` at the end)
 
