@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     # --- private blob storage -------------------------------------------------
     # Files live OUTSIDE any static/public directory and are never served directly.
     storage_backend: Literal["local", "vercel_blob"] = "local"
+    # Credentials for the private Blob backend. Exactly one mode is valid:
+    # - Off Vercel (local dev, containers, CI): a read-write token
+    #   ("vercel_blob_rw_<store>_<secret>") is required.
+    # - On Vercel: either the token, or BLOB_STORE_ID + the function's OIDC
+    #   identity (the SDK resolves those itself).
+    # These are real Settings fields so the documented template, the fail-fast
+    # checks below, and the SDK credential resolution all describe one surface;
+    # the adapter passes the token to the SDK explicitly, so a token that only
+    # exists in a local `.env` file is honoured too.
+    blob_read_write_token: str = ""
+    blob_store_id: str = ""
     storage_root: Path = Path("./data/mafhum-storage")
     storage_dir_mode: int = 0o700
     storage_file_mode: int = 0o600
@@ -247,6 +258,13 @@ class Settings(BaseSettings):
             problems.append("CLAMD_HOST or CLAMD_UNIX_PATH must be set in production")
         if len(self.metrics_scrape_token) < 32:
             problems.append("METRICS_SCRAPE_TOKEN must be at least 32 characters in production")
+        if self.storage_backend == "vercel_blob" and not (
+            self.blob_read_write_token or self.blob_store_id
+        ):
+            problems.append(
+                "BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID must be set in production "
+                "when STORAGE_BACKEND=vercel_blob"
+            )
         if problems:
             raise RuntimeError("Insecure production configuration: " + "; ".join(problems))
 

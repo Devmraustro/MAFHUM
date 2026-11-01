@@ -6,17 +6,17 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 import pytest
+from vercel.blob.errors import BlobNotFoundError
 
 from mafhum_api.services.documents.storage import (
     StorageError,
     StorageKeyError,
     StorageObjectNotFoundError,
 )
-from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
-
-
-class BlobNotFoundError(Exception):
-    """Mirror the documented Vercel SDK not-found exception."""
+from mafhum_api.services.documents.vercel_blob_storage import (
+    VercelBlobStorage,
+    _parse_read_write_token,
+)
 
 
 @dataclass
@@ -58,13 +58,15 @@ class _FakeBlobClient:
     def stream_blob(self, pathname: str, *, access: str) -> Iterator[Iterator[bytes]]:
         self.read_access.append(access)
         if pathname not in self.objects:
+            # The pinned SDK's real not-found error: BlobNotFoundError is a
+            # FileNotFoundError, which is exactly what the adapter maps.
             raise BlobNotFoundError(pathname)
         value = self.objects[pathname]
         yield iter(value[i : i + 3] for i in range(0, len(value), 3))
 
     def head_blob(self, pathname: str) -> _Metadata:
         if pathname not in self.objects:
-            raise FileNotFoundError(pathname)
+            raise BlobNotFoundError(pathname)
         return _Metadata(pathname, len(self.objects[pathname]))
 
     def delete_blob(self, pathname: str) -> None:
@@ -151,3 +153,117 @@ def test_delete_is_idempotent_and_orphan_reconciliation_is_report_only() -> None
     assert storage.reconcile_orphans([live]) == [orphan]
     assert "mafhum/" + orphan in client.objects
     assert client.delete_calls == ["mafhum/" + live]
+
+
+# ------------------------------------------------------- credential wiring
+def test_read_write_token_is_parsed_and_stays_out_of_errors() -> None:
+    store_id = _parse_read_write_token("vercel_blob_rw_store123_secret456")
+
+    assert store_id == "store123"
+    for bad in ("", "not-a-token", "vercel_blob_rw_", "vercel_blob_rw_onlystore"):
+        with pytest.raises(StorageError, match="invalid format"):
+            _parse_read_write_token(bad)
+
+
+def test_explicit_token_builds_sdk_session_credentials() -> None:
+    storage = VercelBlobStorage(
+        _FakeBlobClient(), blob_read_write_token="vercel_blob_rw_store123_secret456"
+    )
+
+    assert storage._session_options is not None
+    options = storage._session_options
+    credentials_factory = options.credentials_factory  # type: ignore[attr-defined]
+    credentials = credentials_factory()
+    assert credentials.token == "vercel_blob_rw_store123_secret456"
+    assert credentials.store_id == "store123"
+    assert credentials.kind.value == "read_write"
+
+
+def test_malformed_token_fails_at_construction_not_first_request() -> None:
+    with pytest.raises(StorageError, match="invalid format"):
+        VercelBlobStorage(_FakeBlobClient(), blob_read_write_token="oops")
+
+
+def test_real_client_without_credentials_fails_fast() -> None:
+    # No injected fake client and no credentials: the SDK's default resolution
+    # has nothing to read (BLOB_READ_WRITE_TOKEN / BLOB_STORE_ID absent), so
+    # construction must refuse instead of failing on the first request.
+    with pytest.raises(StorageError, match="requires credentials"):
+        VercelBlobStorage()
+
+
+def test_store_id_only_keeps_sdk_default_resolution() -> None:
+    # OIDC mode: no explicit session binding, but construction succeeds.
+    storage = VercelBlobStorage(_FakeBlobClient(), blob_store_id="store123")
+
+    assert storage._session_options is None
+
+
+def test_operations_bind_the_credential_session() -> None:
+    client = _FakeBlobClient()
+    storage = VercelBlobStorage(client, blob_read_write_token="vercel_blob_rw_store123_secret456")
+    key = "ab/" + "7" * 64
+    bound: list[bool] = []
+    real_bind = storage._bind_session
+
+    def _counting_bind() -> object:
+        bound.append(True)
+        return real_bind()
+
+    storage._bind_session = _counting_bind  # type: ignore[method-assign]
+    storage.write(key, [b"x"], max_bytes=10)
+    storage.stat(key)
+    list(storage.open_read(key))
+    storage.delete(key)
+
+    # write (put + no compensating delete), stat, read, delete-verify,
+    # delete-act: every SDK call ran inside the bound session.
+    assert len(bound) >= 5
+
+
+# ------------------------------------------------------- settings integration
+def test_production_requires_blob_credentials_when_backend_selected() -> None:
+    from mafhum_api.config import Settings
+
+    base = {
+        "app_env": "production",
+        "session_secret": "x" * 48,
+        "cookie_secure": True,
+        "database_url": "postgresql+psycopg://u:p@db.example.com:5432/mafhum",
+        "malware_scan_required": True,
+        "clamd_host": "clamd.internal",
+        "metrics_scrape_token": "m" * 40,
+        "storage_backend": "vercel_blob",
+    }
+
+    with pytest.raises(RuntimeError, match="BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID"):
+        Settings(**base).assert_production_ready()
+    Settings(**base, blob_read_write_token="vercel_blob_rw_s_x").assert_production_ready()
+    Settings(**base, blob_store_id="store123").assert_production_ready()
+
+
+def test_local_backend_never_requires_blob_credentials() -> None:
+    from mafhum_api.config import Settings
+
+    # The default (local) backend keeps booting with no Blob configuration.
+    Settings(app_env="development").assert_production_ready()
+
+
+def test_build_context_wires_blob_credentials_from_settings(tmp_path) -> None:
+    from mafhum_api.config import Settings
+    from mafhum_api.main import build_context
+    from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
+
+    settings = Settings(
+        storage_backend="vercel_blob",
+        blob_read_write_token="vercel_blob_rw_store123_secret456",
+        storage_root=tmp_path,
+        db_pool_pre_ping=True,
+    )
+    context = build_context(settings)
+    assert isinstance(context.storage, VercelBlobStorage)
+    assert context.storage._session_options is not None
+
+    settings = Settings(storage_backend="vercel_blob", storage_root=tmp_path)
+    with pytest.raises(StorageError, match="requires credentials"):
+        build_context(settings)

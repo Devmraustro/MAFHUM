@@ -81,7 +81,10 @@ def build_context(settings: Settings | None = None) -> AppContext:
     )
     storage: DocumentStorage
     if settings.storage_backend == "vercel_blob":
-        storage = VercelBlobStorage()
+        storage = VercelBlobStorage(
+            blob_read_write_token=settings.blob_read_write_token,
+            blob_store_id=settings.blob_store_id,
+        )
     else:
         storage = LocalFileStorage(
             settings.storage_root,
