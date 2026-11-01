@@ -22,11 +22,24 @@ class Database:
     at a disposable PostgreSQL instance.
     """
 
-    def __init__(self, url: str, *, pool_size: int = 5, max_overflow: int = 10) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        pool_size: int = 5,
+        max_overflow: int = 10,
+        pool_pre_ping: bool = False,
+    ) -> None:
         self._url = url
         kwargs: dict[str, object] = {"future": True}
         if url.startswith("postgresql"):
-            kwargs.update({"pool_size": pool_size, "max_overflow": max_overflow})
+            kwargs.update(
+                {
+                    "pool_size": pool_size,
+                    "max_overflow": max_overflow,
+                    "pool_pre_ping": pool_pre_ping,
+                }
+            )
         self._engine: Engine = create_engine(url, **kwargs)
         self._session_factory = sessionmaker(
             bind=self._engine,
