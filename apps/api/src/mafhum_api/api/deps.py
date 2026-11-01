@@ -25,6 +25,7 @@ from mafhum_api.db.base import Database
 from mafhum_api.db.models import User, UserRole
 from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
+from mafhum_api.services.documents.processing_tick import ProcessingTicker
 from mafhum_api.services.documents.service import DocumentLimits, DocumentService
 from mafhum_api.services.documents.storage import DocumentStorage
 from mafhum_api.services.documents.upload_sessions import UploadSessionService
@@ -55,6 +56,7 @@ class AppContext:
     study: StudyService
     presentations: PresentationService
     worker: ProcessingWorker
+    processing_ticker: ProcessingTicker
     login_throttle: LoginThrottle
     audit: AuditService
 

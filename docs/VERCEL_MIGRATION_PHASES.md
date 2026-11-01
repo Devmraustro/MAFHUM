@@ -172,9 +172,70 @@ The single-request upload path remains available and unchanged (it stays
 under the platform limit for small files); the frontend will choose the
 chunked path for large files in Phase J.
 
-## Phase F — Durable background processing — ⬜ (planned)
+## Phase F — Durable background processing — ✅ tick driver; resident worker unchanged for containers
 
-## Phase G — ClamAV and malware scanning — ⬜ (verification planned)
+The per-job machinery was already durable and cross-process safe
+(`SELECT … FOR UPDATE SKIP LOCKED` claims, queued→running in the claim
+transaction, heartbeats, generation-based retry idempotency, bounded
+retries, terminal `failed` document state with machine-readable
+`error_code` — the document row is the dead-letter record — and
+`recover_stale_jobs` for crash recovery). What serverless lacked was a
+*driver*: the resident dispatcher is a thread pool that cannot live in a
+Function.
+
+Implemented the **processing tick** — a bounded, idempotent pass:
+
+- `POST /api/v1/processing/tick` — authenticated user + CSRF (the frontend
+  fires one after an upload finalizes; self-driving serverless flow).
+- `POST /api/v1/processing/tick-scheduler` — unattended bearer token
+  (`PROCESSING_TICK_TOKEN`; **disabled outright — 404 — while unset**, and a
+  bearer header can never fall back to a cookie session). Driven by
+  `.github/workflows/processing-tick.yml` (every 5 min; **self-skipping
+  no-op until the owner sets `vars.MAFHUM_API_URL` and
+  `secrets.PROCESSING_TICK_TOKEN`**).
+- One pass: `recover_stale_jobs` → `cleanup_expired` upload sessions →
+  claim/process up to `PROCESSING_TICK_MAX_JOBS` (default 8) within
+  `PROCESSING_TICK_BUDGET_SECONDS` (default 25 s, inside the Function
+  execution limit). Overlapping ticks cannot double-process (exclusive
+  claims); the stopped reason is reported accurately (a final probe
+  distinguishes `max_jobs` from a genuinely `drained` queue) so callers
+  know whether to tick again. Responses are counters only.
+- **Single-driver rule:** both endpoints refuse (409) while
+  `PROCESSING_WORKER_ENABLED=true` — the worker lease's single-writer
+  reasoning stays intact; serverless sets it false (already the case in
+  the Phase-1 Vercel project env).
+
+Verified by 14 tests in `tests/test_processing_tick.py`: authenticated
+tick processes a queued document to `ready`; drained re-tick is a no-op;
+401/CSRF refusals; counters carry no document data; failures counted not
+raised (missing source file → `failed=1`, document `failed` with
+`error_code`); max-jobs bounding with the remainder queued and a second
+tick draining it; zero-budget reporting; stale running job recovered and
+processed; expired upload sessions (and their stored parts) reclaimed by
+the same pass; 409 while the resident worker is enabled; scheduler
+endpoint 404 while unset, working with a valid token and no session, 401
+on a wrong token with no cookie fallback.
+
+## Phase G — ClamAV and malware scanning — ✅ acceptance isolation; real-engine evidence ⛔ owner
+
+The acceptance tooling (workflow `production-malware-acceptance.yml`, phases
+1–6) runs only against disposable local containers, never real production
+hosts. The **Phase-6 health-gate correction is accepted and in place**:
+recovery now requires BOTH a successful start command AND a healthy
+SCAN-READY result before any dependent recovery check runs; unhealthy
+recovery skips the recovery upload, refresh-loop probe, and reuse evidence,
+preserves the volume, and continues only with safe isolated cleanup —
+regression-tested hermetically (45 checks in that suite), including
+"unhealthy skips X" and "healthy executes every check", each asserting no
+production resource was addressed.
+
+Application-side: `malware_scan_required` fail-closed semantics unchanged;
+the chunked-upload path (Phase E) now also proves the gate over the stub
+clamd (zero rows, zero stored objects on FOUND).
+
+Remaining: **real ClamAV engine evidence on the production host is
+BLOCKED — OWNER ACTION REQUIRED** (Vercel cannot host the daemon; the
+runbook documents an external host or re-architecture decision).
 
 ## Phase H — Document processing and retrieval — ⬜ (audit planned)
 

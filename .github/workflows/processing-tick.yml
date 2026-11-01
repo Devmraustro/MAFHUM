@@ -1,0 +1,42 @@
+# Scheduled processing tick for serverless deployments.
+#
+# On a serverless deployment (PROCESSING_WORKER_ENABLED=false) something must
+# drive background processing. The frontend fires a tick after each upload,
+# but uploads that arrive without a follow-up visit (API clients, abandoned
+# browser tabs) still need a driver. This workflow is that driver: every five
+# minutes it POSTs the token-authenticated scheduler endpoint.
+#
+# OFF BY DEFAULT: the job skips itself unless the repository configures
+#   vars.MAFHUM_API_URL      — the deployed API base URL
+#   secrets.PROCESSING_TICK_TOKEN — must match the deployment's
+#                                   PROCESSING_TICK_TOKEN env var
+# Nothing about this workflow touches production until the owner sets both,
+# and the endpoint it calls is disabled server-side when the token is unset.
+
+name: Processing tick
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: processing-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    if: ${{ vars.MAFHUM_API_URL != '' && secrets.PROCESSING_TICK_TOKEN != '' }}
+    steps:
+      - name: Drive one bounded processing pass
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --max-time 60 \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.PROCESSING_TICK_TOKEN }}" \
+            "${{ vars.MAFHUM_API_URL }}/api/v1/processing/tick-scheduler"

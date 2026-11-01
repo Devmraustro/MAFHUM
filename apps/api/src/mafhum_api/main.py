@@ -31,6 +31,7 @@ from mafhum_api.core.request_context import REQUEST_ID_HEADER, RequestIdMiddlewa
 from mafhum_api.db.base import Database
 from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
+from mafhum_api.services.documents.processing_tick import ProcessingTicker
 from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
 from mafhum_api.services.documents.storage import DocumentStorage, LocalFileStorage, StorageError
@@ -116,6 +117,20 @@ def build_context(settings: Settings | None = None) -> AppContext:
         scanner=scanner,
         scan_required=settings.malware_scan_required,
     )
+    upload_sessions = UploadSessionService(
+        storage,
+        documents,
+        limits,
+        part_size_bytes=settings.upload_part_size_bytes,
+        session_ttl=timedelta(minutes=settings.upload_session_ttl_minutes),
+    )
+    ticker = ProcessingTicker(
+        database,
+        worker,
+        upload_sessions,
+        max_jobs=settings.processing_tick_max_jobs,
+        budget_seconds=settings.processing_tick_budget_seconds,
+    )
     return AppContext(
         settings=settings,
         database=database,
@@ -123,13 +138,8 @@ def build_context(settings: Settings | None = None) -> AppContext:
         identity=IdentityService(session_ttl_minutes=settings.session_ttl_minutes),
         projects=ProjectService(),
         documents=documents,
-        upload_sessions=UploadSessionService(
-            storage,
-            documents,
-            limits,
-            part_size_bytes=settings.upload_part_size_bytes,
-            session_ttl=timedelta(minutes=settings.upload_session_ttl_minutes),
-        ),
+        upload_sessions=upload_sessions,
+        processing_ticker=ticker,
         sources=SourceService(),
         deletion=DeletionService(storage),
         research=research,

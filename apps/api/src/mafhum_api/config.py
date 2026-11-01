@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     # The single-writer lease makes running a second worker fail fast; this
     # is the supported way to scale out instead.
     processing_worker_enabled: bool = True
+    # Serverless processing driver: when the resident worker is disabled,
+    # authenticated "ticks" drive processing instead. Bounded per pass.
+    processing_tick_max_jobs: int = 8
+    processing_tick_budget_seconds: float = 25.0
+    # Bearer token for the unattended (scheduler) tick endpoint. Empty (the
+    # default) disables that endpoint entirely; session users can still tick.
+    processing_tick_token: str = ""
     processing_worker_count: int = 2
     processing_job_timeout_seconds: int = 120
     processing_stale_after_seconds: int = 300
