@@ -7,11 +7,15 @@
 # minutes it POSTs the token-authenticated scheduler endpoint.
 #
 # OFF BY DEFAULT: the job skips itself unless the repository configures
-#   vars.MAFHUM_API_URL      — the deployed API base URL
+#   vars.MAFHUM_API_URL         — the deployed API base URL
 #   secrets.PROCESSING_TICK_TOKEN — must match the deployment's
 #                                   PROCESSING_TICK_TOKEN env var
 # Nothing about this workflow touches production until the owner sets both,
-# and the endpoint it calls is disabled server-side when the token is unset.
+# and the endpoint it calls is disabled server-side while the token is unset.
+#
+# NOTE: the `secrets` context cannot be used in a job-level `if` (Actions
+# rejects the workflow with zero jobs), so the secret check happens inside
+# the step, passed through env — never interpolated into the script text.
 
 name: Processing tick
 
@@ -30,13 +34,22 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    if: ${{ vars.MAFHUM_API_URL != '' && secrets.PROCESSING_TICK_TOKEN != '' }}
+    # Fast skip when the API URL is not configured at all (vars context is
+    # allowed here; secrets is not).
+    if: ${{ vars.MAFHUM_API_URL != '' }}
     steps:
       - name: Drive one bounded processing pass
+        env:
+          API_URL: ${{ vars.MAFHUM_API_URL }}
+          TICK_TOKEN: ${{ secrets.PROCESSING_TICK_TOKEN }}
         run: |
+          if [ -z "$TICK_TOKEN" ]; then
+            echo "::notice::secrets.PROCESSING_TICK_TOKEN is not set; the scheduler endpoint would refuse the call. Skipping."
+            exit 0
+          fi
           set -euo pipefail
           curl --fail-with-body --silent --show-error \
             --max-time 60 \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.PROCESSING_TICK_TOKEN }}" \
-            "${{ vars.MAFHUM_API_URL }}/api/v1/processing/tick-scheduler"
+            -H "Authorization: Bearer $TICK_TOKEN" \
+            "$API_URL/api/v1/processing/tick-scheduler"
