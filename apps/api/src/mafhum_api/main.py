@@ -32,7 +32,7 @@ from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
 from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
-from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
+from mafhum_api.services.documents.storage import DocumentStorage, LocalFileStorage, StorageError
 from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
@@ -79,6 +79,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=settings.db_pool_pre_ping,
     )
+    storage: DocumentStorage
     if settings.storage_backend == "vercel_blob":
         storage = VercelBlobStorage()
     else:
