@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # --- private blob storage -------------------------------------------------
     # Files live OUTSIDE any static/public directory and are never served directly.
-    storage_backend: Literal["local"] = "local"
+    storage_backend: Literal["local", "vercel_blob"] = "local"
     storage_root: Path = Path("./data/mafhum-storage")
     storage_dir_mode: int = 0o700
     storage_file_mode: int = 0o600
