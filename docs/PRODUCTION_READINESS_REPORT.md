@@ -101,16 +101,26 @@ availability), plus the stub-clamd UNIX_SOCKET_ONLY marker where applicable.
 
 ### 3.3 Fresh CI on the final commit
 
-Recorded at report time — see the commit table in §4 for the exact head.
 **Requirement:** MAFHUM CI and Production malware acceptance both
 conclusion=`success` with `head_sha` exactly equal to the branch head.
 
-- MAFHUM CI (run 41335432889 class): success @ `e5fcac3` (6 jobs:
-  backend, migrations, baseline, frontend, security, DAST).
-- Production malware acceptance: success @ `e5fcac3`.
-- Post-report doc-only commits: verified green on the final head before
-  delivery (any mismatch is stated explicitly in the delivery message —
-  never silently).
+Verified at the code head `c7d6fef` ("fix(ci): processing-tick workflow
+validates and skips cleanly"):
+
+- **MAFHUM CI — run 41336243473: success @ `c7d6fef`**, all six jobs green:
+  Backend (lint, types, tests) · Migrations (upgrade and downgrade) ·
+  Repository baseline · Frontend (lint, types, tests, build) · Security
+  (SAST, secrets, config contract) · Local authenticated DAST.
+- **Production malware acceptance — run 41336243445: success @
+  `c7d6fef`**, both jobs green: Real ClamAV engine (clean / EICAR /
+  engine-outage, on disposable CI containers — never real production) ·
+  Compose config + production contract.
+
+An earlier CI-green code state is also recorded at `e5fcac3`
+(runs 41335432889 / 41335432877). Any doc-only commit after `c7d6fef`
+(this report included) was required to be CI-green on its own head before
+delivery; if the delivered head differs from a green run's SHA, that is
+stated explicitly — never silently.
 
 ---
 
