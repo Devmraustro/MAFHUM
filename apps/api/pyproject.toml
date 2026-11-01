@@ -23,6 +23,8 @@ dependencies = [
     # production keys are NOT shipped and the feature is NOT enabled).
     # Apache-2.0 OR BSD-3-Clause. See docs/ADR/0006-encryption-at-rest.md.
     "cryptography==50.0.2",
+    # Official Vercel Blob Python SDK; private sync API supports bounded streams.
+    "vercel-blob==0.5.0",
 ]
 
 [project.optional-dependencies]
