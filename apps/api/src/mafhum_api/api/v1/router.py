@@ -10,6 +10,7 @@ from mafhum_api.api.v1 import (
     auth,
     documents,
     presentations,
+    processing,
     projects,
     research,
     sources,
@@ -23,6 +24,7 @@ api_router.include_router(documents.router)
 api_router.include_router(sources.router)
 api_router.include_router(research.router)
 api_router.include_router(study.router)
+api_router.include_router(processing.router)
 api_router.include_router(account.router)
 api_router.include_router(admin.router)
 api_router.include_router(presentations.router)

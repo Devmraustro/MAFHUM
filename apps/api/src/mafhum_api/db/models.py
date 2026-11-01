@@ -97,6 +97,12 @@ class JobStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class UploadSessionState(str, enum.Enum):
+    PENDING = "pending"
+    ASSEMBLED = "assembled"
+    EXPIRED = "expired"
+
+
 class SourceType(str, enum.Enum):
     USER_UPLOAD = "user_upload"
     LECTURE_NOTES = "lecture_notes"
@@ -369,6 +375,90 @@ class DocumentProcessingJob(TimestampMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class DocumentUploadSession(TimestampMixin, Base):
+    """A chunked upload: intent, received parts, and final assembly state.
+
+    Large files cannot cross a Vercel Function request body in one piece, so
+    the client asks for a session, uploads bounded parts (each stored under
+    its own server-generated opaque key), and finalizes. The client never
+    learns or chooses any storage key: keys are server-side only, and the
+    finalize step assembles exactly the parts recorded for this session.
+    """
+
+    __tablename__ = "document_upload_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'assembled', 'expired')",
+            name="ck_upload_sessions_state",
+        ),
+        CheckConstraint("declared_bytes > 0", name="ck_upload_sessions_declared_positive"),
+        CheckConstraint("part_size > 0", name="ck_upload_sessions_part_size_positive"),
+        CheckConstraint("total_parts > 0", name="ck_upload_sessions_total_parts_positive"),
+        CheckConstraint(
+            "received_bytes >= 0 AND received_bytes <= declared_bytes",
+            name="ck_upload_sessions_received_within_declared",
+        ),
+        CheckConstraint("format IN ('pdf', 'docx')", name="ck_upload_sessions_format"),
+        Index("ix_upload_sessions_owner_created", "owner_id", "created_at"),
+        Index("ix_upload_sessions_state_expires", "state", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    # Pre-allocated key for the final assembled object.
+    storage_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    display_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    format: Mapped[str] = mapped_column(String(8), nullable=False)
+    declared_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    part_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_parts: Mapped[int] = mapped_column(Integer, nullable=False)
+    received_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=UploadSessionState.PENDING.value
+    )
+    language_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    parts: Mapped[list[DocumentUploadPart]] = relationship(
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="DocumentUploadPart.part_number",
+    )
+
+
+class DocumentUploadPart(TimestampMixin, Base):
+    """One received chunk of an upload session, already stored durably."""
+
+    __tablename__ = "document_upload_parts"
+    __table_args__ = (
+        UniqueConstraint("session_id", "part_number", name="uq_upload_parts_session_number"),
+        CheckConstraint("part_number > 0", name="ck_upload_parts_number_positive"),
+        CheckConstraint("size_bytes > 0", name="ck_upload_parts_size_positive"),
+        Index("ix_upload_parts_session", "session_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("document_upload_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    part_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Server-generated opaque key of the stored part object; chosen by the
+    # storage backend, never by the client.
+    storage_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    session: Mapped[DocumentUploadSession] = relationship(back_populates="parts")
 
 
 class DocumentTextSegment(TimestampMixin, Base):

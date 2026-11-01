@@ -90,14 +90,48 @@ ZAP/Burp; TLS header posture was verified at the configuration level.
 
 `tools/clamav/production_bootstrap_acceptance.py` (new, committed) automates
 the whole Phase-2 runbook on any Docker host: compose config validation,
-timed build, cold bootstrap with an empty signature volume (health polling,
+timed build, cold bootstrap with a fresh signature volume (health polling,
 SCAN-READY timing, freshclam evidence), db+api start via a generated gitignored
 port override, the three-case acceptance through the real API (reusing the
 exact `malware_fail_closed.py` helpers), engine-outage fail-closed, recovery
-with volume-reuse proof, the 43 200 s refresh-loop liveness check, and `--full`
-for a repeat cold bootstrap. Cross-platform Python because the owner host is
-Windows without WSL. **Not executed here** — this sandbox has no Docker engine
-(verified: `docker`/`docker compose` absent, `command not found`).
+with volume-reuse proof, the 43 200 s refresh-loop liveness check, and
+`--full --confirm-isolated-test` for a repeat cold bootstrap. Cross-platform
+Python because the owner host is Windows without WSL. **Not executed here** —
+this sandbox has no Docker engine (verified: `docker`/`docker compose` absent,
+`command not found`).
+
+**Safety remediation (same day, 2026-10-31).** The first revision of that
+tool hardcoded the *production* project name (`mafhum-prod`, the `name:` in
+`deploy/docker-compose.prod.yml`), so running it on the production host would
+have stopped the production engine and force-deleted the production signature
+volume. It was rewritten before any execution (it was never run anywhere) with
+a verified-isolation architecture:
+
+- every run generates a unique Compose project
+  `mafhum-clamav-acc-<timestamp>-<nonce>`; `mafhum-prod`/`mafhum` (and any
+  `mafhum-prod*` prefix) are reserved and rejected before any docker call;
+- every compose command is issued through one wrapper that injects the
+  isolated `--project-name` and refuses reserved names; images build under
+  run-unique tags; the api is published on `127.0.0.1` only;
+- a read-only preflight aborts (exit 2, nothing created) on project-name
+  collision, existing containers/volumes carrying the run's label, or
+  resource-name collisions;
+- **the default run deletes no volume ever** — the isolated project's first
+  `up` is the cold bootstrap, and cleanup is `down` without `-v`;
+- the only deletion is the `--full` second bootstrap, which additionally
+  requires `--confirm-isolated-test` and a triple gate (created by this run ∧
+  ownership label matches the isolated project ∧ exact name re-verified
+  immediately before `docker volume rm`);
+- failure cleanup never deletes volumes (evidence preserved), and a post-run
+  self-audit fails the run if any issued command could have addressed a
+  production resource.
+
+Pinned by `apps/api/tests/test_clamav_acceptance_safety.py` (17 tests, mocked
+Docker CLI — no Docker or production environment needed), which also holds an
+AST-level proof that no executable string in the tool names a production
+resource. See `docs/DEPLOYMENT_RUNBOOK.md` §3 step 5 for the distinction
+between CI engine tests, isolated local acceptance and production-host
+acceptance.
 
 ## 6. Git: the PR stack landed, then protection
 
@@ -133,7 +167,7 @@ Each commit landed exactly once; no rebase, no force-push, no branch deletion.
 
 | # | Item | What exists now | What the owner must do |
 |---|---|---|---|
-| 1 | **Production ClamAV container evidence** (the top blocker) | `tools/clamav/production_bootstrap_acceptance.py` — the full gate in one command | run it on a Docker host with a real env file; attach the timed report |
+| 1 | **Production ClamAV container evidence** (the top blocker) | `tools/clamav/production_bootstrap_acceptance.py` — the full gate in one command, isolated from production by construction (v2, see §5) | run it on a Docker host with a real env file (it never touches `mafhum-prod`); attach the timed report from `.clamav-acceptance/<project>/report.md` |
 | 2 | **Live alert delivery** | validated configs + CI gate + `--live` contract check | supply `deploy/secrets/metrics_token`, a real Alertmanager destination, start `docker-compose.monitoring.yml`, fire one rehearsal alert and prove receipt |
 | 3 | **PowerPoint visual parity** | OOXML/RTL/benchmark gates green in CI (`pptx-render.yml` does headless LibreOffice) | open the benchmark decks in real PowerPoint on Windows and confirm appearance |
 | 4 | **Staging DAST (full claim)** | local DAST executed + in CI; scope table rehearsed | authorize + run ZAP baseline and authenticated scan against a real staging stack with a real engine and real TLS |
@@ -143,3 +177,106 @@ Each commit landed exactly once; no rebase, no force-push, no branch deletion.
 **Production-readiness statement:** MAFHUM remains **not production-ready**
 until item 1 (and then 2–4) is executed by the owner. Everything executable
 from this environment has been executed and recorded.
+
+## 8. Final review remediation (2026-10-31, PR #12 follow-up)
+
+The final review of PR #12 raised four findings on the ClamAV acceptance
+tool; all four are remediated on branch `arena/8c435881-mafhum` (PR #12,
+kept open and unmerged):
+
+1. **Engine locality + API ownership proof (blocking).** The tool now
+   resolves the *effective* Docker engine endpoint with CLI precedence
+   (`DOCKER_HOST` over `DOCKER_CONTEXT` over the current context's stored
+   endpoint) and refuses remote engines (anything but `unix://`/`npipe:`)
+   before creating anything — locality is never inferred from a context's
+   name. After readiness, an ownership proof inspects the container that
+   holds the `127.0.0.1:<api-port>` binding: it must be this run's compose
+   project's `api` service, running, with exactly that host binding on
+   `8000/tcp`. A local unrelated service answering readiness can no longer
+   receive acceptance uploads, because uploads additionally require the
+   ownership proof to pass.
+2. **`--keep-stack` reproducibility.** The note now prints the complete
+   manual cleanup command — `docker compose --project-name <isolated
+   project> -f docker-compose.prod.yml --env-file <env> -f <generated
+   override> down` — exactly reproducing the run's configuration.
+3. **Fail-fast sequencing.** Failed config validation, image build, or cold
+   bootstrap now skip every dependent phase (build/up, acceptance uploads,
+   `--full` volume gate) while the non-destructive, isolated cleanup still
+   runs.
+4. **Secret redaction.** Every env-file value is redacted from all captured
+   docker stderr/stdout excerpts before they reach the report or stdout;
+   the tool's own generated tokens (project, containers, volumes, images)
+   are shielded so the cleanup command stays reproducible.
+
+Regression coverage lives in
+`apps/api/tests/test_clamav_acceptance_safety.py` (32 checks: remote engine
+via `DOCKER_HOST`; remote engine + local unrelated API; `DOCKER_HOST`
+overriding `DOCKER_CONTEXT`; remote endpoint via a local-*named* context;
+unix/npipe acceptance; api identity mismatch; port-mapping mismatch; config
+and build failure boundaries; `--full` skip; redaction on two failure
+paths; keep-stack command reproduction). Every failure case asserts the
+acceptance runner was never invoked. The runbook (§3 step 5) documents the
+same safety model. This addendum records code changes only — no
+production-readiness claim is made or implied.
+
+## 9. Master-execution pass (2026-10-31, same PR #12 branch)
+
+A further independent pass over PR #12 (§4 of the master execution prompt)
+found and fixed two remaining correctness gaps in the acceptance tool, both
+now regression-tested:
+
+1. **`cold_bootstrap()` returned health only.** It recorded three conditions
+   (container started, SCAN-READY reached, freshclam cold-path evidence) but
+   returned only `healthy` — a healthy container whose logs lacked the
+   fresh-database evidence still counted as a successful cold bootstrap. It
+   now returns success only when the health check AND the cold-path evidence
+   both passed, so missing evidence fails the run, skips db/api and the
+   uploads, and still cleans up non-destructively.
+2. **`--full` did not prove the stop/removal prerequisites.** The volume
+   deletion was attempted regardless of whether the container `stop` and
+   `rm` actually succeeded. Both are now proven first; a failed stop or
+   removal aborts the destructive sub-operation and leaves the volume in
+   place. Volumes are never deleted as cleanup.
+
+Additionally: phase 5 skips the engine-outage upload when the stop failed
+(a failed stop demonstrates nothing about fail-closed behavior); phase 6
+skips the recovery evidence, recovery upload and refresh-loop probe when
+the restart failed; a report that cannot be written is recorded as a run
+failure instead of crashing with a traceback that masks the check results;
+and short values of sensitive-named env keys (secret/password/token/...)
+are redacted at any length, not only values of 4+ characters.
+
+New regression tests (suite now 41 checks): unhealthy engine; missing cold
+evidence; `--full` stop failure; `--full` removal failure; phase-6 restart
+failure; cleanup (`down`) failure; keyboard interrupt (cleanup + report
+still happen); unwritable report path; short-secret redaction.
+
+Verified on the exact final commit: backend 1014 passed / 7 environmental
+skips (exit 0); frontend lint, typecheck, 107/107 tests, production build;
+ruff check + format on both roots; strict mypy; security baseline; compose
+contract; monitoring (81 checks); local DAST 86/86. Live deployment state
+re-verified via the Vercel API: production `mafhum-web.vercel.app` serves
+`main` @ 9dcbc7c; `MAFHUM_API_URL` remains the deliberate
+`https://mafhum-api.invalid` placeholder (owner decision, see
+`docs/FULL_STACK_DEPLOYMENT.md` step 8). No production-readiness claim.
+
+## 10. Phase-6 health gate (final review correction, same PR #12 branch)
+
+The final independent review of `d50f72b` found one remaining fail-fast gap:
+in phase 6, after `compose start clamd` succeeded, `wait_healthy()`'s result
+was recorded but not enforced — an engine that never returned to SCAN-READY
+still had its recovery logs inspected, its signature-volume reuse claimed,
+the recovery upload executed, and the 12-hour refresh-loop probe run.
+
+Phase 6 now requires BOTH a successful start command AND a healthy
+SCAN-READY result before any dependent recovery check runs. When health does
+not return, the run records the failure, skips the recovery evidence, the
+recovery upload and the refresh-loop probe, preserves the volume, and
+continues only with safe isolated cleanup.
+
+New hermetic regression tests (suite: 45 checks): unhealthy recovery skips
+the recovery upload; unhealthy recovery skips the refresh-loop probe;
+unhealthy recovery reports no passing recovery evidence; healthy recovery
+still executes every recovery check (reuse evidence, recovery upload,
+refresh probe). Every failure path also asserts no production resource was
+addressed. No production-readiness claim.

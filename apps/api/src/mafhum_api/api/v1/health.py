@@ -27,7 +27,11 @@ def ready(context: Context, db: DbSession) -> HealthResponse:
     except Exception:
         checks["database"] = "unavailable"
     checks["storage"] = "ok" if _storage_writable(context) else "unavailable"
-    checks["processing_worker"] = "ok" if context.worker.worker_id else "stopped"
+    # Honest state, not intent: `worker_id` exists as soon as the object is
+    # built, so it can never report "stopped". A deployment without a live
+    # dispatcher (e.g. the serverless entrypoint, or a replica configured
+    # without processing) must say so instead of fabricating "ok".
+    checks["processing_worker"] = "ok" if context.worker.is_running else "stopped"
     # When scanning is mandatory, a missing engine is a readiness failure, not a
     # detail to discover on the first upload. `available` performs a real PING;
     # it is not a check of whether an address was configured.

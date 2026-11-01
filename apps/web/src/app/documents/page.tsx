@@ -6,7 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 
 import { ErrorAlert, InfoAlert } from "@/components/alerts";
-import { ApiError, auth, documents, projects } from "@/lib/api";
+import { ApiError, auth, documents, processing, projects } from "@/lib/api";
+import { DIRECT_UPLOAD_MAX_BYTES } from "@/lib/api";
 import type { DocumentSummary, Project, UploadLimits, Usage } from "@/lib/api";
 import { formatBytes } from "@/lib/i18n";
 import { useLocale } from "@/lib/locale-context";
@@ -139,11 +140,27 @@ export default function DocumentsPage() {
     setUploadError(null);
     setNotice(null);
     try {
-      await documents.upload(file, projectId || null);
+      // Small files take the single-request path; larger ones are chunked so
+      // each request stays under a serverless platform's body limit. Both
+      // paths run the same server-side validation, scan, and quota checks.
+      if (file.size <= DIRECT_UPLOAD_MAX_BYTES) {
+        await documents.upload(file, projectId || null);
+      } else {
+        await documents.uploadChunked(file, projectId || null);
+      }
       setFile(null);
       setProjectId("");
       const input = document.getElementById("upload-file") as HTMLInputElement | null;
       if (input) input.value = "";
+      // Serverless deployments have no resident worker: nudge processing now
+      // so the document can move out of "pending" before the next poll. On
+      // worker-driven deployments the tick is refused (409) and ignored —
+      // the worker already handles it.
+      try {
+        await processing.tick();
+      } catch {
+        /* the resident worker or the scheduler owns processing; not an error */
+      }
       await refreshList(1);
     } catch (error) {
       // The server's Arabic message explains exactly why the file was refused.
@@ -158,6 +175,13 @@ export default function DocumentsPage() {
     setBusyId(document.id);
     try {
       await documents.retry(document.id);
+      // Same serverless nudge as after an upload: refused (409) and ignored
+      // wherever a resident worker owns processing.
+      try {
+        await processing.tick();
+      } catch {
+        /* the resident worker or the scheduler owns processing; not an error */
+      }
       await refreshList(page, true);
     } catch (error) {
       setActionError(error instanceof ApiError ? error.message : t("error.generic"));

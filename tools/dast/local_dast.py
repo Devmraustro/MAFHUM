@@ -114,7 +114,9 @@ def section(title: str) -> None:
 def boot_postgres() -> str:
     """Start a real PostgreSQL server via pgserver; return a SQLAlchemy URL."""
     global _PG_SERVER
-    os.environ.setdefault("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="mafhum-dast-xdg-"))
+    os.environ.setdefault(
+        "XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="mafhum-dast-xdg-")
+    )
     import pgserver
 
     _PG_SERVER = pgserver.get_server(str(WORKDIR / "pgdata"), cleanup_mode=None)
@@ -124,9 +126,17 @@ def boot_postgres() -> str:
     socket_dir = (query.get("host") or [""])[0]
     dbname = parts.path.lstrip("/") or "postgres"
     user = parts.username or "postgres"
-    if not socket_dir:
-        raise SystemExit(f"no socket dir in pgserver URI: {uri!r}")
-    return f"postgresql+psycopg://{user}@/{dbname}?host={urllib.parse.quote(socket_dir, safe='')}"
+    if socket_dir:
+        # POSIX pgserver shape: Unix-socket URL with a ?host= query string.
+        quoted = urllib.parse.quote(socket_dir, safe="")
+        return f"postgresql+psycopg://{user}@/{dbname}?host={quoted}"
+    if parts.hostname:
+        # Windows (and any TCP) shape: keep host, port and credentials verbatim,
+        # same dual-shape policy as tests/conftest.py::database_url_with_name.
+        return urllib.parse.urlunsplit(
+            ("postgresql+psycopg", parts.netloc, f"/{dbname}", "", "")
+        )
+    raise SystemExit(f"unusable pgserver URI (no socket dir and no TCP host): {uri!r}")
 
 
 def stop_postgres() -> None:
@@ -180,7 +190,10 @@ def generate_certificate(directory: Path) -> tuple[Path, Path]:
         .not_valid_after(now + datetime.timedelta(days=2))
         .add_extension(
             x509.SubjectAlternativeName(
-                [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+                [
+                    x509.DNSName("localhost"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]
             ),
             critical=False,
         )
@@ -426,7 +439,9 @@ class User:
     """One synthetic user with their own cookie jar and CSRF token."""
 
     def __init__(self, base_url: str, email: str, password: str) -> None:
-        self.client = httpx.Client(base_url=base_url, verify=LOCAL_TLS_VERIFY, timeout=60)
+        self.client = httpx.Client(
+            base_url=base_url, verify=LOCAL_TLS_VERIFY, timeout=60
+        )
         self.email = email
         self.password = password
         self.csrf_token = ""
@@ -474,10 +489,14 @@ class User:
         return self.client.get(url, headers=self.headers(kw.pop("headers", None)), **kw)
 
     def post(self, url: str, **kw: Any) -> httpx.Response:
-        return self.client.post(url, headers=self.headers(kw.pop("headers", None)), **kw)
+        return self.client.post(
+            url, headers=self.headers(kw.pop("headers", None)), **kw
+        )
 
     def delete(self, url: str, **kw: Any) -> httpx.Response:
-        return self.client.delete(url, headers=self.headers(kw.pop("headers", None)), **kw)
+        return self.client.delete(
+            url, headers=self.headers(kw.pop("headers", None)), **kw
+        )
 
     def upload(self, filename: str, payload: bytes, mime: str) -> httpx.Response:
         return self.client.post(
@@ -487,7 +506,9 @@ class User:
         )
 
 
-def wait_document_ready(user: User, document_id: str, timeout: float = 90.0) -> dict[str, Any]:
+def wait_document_ready(
+    user: User, document_id: str, timeout: float = 90.0
+) -> dict[str, Any]:
     deadline = time.time() + timeout
     while time.time() < deadline:
         response = user.get(f"/api/v1/documents/{document_id}")
@@ -509,8 +530,15 @@ def suite_authentication(base: str) -> User:
     section("Authentication (register / login / logout / session)")
     student = User(base, "student@example.com", "Dast-Student-Pass-1")
     response = student.register()
-    check("register returns 201", response.status_code == 201, detail=str(response.status_code))
-    check("register response carries no password material", "password" not in response.text.lower())
+    check(
+        "register returns 201",
+        response.status_code == 201,
+        detail=str(response.status_code),
+    )
+    check(
+        "register response carries no password material",
+        "password" not in response.text.lower(),
+    )
 
     duplicate = User(base, "student@example.com", "Other-Pass-2")
     check("duplicate email rejected", duplicate.register().status_code == 409)
@@ -518,7 +546,9 @@ def suite_authentication(base: str) -> User:
     bad_password = User(base, "student@example.com", "Wrong-Password-9")
     login = bad_password.login()
     check(
-        "login with wrong password is 401", login.status_code == 401, detail=str(login.status_code)
+        "login with wrong password is 401",
+        login.status_code == 401,
+        detail=str(login.status_code),
     )
 
     login = student.login()
@@ -546,7 +576,11 @@ def suite_authentication(base: str) -> User:
     logout = student.post("/api/v1/auth/logout")
     check("logout is 204", logout.status_code == 204, detail=str(logout.status_code))
     after = student.client.get("/api/v1/auth/session")
-    check("session invalid after logout", after.status_code == 401, detail=str(after.status_code))
+    check(
+        "session invalid after logout",
+        after.status_code == 401,
+        detail=str(after.status_code),
+    )
     return student
 
 
@@ -564,7 +598,9 @@ def suite_session_csrf(student: User) -> None:
     section("Session + CSRF (cookie flags, Origin allowlist, double-submit)")
     login = student.login()
     set_cookies = login.headers.get_list("set-cookie")
-    session_cookie = next((c for c in set_cookies if c.startswith("mafhum_session=")), "")
+    session_cookie = next(
+        (c for c in set_cookies if c.startswith("mafhum_session=")), ""
+    )
     csrf_cookie = next((c for c in set_cookies if c.startswith("mafhum_csrf=")), "")
     check("session cookie is set", bool(session_cookie))
     check(
@@ -662,13 +698,23 @@ def suite_isolation(student: User, student2: User) -> dict[str, Any]:
         ):
             raise SystemExit(f"seed upload failed: {response.text[:500]}")
         doc = wait_document_ready(student, response.json()["id"])
-        check(f"{name} processed to ready", doc["status"] == "ready", detail=doc["status"])
+        check(
+            f"{name} processed to ready", doc["status"] == "ready", detail=doc["status"]
+        )
         seeded[name] = doc
 
     response = student2.upload("student-two-gamma.docx", make_docx("arabic"), DOCX_MIME)
-    check("student2 upload accepted", response.status_code == 201, detail=str(response.status_code))
+    check(
+        "student2 upload accepted",
+        response.status_code == 201,
+        detail=str(response.status_code),
+    )
     doc2 = wait_document_ready(student2, response.json()["id"])
-    check("student2 document processed to ready", doc2["status"] == "ready", detail=doc2["status"])
+    check(
+        "student2 document processed to ready",
+        doc2["status"] == "ready",
+        detail=doc2["status"],
+    )
     seeded["student-two-gamma.docx"] = doc2
 
     target_id = seeded["student-one-alpha.pdf"]["id"]
@@ -676,11 +722,14 @@ def suite_isolation(student: User, student2: User) -> dict[str, Any]:
     cross = student2.get(f"/api/v1/documents/{target_id}")
     missing = student2.get(f"/api/v1/documents/{uuid.uuid4()}")
     check(
-        "cross-user document read is 404", cross.status_code == 404, detail=str(cross.status_code)
+        "cross-user document read is 404",
+        cross.status_code == 404,
+        detail=str(cross.status_code),
     )
     check(
         "not-owned and missing-resource responses are identical (modulo request_id)",
-        cross.status_code == missing.status_code and _error_shape(cross) == _error_shape(missing),
+        cross.status_code == missing.status_code
+        and _error_shape(cross) == _error_shape(missing),
         detail=f"{_error_shape(cross)} vs {_error_shape(missing)}",
     )
 
@@ -703,7 +752,8 @@ def suite_isolation(student: User, student2: User) -> dict[str, Any]:
     filenames = {item.get("display_filename") for item in items}
     check(
         "document list contains ONLY the caller's documents",
-        "student-one-alpha.pdf" not in filenames and "student-two-gamma.docx" in filenames,
+        "student-one-alpha.pdf" not in filenames
+        and "student-two-gamma.docx" in filenames,
         detail=str(filenames),
     )
 
@@ -745,7 +795,9 @@ def suite_upload_validation(student: User) -> None:
         detail=str(wrong_mime.status_code),
     )
 
-    oversized = student.upload("big.pdf", b"%PDF-1.7" + b"\x00" * (21 * 1024 * 1024), PDF_MIME)
+    oversized = student.upload(
+        "big.pdf", b"%PDF-1.7" + b"\x00" * (21 * 1024 * 1024), PDF_MIME
+    )
     check(
         "oversized upload rejected (413/422)",
         oversized.status_code in {413, 422},
@@ -753,7 +805,9 @@ def suite_upload_validation(student: User) -> None:
     )
 
     bomb = student.upload("bomb.docx", make_zip_bomb(), DOCX_MIME)
-    check("ZIP-bomb DOCX rejected", bomb.status_code == 422, detail=str(bomb.status_code))
+    check(
+        "ZIP-bomb DOCX rejected", bomb.status_code == 422, detail=str(bomb.status_code)
+    )
 
     traversal = student.upload("../../evil.pdf", pdf_bytes, PDF_MIME)
     check(
@@ -768,7 +822,11 @@ def suite_upload_validation(student: User) -> None:
             ".." not in doc.get("display_filename", ""),
             detail=doc.get("display_filename", ""),
         )
-    escapes = [p for p in (REPO_ROOT / "evil.pdf", REPO_ROOT / "apps" / "evil.pdf") if p.exists()]
+    escapes = [
+        p
+        for p in (REPO_ROOT / "evil.pdf", REPO_ROOT / "apps" / "evil.pdf")
+        if p.exists()
+    ]
     check("no file escaped the storage root", not escapes, detail=str(escapes))
 
 
@@ -811,7 +869,8 @@ def suite_malware_policy(engine: User, no_engine: User, stub: StubClamd) -> None
     )
     check(
         "engine outage NEVER reports malware_detected or CLEAN",
-        outage_reason not in {"malware_detected", "clean"} and "clean" not in outage_reason,
+        outage_reason not in {"malware_detected", "clean"}
+        and "clean" not in outage_reason,
         detail=outage_reason,
     )
 
@@ -829,7 +888,9 @@ def suite_malware_policy(engine: User, no_engine: User, stub: StubClamd) -> None
         detail=f"malware_scanning_available={disclosure}",
     )
     ready = httpx.get(
-        str(no_engine.client.base_url) + "/health/ready", verify=LOCAL_TLS_VERIFY, timeout=10
+        str(no_engine.client.base_url) + "/health/ready",
+        verify=LOCAL_TLS_VERIFY,
+        timeout=10,
     )
     ready_body = ready.json()
     check(
@@ -839,7 +900,9 @@ def suite_malware_policy(engine: User, no_engine: User, stub: StubClamd) -> None
         detail=json.dumps(ready_body.get("checks", {})),
     )
     ready_engine = httpx.get(
-        str(engine.client.base_url) + "/health/ready", verify=LOCAL_TLS_VERIFY, timeout=10
+        str(engine.client.base_url) + "/health/ready",
+        verify=LOCAL_TLS_VERIFY,
+        timeout=10,
     )
     check(
         "/health/ready ok when engine answers PING",
@@ -848,7 +911,9 @@ def suite_malware_policy(engine: User, no_engine: User, stub: StubClamd) -> None
     )
 
 
-def suite_admin_surface(base: str, admin: User, student: User, metrics_token: str) -> None:
+def suite_admin_surface(
+    base: str, admin: User, student: User, metrics_token: str
+) -> None:
     section("Admin surface + scoped metrics")
     with httpx.Client(verify=LOCAL_TLS_VERIFY, timeout=10, base_url=base) as anonymous:
         check(
@@ -882,10 +947,15 @@ def suite_admin_surface(base: str, admin: User, student: User, metrics_token: st
     # Scoped metrics: bearer-token machine principal.
     with httpx.Client(verify=LOCAL_TLS_VERIFY, timeout=10, base_url=base) as machine:
         good = machine.get(
-            "/api/v1/admin/metrics", headers={"Authorization": f"Bearer {metrics_token}"}
+            "/api/v1/admin/metrics",
+            headers={"Authorization": f"Bearer {metrics_token}"},
         )
         families = (
-            {line.split()[2] for line in good.text.splitlines() if line.startswith("# TYPE")}
+            {
+                line.split()[2]
+                for line in good.text.splitlines()
+                if line.startswith("# TYPE")
+            }
             if good.status_code == 200
             else set()
         )
@@ -909,11 +979,17 @@ def suite_admin_surface(base: str, admin: User, student: User, metrics_token: st
             detail=str(sorted(families))[:200],
         )
         wrong = machine.get(
-            "/api/v1/admin/metrics", headers={"Authorization": "Bearer definitively-wrong-token"}
+            "/api/v1/admin/metrics",
+            headers={"Authorization": "Bearer definitively-wrong-token"},
         )
-        check("wrong bearer token is 401", wrong.status_code == 401, detail=str(wrong.status_code))
+        check(
+            "wrong bearer token is 401",
+            wrong.status_code == 401,
+            detail=str(wrong.status_code),
+        )
         elsewhere = machine.get(
-            "/api/v1/admin/overview", headers={"Authorization": f"Bearer {metrics_token}"}
+            "/api/v1/admin/overview",
+            headers={"Authorization": f"Bearer {metrics_token}"},
         )
         check(
             "scoped token grants NOTHING outside /admin/metrics",
@@ -941,7 +1017,11 @@ def suite_admin_surface(base: str, admin: User, student: User, metrics_token: st
 def suite_export_deletion(student: User, student2: User, admin: User) -> None:
     section("Data export isolation + account deletion")
     export = student.get("/api/v1/me/export")
-    check("own export returns 200", export.status_code == 200, detail=str(export.status_code))
+    check(
+        "own export returns 200",
+        export.status_code == 200,
+        detail=str(export.status_code),
+    )
     check("export is a valid ZIP", zipfile.is_zipfile(io.BytesIO(export.content)))
     with zipfile.ZipFile(io.BytesIO(export.content)) as archive:
         names = archive.namelist()
@@ -955,7 +1035,9 @@ def suite_export_deletion(student: User, student2: User, admin: User) -> None:
     check(
         "no ZIP entry escapes (no ../, no absolute path)",
         all(not n.startswith(("/", "\\")) and ".." not in Path(n).parts for n in names),
-        detail=str([n for n in names if n.startswith(("/", "\\")) or ".." in Path(n).parts][:3]),
+        detail=str(
+            [n for n in names if n.startswith(("/", "\\")) or ".." in Path(n).parts][:3]
+        ),
     )
     manifest_names = [row.get("display_filename", "") for row in documents_manifest]
     blob_entries = [n for n in names if n.startswith("files/")]
@@ -968,7 +1050,11 @@ def suite_export_deletion(student: User, student2: User, admin: User) -> None:
     )
 
     before = storage_files()
-    check("storage holds blobs before deletion", len(before) >= 3, detail=f"{len(before)} files")
+    check(
+        "storage holds blobs before deletion",
+        len(before) >= 3,
+        detail=f"{len(before)} files",
+    )
     deleted = student2.delete("/api/v1/me")
     check(
         "account deletion returns 2xx",
@@ -1037,7 +1123,9 @@ def suite_error_hygiene(student: User) -> None:
 
     unknown = student.get("/api/v1/definitely-not-a-route")
     check(
-        "unknown route is a clean 404", unknown.status_code == 404, detail=str(unknown.status_code)
+        "unknown route is a clean 404",
+        unknown.status_code == 404,
+        detail=str(unknown.status_code),
     )
     found = [needle for needle in leaks[:3] if needle in unknown.text]
     check("unknown-route body leaks no internals", not found, detail=str(found))
@@ -1068,7 +1156,9 @@ def suite_login_throttle(base: str) -> None:
             if response.status_code == 429:
                 break
     check(
-        "login throttle engages within the documented limit", 429 in codes, detail=f"codes={codes}"
+        "login throttle engages within the documented limit",
+        429 in codes,
+        detail=f"codes={codes}",
     )
     # Rules of engagement: STOP here. No further attempts are made.
 
@@ -1081,10 +1171,15 @@ def suite_headers_tls_config() -> None:
         "Caddyfile configures X-Frame-Options or frame-ancestors",
         "X-Frame-Options" in caddy or "frame-ancestors" in caddy,
     )
-    check("Caddyfile configures a Content-Security-Policy", "Content-Security-Policy" in caddy)
+    check(
+        "Caddyfile configures a Content-Security-Policy",
+        "Content-Security-Policy" in caddy,
+    )
 
     response = httpx.get(
-        f"https://127.0.0.1:{PORT_ENGINE}/health/live", verify=LOCAL_TLS_VERIFY, timeout=10
+        f"https://127.0.0.1:{PORT_ENGINE}/health/live",
+        verify=LOCAL_TLS_VERIFY,
+        timeout=10,
     )
     check("API answers over TLS (self-signed, local only)", response.status_code == 200)
     docs = httpx.get(
@@ -1124,7 +1219,9 @@ def write_report(commit: str, started: float) -> Path:
 # -------------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--keep", action="store_true", help="keep the .dast workdir afterwards")
+    parser.add_argument(
+        "--keep", action="store_true", help="keep the .dast workdir afterwards"
+    )
     args = parser.parse_args(argv)
 
     warnings.filterwarnings("ignore")
@@ -1135,17 +1232,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if WORKDIR.exists():
         shutil.rmtree(WORKDIR, ignore_errors=True)
+    if WORKDIR.exists():
+        # Removal failed: a previous crashed run's PostgreSQL may still hold
+        # the directory. Say so instead of failing on a confusing mkdir error.
+        raise SystemExit(
+            f"cannot remove the stale work directory {WORKDIR}; stop any "
+            "leftover postgres.exe processes from a previous run and retry"
+        )
     WORKDIR.mkdir(parents=True)
     print(f"== MAFHUM local DAST — commit {commit[:12]} ==")
     print(f"[boot] workdir {WORKDIR}")
 
     database_url = boot_postgres()
-    print("[boot] postgres up (unix socket)")
+    print("[boot] postgres up")
     run_migrations(database_url)
     cert, key = generate_certificate(WORKDIR)
     print("[boot] self-signed certificate generated")
 
-    metrics_token = secrets.token_hex(32)  # shared by both instances, like one deployment
+    metrics_token = secrets.token_hex(
+        32
+    )  # shared by both instances, like one deployment
     stub = StubClamd(STUB_CLAMD_PORT)
     stub.start()
     time.sleep(0.3)
@@ -1203,7 +1309,11 @@ def main(argv: list[str] | None = None) -> int:
                 "admin",
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "DATABASE_URL": database_url, "PYTHONPATH": str(API_SRC)},
+            env={
+                **os.environ,
+                "DATABASE_URL": database_url,
+                "PYTHONPATH": str(API_SRC),
+            },
             capture_output=True,
             text=True,
             timeout=60,
@@ -1221,7 +1331,10 @@ def main(argv: list[str] | None = None) -> int:
         no_engine_student = User(
             no_engine_api.base_url, "no-engine-user@example.com", "No-Engine-Pass-6"
         )
-        check("user registered on instance B", no_engine_student.register().status_code == 201)
+        check(
+            "user registered on instance B",
+            no_engine_student.register().status_code == 201,
+        )
         suite_malware_policy(engine=student, no_engine=no_engine_student, stub=stub)
 
         suite_admin_surface(no_engine_api.base_url, admin, student, metrics_token)

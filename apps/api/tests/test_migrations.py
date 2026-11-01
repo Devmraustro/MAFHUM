@@ -27,6 +27,8 @@ EXPECTED_TABLES = {
     "document_processing_jobs",
     "document_text_segments",
     "source_records",
+    "document_upload_sessions",
+    "document_upload_parts",
 }
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -249,6 +251,7 @@ class TestHistory:
         # walk_revisions returns newest-first. Asserting the exact chain, rather
         # than just its length, catches both a gap and a duplicated revision.
         assert [r.revision for r in revisions] == [
+            "0010_upload_sessions",
             "0009_admin_audit",
             "0008_presentations",
             "0007_document_scan_verdict",

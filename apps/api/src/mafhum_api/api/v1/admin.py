@@ -153,6 +153,9 @@ def metrics(principal: MetricsAccess, context: Context, db: DbSession) -> str:
     scanner_available = int(bool(context.documents.scanner.available))
     documents_by_status: dict[str, int] = data["documents_by_status"]
     jobs_by_status: dict[str, int] = data["presentation_jobs_by_status"]
+    processing_jobs: dict[str, int] = data.get("processing_jobs_by_status", {})
+    upload_sessions: dict[str, int] = data.get("upload_sessions_by_state", {})
+    driver_mode = "worker" if context.settings.processing_worker_enabled else "tick"
     pending = int(documents_by_status.get("pending", 0)) + int(
         documents_by_status.get("processing", 0)
     )
@@ -187,6 +190,21 @@ def metrics(principal: MetricsAccess, context: Context, db: DbSession) -> str:
         "# HELP mafhum_audit_denied_total Denied admin/audit events currently stored.",
         "# TYPE mafhum_audit_denied_total counter",
         f"mafhum_audit_denied_total {data['denied_events']}",
+        "# HELP mafhum_processing_jobs_total Document processing jobs by status.",
+        "# TYPE mafhum_processing_jobs_total gauge",
+    ]
+    for status, count in processing_jobs.items():
+        lines.append(f'mafhum_processing_jobs_total{{status="{status}"}} {count}')
+    lines += [
+        "# HELP mafhum_upload_sessions_total Chunked upload sessions by state.",
+        "# TYPE mafhum_upload_sessions_total gauge",
+    ]
+    for state, count in upload_sessions.items():
+        lines.append(f'mafhum_upload_sessions_total{{state="{state}"}} {count}')
+    lines += [
+        "# HELP mafhum_processing_driver 1 for the deployment's active driver mode.",
+        "# TYPE mafhum_processing_driver gauge",
+        f'mafhum_processing_driver{{mode="{driver_mode}"}} 1',
         "# HELP mafhum_malware_scan_required 1 when uploads require a CLEAN verdict.",
         "# TYPE mafhum_malware_scan_required gauge",
         f"mafhum_malware_scan_required {scan_required}",

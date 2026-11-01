@@ -126,6 +126,10 @@ def settings(postgres_url: str, _migrated: str, storage_root: Path) -> Settings:
         allowed_origins=["http://testserver", "http://localhost:3000"],
         # Small limits so quota tests are fast without uploading real megabytes.
         max_upload_mb=1,
+        # 4 KiB parts keep the chunked-upload tests fast and multi-part.
+        upload_part_size_bytes=4096,
+        # No resident worker in tests: the tick endpoint is the driver.
+        processing_worker_enabled=False,
         max_pdf_pages=5,
         max_documents_per_user=5,
         max_total_bytes_per_user_mb=2,
@@ -230,6 +234,9 @@ class AuthedClient:
 
     def post(self, url: str, **kwargs: Any) -> Any:
         return self._client.post(url, headers=self._headers(self._split_headers(kwargs)), **kwargs)
+
+    def put(self, url: str, **kwargs: Any) -> Any:
+        return self._client.put(url, headers=self._headers(self._split_headers(kwargs)), **kwargs)
 
     def delete(self, url: str, **kwargs: Any) -> Any:
         return self._client.delete(

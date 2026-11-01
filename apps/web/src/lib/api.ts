@@ -112,6 +112,25 @@ export interface Usage {
   max_total_bytes: number;
 }
 
+/** The server's plan for a chunked upload. No storage key is ever included. */
+export interface UploadSessionPlan {
+  id: string;
+  part_size: number;
+  total_parts: number;
+  received_bytes: number;
+  expires_at: string;
+}
+
+/** Counters only — the tick response carries no document identifiers. */
+export interface ProcessingTickResult {
+  recovered_stale_jobs: number;
+  expired_upload_sessions: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  stopped_reason: string;
+}
+
 export interface UploadLimits {
   max_upload_mb: number;
   max_pdf_pages: number;
@@ -306,6 +325,26 @@ export interface KnownSourceList {
   retrieval_enabled: boolean;
 }
 
+/**
+ * Files at or below this size go through the single-request path; anything
+ * larger is chunked so every request stays under the ~4.5 MB body limit of a
+ * serverless deployment. Both paths apply the same server-side validation,
+ * malware scan and quota enforcement.
+ */
+export const DIRECT_UPLOAD_MAX_BYTES = 4 * 1024 * 1024;
+
+// --------------------------------------------------------------- processing
+export const processing = {
+  /**
+   * Drive one bounded processing pass. On worker-driven deployments this is
+   * refused harmlessly (409); on serverless it is what starts processing
+   * after an upload. Fire-and-forget from the UI is fine: it is idempotent.
+   */
+  tick(): Promise<ProcessingTickResult> {
+    return request("/processing/tick", { method: "POST" });
+  },
+};
+
 // ---------------------------------------------------------------- documents
 export const documents = {
   list(params: { page?: number; pageSize?: number; projectId?: string } = {}): Promise<DocumentListResponse> {
@@ -334,6 +373,40 @@ export const documents = {
     form.append("file", file, file.name);
     if (projectId) form.append("project_id", projectId);
     return request("/documents", { method: "POST", body: form });
+  },
+
+  /**
+   * Upload a large file in server-sized chunks.
+   *
+   * Used when the file is bigger than {@link DIRECT_UPLOAD_MAX_BYTES}: a
+   * serverless deployment caps any single request body (~4.5 MB), so the
+   * browser asks the API for an upload session, sends the file as bounded
+   * parts, and the server assembles and validates them. The client never
+   * sees a storage key — the session id and the part plan are all the API
+   * discloses.
+   */
+  async uploadChunked(file: File, projectId?: string | null): Promise<DocumentSummary> {
+    const session = await request<UploadSessionPlan>("/documents/upload-sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        content_type: file.type || null,
+        total_bytes: file.size,
+        ...(projectId ? { project_id: projectId } : {}),
+      }),
+    });
+    const partSize = session.part_size;
+    for (let number = 1; number <= session.total_parts; number += 1) {
+      const blob = file.slice((number - 1) * partSize, number * partSize);
+      await request(`/documents/upload-sessions/${session.id}/parts/${number}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: blob,
+      });
+    }
+    return request<DocumentSummary>(`/documents/upload-sessions/${session.id}/finalize`, {
+      method: "POST",
+    });
   },
 
   retry(id: string): Promise<{ document_id: string; job_id: string; status: string }> {

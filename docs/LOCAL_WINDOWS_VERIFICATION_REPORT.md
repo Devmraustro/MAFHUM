@@ -1,5 +1,13 @@
 # Local Windows verification report — 2026-10-30
 
+> **2026-11-01 status note:** the project's deployment topology has since
+> moved to a Vercel-native architecture carried by PR #12 (see
+> `docs/PRODUCTION_READINESS_REPORT.md`). Everything below remains accurate
+> for the container topology CI still tests; its D1–D4 findings were remediated
+> on commits `00cbdd5`…`9882099`, and the production ClamAV evidence it marked
+> BLOCKED is now tracked as the external-scanner decision in
+> `docs/SCANNER_DEPLOYMENT_RUNBOOK.md`.
+
 Executor: Z Code (native Windows host) · Scope: the narrow local/owner pass of
 `docs/Z_CODE_HANDOFF_2026-10-28.md` · Branch: `verification/windows-local-2026-10-29`
 (= PR #6 head `1199178d1b138aeda88b4277176d72044ed271a3`, base `main` `2a15f0c616806cede4ed4a09d6a2c2669313c8f3`).

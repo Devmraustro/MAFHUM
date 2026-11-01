@@ -102,6 +102,39 @@ class TestAdminViews:
         assert user_a.email not in response.text
         assert "@" not in response.text
 
+    def test_metrics_disclose_the_processing_driver_and_queues(
+        self, user_a: AuthedClient, app: FastAPI
+    ) -> None:
+        """The serverless story is observable: which driver is active, how
+        deep the processing queue is, and how many upload sessions are in
+        each state — counters only, no identifiers."""
+        from tests.conftest import upload_kwargs
+        from tests.fixtures_content import make_pdf
+
+        promote(app, user_a.user_id)  # type: ignore[arg-type]
+        # One uploaded-but-unprocessed document (worker is disabled in tests,
+        # so the job stays queued) and one abandoned upload session.
+        user_a.upload(**upload_kwargs(make_pdf("arabic", pages=1), "q.pdf", "application/pdf"))
+        created = user_a.post(
+            "/api/v1/documents/upload-sessions",
+            json={
+                "filename": "a.pdf",
+                "content_type": "application/pdf",
+                "total_bytes": 100,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        response = user_a.get("/api/v1/admin/metrics")
+        assert response.status_code == 200
+        text = response.text
+        assert 'mafhum_processing_driver{mode="tick"} 1' in text  # test config: no worker
+        assert 'mafhum_processing_jobs_total{status="queued"} 1' in text
+        assert 'mafhum_upload_sessions_total{state="pending"} 1' in text
+        # Counters only: no session ids, document ids, or keys.
+        assert created.json()["id"] not in text
+        assert "storage_key" not in text
+
     def test_audit_trail_is_readable_and_filterable(
         self, user_a: AuthedClient, app: FastAPI
     ) -> None:

@@ -36,10 +36,35 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://mafhum:change_me@localhost:5432/mafhum"
     db_pool_size: int = 5
     db_max_overflow: int = 10
+    # Emit a lightweight liveness ping before each pooled connection checkout.
+    # Intended for serverless/managed-Postgres deployments where connections
+    # can go stale between invocations; off by default to keep the
+    # long-lived-container behaviour (and its per-request latency) unchanged.
+    db_pool_pre_ping: bool = False
+    # Bound how long establishing a PostgreSQL connection may take. Pure
+    # fail-fast improvement: reachable databases connect well inside this;
+    # unreachable ones abort instead of hanging a request indefinitely.
+    db_connect_timeout_seconds: int = 10
+    # Recycle pooled connections older than this many seconds. -1 (disabled)
+    # preserves the long-lived-container default; managed providers that close
+    # idle connections (e.g. Neon) should set it just below the provider's
+    # idle limit. Pair with DB_POOL_PRE_PING=true on serverless.
+    db_pool_recycle_seconds: int = -1
 
     # --- private blob storage -------------------------------------------------
     # Files live OUTSIDE any static/public directory and are never served directly.
-    storage_backend: Literal["local"] = "local"
+    storage_backend: Literal["local", "vercel_blob"] = "local"
+    # Credentials for the private Blob backend. Exactly one mode is valid:
+    # - Off Vercel (local dev, containers, CI): a read-write token
+    #   ("vercel_blob_rw_<store>_<secret>") is required.
+    # - On Vercel: either the token, or BLOB_STORE_ID + the function's OIDC
+    #   identity (the SDK resolves those itself).
+    # These are real Settings fields so the documented template, the fail-fast
+    # checks below, and the SDK credential resolution all describe one surface;
+    # the adapter passes the token to the SDK explicitly, so a token that only
+    # exists in a local `.env` file is honoured too.
+    blob_read_write_token: str = ""
+    blob_store_id: str = ""
     storage_root: Path = Path("./data/mafhum-storage")
     storage_dir_mode: int = 0o700
     storage_file_mode: int = 0o600
@@ -54,6 +79,11 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "mafhum_csrf"
     csrf_header_name: str = "X-CSRF-Token"
     session_ttl_minutes: int = 60 * 24 * 7
+    # Chunked uploads (Vercel-safe path for files above the 4.5 MB request
+    # body limit). Parts are bounded so any single request stays small; the
+    # session expires and its stored parts are reclaimed when abandoned.
+    upload_part_size_bytes: int = 4 * 1024 * 1024
+    upload_session_ttl_minutes: int = 60 * 24
     cookie_secure: bool = False
     # Login throttle. Counted in the database, so the limit holds across every
     # API process rather than per worker.
@@ -77,6 +107,13 @@ class Settings(BaseSettings):
     # The single-writer lease makes running a second worker fail fast; this
     # is the supported way to scale out instead.
     processing_worker_enabled: bool = True
+    # Serverless processing driver: when the resident worker is disabled,
+    # authenticated "ticks" drive processing instead. Bounded per pass.
+    processing_tick_max_jobs: int = 8
+    processing_tick_budget_seconds: float = 25.0
+    # Bearer token for the unattended (scheduler) tick endpoint. Empty (the
+    # default) disables that endpoint entirely; session users can still tick.
+    processing_tick_token: str = ""
     processing_worker_count: int = 2
     processing_job_timeout_seconds: int = 120
     processing_stale_after_seconds: int = 300
@@ -242,6 +279,13 @@ class Settings(BaseSettings):
             problems.append("CLAMD_HOST or CLAMD_UNIX_PATH must be set in production")
         if len(self.metrics_scrape_token) < 32:
             problems.append("METRICS_SCRAPE_TOKEN must be at least 32 characters in production")
+        if self.storage_backend == "vercel_blob" and not (
+            self.blob_read_write_token or self.blob_store_id
+        ):
+            problems.append(
+                "BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID must be set in production "
+                "when STORAGE_BACKEND=vercel_blob"
+            )
         if problems:
             raise RuntimeError("Insecure production configuration: " + "; ".join(problems))
 

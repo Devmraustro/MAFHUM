@@ -180,8 +180,10 @@ class LocalFileStorage:
         self._chmod(self._root, self._dir_mode)
 
         written = 0
-        # O_EXCL guarantees we never clobber an existing object (e.g. another
-        # user's file) even if a key were somehow reused.
+        # O_EXCL guarantees the temporary name is unique; the publish step
+        # below (a hard link, NOT a rename) additionally guarantees we never
+        # clobber an existing object (e.g. another user's file) even if a key
+        # were somehow reused.
         tmp_path = target.with_name(f".tmp-{secrets.token_hex(8)}")
         try:
             fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, self._file_mode)
@@ -199,11 +201,20 @@ class LocalFileStorage:
                 handle.flush()
                 os.fsync(handle.fileno())
             tmp_path.chmod(self._file_mode)
-            tmp_path.replace(target)
-        except BaseException:
-            # Includes KeyboardInterrupt/SystemExit: never leave a partial file.
+            # Publish atomically WITHOUT overwriting: os.link fails with
+            # FileExistsError when the target already exists, so a reused key
+            # fails closed instead of replacing the stored object.
+            try:
+                os.link(tmp_path, target)
+            except FileExistsError as exc:
+                raise StorageError("storage key already exists") from exc
+            except OSError as exc:
+                raise StorageError("could not publish stored object") from exc
+        finally:
+            # On success the published link owns the name; in every other case
+            # (including KeyboardInterrupt/SystemExit) the temporary file must
+            # not survive.
             _unlink_quietly(tmp_path)
-            raise
         return StorageObject(key=key, size_bytes=written)
 
     def open_read(self, key: str) -> Iterator[bytes]:

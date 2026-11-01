@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -30,9 +31,12 @@ from mafhum_api.core.request_context import REQUEST_ID_HEADER, RequestIdMiddlewa
 from mafhum_api.db.base import Database
 from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
+from mafhum_api.services.documents.processing_tick import ProcessingTicker
 from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
-from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
+from mafhum_api.services.documents.storage import DocumentStorage, LocalFileStorage, StorageError
+from mafhum_api.services.documents.upload_sessions import UploadSessionService
+from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
@@ -76,12 +80,22 @@ def build_context(settings: Settings | None = None) -> AppContext:
         settings.database_url,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
+        pool_pre_ping=settings.db_pool_pre_ping,
+        connect_timeout_seconds=settings.db_connect_timeout_seconds,
+        pool_recycle_seconds=settings.db_pool_recycle_seconds,
     )
-    storage = LocalFileStorage(
-        settings.storage_root,
-        dir_mode=settings.storage_dir_mode,
-        file_mode=settings.storage_file_mode,
-    )
+    storage: DocumentStorage
+    if settings.storage_backend == "vercel_blob":
+        storage = VercelBlobStorage(
+            blob_read_write_token=settings.blob_read_write_token,
+            blob_store_id=settings.blob_store_id,
+        )
+    else:
+        storage = LocalFileStorage(
+            settings.storage_root,
+            dir_mode=settings.storage_dir_mode,
+            file_mode=settings.storage_file_mode,
+        )
     limits = document_limits(settings)
     worker = ProcessingWorker(database, storage, limits, worker_config(settings))
     scanner = build_scanner(settings)
@@ -96,19 +110,36 @@ def build_context(settings: Settings | None = None) -> AppContext:
             max_output_bytes=settings.presentation_max_output_mb * 1024 * 1024,
         ),
     )
+    documents = DocumentService(
+        storage,
+        limits,
+        row_locking=database.supports_row_locking,
+        scanner=scanner,
+        scan_required=settings.malware_scan_required,
+    )
+    upload_sessions = UploadSessionService(
+        storage,
+        documents,
+        limits,
+        part_size_bytes=settings.upload_part_size_bytes,
+        session_ttl=timedelta(minutes=settings.upload_session_ttl_minutes),
+    )
+    ticker = ProcessingTicker(
+        database,
+        worker,
+        upload_sessions,
+        max_jobs=settings.processing_tick_max_jobs,
+        budget_seconds=settings.processing_tick_budget_seconds,
+    )
     return AppContext(
         settings=settings,
         database=database,
         storage=storage,
         identity=IdentityService(session_ttl_minutes=settings.session_ttl_minutes),
         projects=ProjectService(),
-        documents=DocumentService(
-            storage,
-            limits,
-            row_locking=database.supports_row_locking,
-            scanner=scanner,
-            scan_required=settings.malware_scan_required,
-        ),
+        documents=documents,
+        upload_sessions=upload_sessions,
+        processing_ticker=ticker,
         sources=SourceService(),
         deletion=DeletionService(storage),
         research=research,

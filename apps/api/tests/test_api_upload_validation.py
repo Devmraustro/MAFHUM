@@ -151,9 +151,12 @@ class TestMalformedAndEmpty:
             from mafhum_api.db.models import Document
 
             key = session.get(Document, uuid.UUID(document_id)).storage_key  # type: ignore[union-attr]
-        app.state.context.storage.write(
-            key, iter([b"%PDF-1.7\n" + b"\xff\xfe" * 500]), max_bytes=1 << 20
-        )
+        storage = app.state.context.storage
+        # Storage keys never overwrite (fail-closed on both backends), so the
+        # realistic corruption path is: the object is lost and re-delivered as
+        # garbage under the same key.
+        assert storage.delete(key) is True
+        storage.write(key, iter([b"%PDF-1.7\n" + b"\xff\xfe" * 500]), max_bytes=1 << 20)
 
         run_worker(app)
         body = user_a.get(f"/api/v1/documents/{document_id}").json()

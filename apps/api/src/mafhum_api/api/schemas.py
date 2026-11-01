@@ -133,6 +133,33 @@ class DocumentDeletedResponse(BaseModel):
     deleted: bool
 
 
+class UploadSessionCreateRequest(BaseModel):
+    """Intent payload. ``filename`` is sanitized and ``content_type`` checked
+    against the same allowlist as the single-request upload path."""
+
+    filename: str
+    content_type: str | None = None
+    total_bytes: int
+    project_id: uuid.UUID | None = None
+
+
+class UploadSessionResponse(BaseModel):
+    """What the client needs to upload: session id, part size, part count.
+    Storage keys never appear here."""
+
+    id: uuid.UUID
+    part_size: int
+    total_parts: int
+    received_bytes: int
+    expires_at: datetime
+
+
+class UploadPartResponse(BaseModel):
+    part_number: int
+    size_bytes: int
+    received_bytes: int
+
+
 class UsageResponse(BaseModel):
     documents: int
     total_bytes: int

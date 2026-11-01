@@ -35,6 +35,8 @@ from mafhum_api.db.models import (
     AuditOutcome,
     DeletionState,
     Document,
+    DocumentProcessingJob,
+    DocumentUploadSession,
     PresentationArtifact,
     PresentationJob,
     User,
@@ -53,6 +55,8 @@ ACTIONS: frozenset[str] = frozenset(
         "audit_events_purged",
         "document_uploaded",
         "document_deleted",
+        "upload_session_created",
+        "upload_session_aborted",
         "presentation_created",
         "presentation_deleted",
         "admin_overview_viewed",
@@ -369,6 +373,18 @@ class AuditService:
             select(PresentationJob.status, func.count()).group_by(PresentationJob.status)
         ).all():
             jobs_by_status[str(status)] = int(count)
+        processing_jobs_by_status: dict[str, int] = {}
+        for status, count in db.execute(
+            select(DocumentProcessingJob.status, func.count()).group_by(
+                DocumentProcessingJob.status
+            )
+        ).all():
+            processing_jobs_by_status[str(status)] = int(count)
+        upload_sessions_by_state: dict[str, int] = {}
+        for state, count in db.execute(
+            select(DocumentUploadSession.state, func.count()).group_by(DocumentUploadSession.state)
+        ).all():
+            upload_sessions_by_state[str(state)] = int(count)
         return {
             "active_users": int(active_users),
             "documents": int(documents),
@@ -378,6 +394,8 @@ class AuditService:
             "denied_events": int(denied),
             "documents_by_status": documents_by_status,
             "presentation_jobs_by_status": jobs_by_status,
+            "processing_jobs_by_status": processing_jobs_by_status,
+            "upload_sessions_by_state": upload_sessions_by_state,
         }
 
     def usage(self, db: Session, *, page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
