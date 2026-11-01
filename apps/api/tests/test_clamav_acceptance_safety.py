@@ -527,7 +527,11 @@ def test_keep_stack_leaves_the_isolated_project_running(tmp_path: Path) -> None:
     assert "--env-file" in command_line and str(tmp_path / "env") in command_line
     assert "override.yml" in command_line
     assert command_line.rstrip().endswith("down")
-    assert "-v" not in command_line and "--volumes" not in command_line
+    # Token-level check: a raw substring would false-positive on any path
+    # containing "-v" (e.g. a checkout directory named "MAFHUM-vercel"), while
+    # missing nothing — the dangerous forms are standalone tokens.
+    tokens = command_line.split()
+    assert "-v" not in tokens and "--volumes" not in tokens, command_line
 
 
 # ---------------------------------------------------- loopback port ownership

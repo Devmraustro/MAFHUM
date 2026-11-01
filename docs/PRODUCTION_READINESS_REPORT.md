@@ -122,6 +122,59 @@ An earlier CI-green code state is also recorded at `e5fcac3`
 delivery; if the delivered head differs from a green run's SHA, that is
 stated explicitly — never silently.
 
+### 3.4 Independent verification and additions (2026-11-01, second session)
+
+A second session re-verified this report's central claims from a fresh clone
+of the branch head on a native Windows 11 host, independent of the session
+that wrote §§1–3.3, then filled three genuine gaps. Results:
+
+| Check | Result |
+| --- | --- |
+| Backend pytest (pgserver, real migrations) | **1143 collected, 0 failed, exit 0** — the only non-passes are the Windows-conditional skips (POSIX mode bits, Unix-socket stubs, symlink privilege); CI's Linux split of the same 1143 is 1136 passed / 7 skipped |
+| Frontend (`npm ci`, vitest, `tsc --noEmit`, `eslint --max-warnings 0`, `next build`) | all exit 0 |
+| bandit (`-r src -ll -q`) / pip-audit | clean / no known vulnerabilities |
+| tools ruff (CI's exact command, incl. `tools/dast` + `tools/acceptance`) | clean |
+| monitoring validator | **81/81 checks pass** locally |
+| Local authenticated DAST, re-executed at the branch head | **86 passed, 0 failed, exit 0** — the §4.2 claim independently reproduced on a different host |
+| mypy `--no-incremental src` | single finding: the pre-existing Windows-only `socket.AF_UNIX` attr error at `clamd.py:164` (unreachable on Linux; CI's mypy job is green at this head) |
+| Branch CI on the tested head | MAFHUM CI #138 + Production malware acceptance #43, both `success` at `8f6a3f2e` (API-verified `head_sha` match) |
+
+**Defect found and fixed by this session** (test-only, Windows-path false
+positive): `test_clamav_acceptance_safety.py` checked the printed cleanup
+command with a raw substring (`"-v" not in command_line`), which fails on any
+checkout path containing `-v` (e.g. a directory named `MAFHUM-vercel`). Fixed
+to token-level matching — strictly stronger, since the dangerous forms are
+standalone tokens. Two Windows-portability defects in `tools/dast/local_dast.py`
+were found and fixed the same way: pgserver's TCP-shaped URI (Windows) now
+parses instead of aborting, and a crashed run's stale work directory produces
+an actionable error instead of a confusing `mkdir` failure. No production
+behaviour changed; all 86 DAST checks and the full suite pass after the fixes.
+
+**Additions this session (Phase 2/4 of the master order):**
+
+1. `docs/SCANNER_DEPLOYMENT_RUNBOOK.md` — the external-scanner architecture
+   decision matrix (Option A selected: clamd + stunnel TLS on a small VPS —
+   zero application-code change, reusing the audited `deploy/clamd` image),
+   secure-networking requirements, reference configuration, health-check
+   strategy, acceptance commands and rollback. Creates no infrastructure.
+2. `tools/acceptance/vercel_blob_smoke.py` — the Phase-4 **real-store**
+   acceptance script for the Blob adapter (upload/read/metadata/overwrite/
+   size boundaries/missing-object/delete/batch/reconciliation/unsafe-key/
+   unauthenticated-URL privacy probe). Owner-gated: fails fast (exit 2)
+   without `BLOB_READ_WRITE_TOKEN`; a green run is real-service evidence,
+   which §3.2's fake-client tests deliberately are not.
+3. **SDK re-check (2026-11-01):** PyPI's latest `vercel-blob` is still
+   **0.5.0** — the version this adapter pins and verifies against. Client-token
+   minting remains unavailable in Python, so the API-mediated chunked upload
+   stays necessary; the §5.1 BLOCKED (SDK) classification is unchanged.
+4. Dated status notes added to `docs/LOCAL_WINDOWS_VERIFICATION_REPORT.md`
+   and `docs/OPERATIONAL_VERIFICATION_REPORT.md` reconciling them with the
+   Vercel-native topology.
+5. Observation (recorded, not fixed — outside CI's tools-lint scope):
+   `tools/e2e/boot_postgres.py` carries pre-existing ruff findings; CI's
+   tools command covers `security_baseline, acceptance, monitoring, dast,
+   clamav` only.
+
 ---
 
 ## 4. Commits (this master-execution continuation, on PR #12)
@@ -229,16 +282,19 @@ Neither PR was merged or closed by this session.
 
 ## 6. Owner actions (exact, ordered)
 
-1. **Decide the ClamAV architecture** (hard blocker): external clamd host
-   reachable from Vercel Functions, or a scanning sidecar. Then set
-   `CLAMD_*` and keep `MALWARE_SCAN_REQUIRED=true`. Evidence needed: real
-   infected/clean/outage results from the acceptance tooling against the
+1. **Decide the ClamAV architecture** (hard blocker): the evaluation matrix,
+   recommended architecture (clamd + stunnel TLS on a small VPS), configuration,
+   acceptance commands and rollback are prepared in
+   `docs/SCANNER_DEPLOYMENT_RUNBOOK.md` — the owner provisions it, then sets
+   `CLAMD_*` and keeps `MALWARE_SCAN_REQUIRED=true`. Evidence needed: real
+   infected/clean/outage results from the acceptance commands against the
    real host.
 2. **Provision Neon** (free tier is fine to start) — pooled + direct
    endpoints; follow `docs/NEON_DATABASE_RUNBOOK.md`.
 3. **Provision the Vercel Blob store**; set `STORAGE_BACKEND=vercel_blob`
-   + `BLOB_READ_WRITE_TOKEN`; then run the real-store smoke (Phase D
-   checklist) — no fake-client result counts.
+   + `BLOB_READ_WRITE_TOKEN`; then run the real-store acceptance
+   (`python tools/acceptance/vercel_blob_smoke.py`) — no fake-client result
+   counts.
 4. **Set production env vars** per `docs/VERCEL_SERVERLESS_RUNBOOK.md` §2
    (incl. new `PROCESSING_TICK_TOKEN`, `METRICS_SCRAPE_TOKEN`).
 5. **Run migrations** against the direct endpoint (`alembic upgrade head`).

@@ -1,5 +1,11 @@
 # Operational verification report — 2026-10-31
 
+> **2026-11-01 status note:** written before the Vercel-native migration
+> landed (PR #12). Its merge-sequence analysis is superseded by events (the
+> stack has since merged to `main` via PRs #9–#11); its ClamAV BLOCKED item is
+> now carried by `docs/SCANNER_DEPLOYMENT_RUNBOOK.md`. The monitoring audit and
+> the PowerShell/Docker absence evidence remain valid as recorded.
+
 Executor: Z Code (native Windows host) · Base commit tested:
 `9882099df4c62c44aeceedca9caa5060f1256e70` (branch
 `remediation/windows-findings-d1-d4`, PR #7 head) · Session window began
