@@ -23,10 +23,14 @@ from mafhum_api.services.documents.storage import (
 
 logger = logging.getLogger(__name__)
 
+
+def _is_blob_not_found(exc: Exception) -> bool:
+    """Recognize the SDK's documented not-found exception without leaking it."""
+    return isinstance(exc, FileNotFoundError) or type(exc).__name__ == "BlobNotFoundError"
+
 _BLOB_PREFIX = "mafhum/"
 _KEY_PATTERN = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{64}$")
 _SPOOL_MEMORY_BYTES = 1024 * 1024
-_COPY_CHUNK_BYTES = 256 * 1024
 
 
 class _BlobDownload(Protocol):
@@ -147,11 +151,11 @@ class VercelBlobStorage:
             try:
                 with self._client.stream_blob(pathname, access="private") as download:
                     yield from download
-            except FileNotFoundError as exc:
-                raise StorageObjectNotFoundError("object not found") from exc
-            except StorageError:
-                raise
             except Exception as exc:
+                if _is_blob_not_found(exc):
+                    raise StorageObjectNotFoundError("object not found") from exc
+                if isinstance(exc, StorageError):
+                    raise
                 raise StorageError("could not read private Blob object") from exc
 
         return _stream()
@@ -167,9 +171,9 @@ class VercelBlobStorage:
         pathname = self._pathname(key)
         try:
             metadata = self._client.head_blob(pathname)
-        except FileNotFoundError as exc:
-            raise StorageObjectNotFoundError("object not found") from exc
         except Exception as exc:
+            if _is_blob_not_found(exc):
+                raise StorageObjectNotFoundError("object not found") from exc
             raise StorageError("could not inspect private Blob object") from exc
         if metadata.pathname != pathname or not isinstance(metadata.size, int) or metadata.size < 0:
             raise StorageError("Blob provider returned invalid object metadata")
@@ -179,9 +183,9 @@ class VercelBlobStorage:
         pathname = self._pathname(key)
         try:
             self._client.head_blob(pathname)
-        except FileNotFoundError:
-            return False
         except Exception as exc:
+            if _is_blob_not_found(exc):
+                return False
             raise StorageError("could not verify private Blob object before deletion") from exc
         try:
             self._client.delete_blob(pathname)
