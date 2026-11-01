@@ -53,6 +53,8 @@ ACTIONS: frozenset[str] = frozenset(
         "audit_events_purged",
         "document_uploaded",
         "document_deleted",
+        "upload_session_created",
+        "upload_session_aborted",
         "presentation_created",
         "presentation_deleted",
         "admin_overview_viewed",

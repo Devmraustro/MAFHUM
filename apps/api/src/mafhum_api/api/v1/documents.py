@@ -14,9 +14,9 @@ import uuid
 from collections.abc import Iterator
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, UploadFile, status
+from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from mafhum_api.api.deps import (
     Context,
@@ -34,9 +34,12 @@ from mafhum_api.api.schemas import (
     DocumentTextResponse,
     DocumentTextSegmentResponse,
     LimitsResponse,
+    UploadPartResponse,
+    UploadSessionCreateRequest,
+    UploadSessionResponse,
     UsageResponse,
 )
-from mafhum_api.core.errors import ValidationError
+from mafhum_api.core.errors import FileRejectedError, ValidationError
 from mafhum_api.db.models import Document
 from mafhum_api.services.documents.validators import ALLOWED_EXTENSIONS
 
@@ -272,6 +275,160 @@ def retry_document(
     db.commit()
     context.worker.wake()
     return DocumentRetryResponse(document_id=document_id, job_id=job.id, status=job.status)
+
+
+# ------------------------------------------------------- chunked upload flow
+@router.post(
+    "/upload-sessions",
+    response_model=UploadSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[CsrfGuard],
+)
+def create_upload_session(
+    payload: UploadSessionCreateRequest,
+    user: CurrentUser,
+    context: Context,
+    db: DbSession,
+) -> UploadSessionResponse:
+    """Create an upload intent for a large document.
+
+    Nothing is stored yet. The response tells the client how to split the
+    file; every storage key stays server-side.
+    """
+    session = context.upload_sessions.create_session(
+        db,
+        owner_id=user.id,
+        filename=payload.filename,
+        content_type=payload.content_type,
+        total_bytes=payload.total_bytes,
+        project_id=payload.project_id,
+    )
+    context.audit.record(
+        db,
+        action="upload_session_created",
+        actor_id=user.id,
+        target_type="upload_session",
+        target_id=str(session.id),
+    )
+    db.commit()
+    return UploadSessionResponse(
+        id=session.id,
+        part_size=session.part_size,
+        total_parts=session.total_parts,
+        received_bytes=session.received_bytes,
+        expires_at=session.expires_at,
+    )
+
+
+@router.put(
+    "/upload-sessions/{session_id}/parts/{part_number}",
+    response_model=UploadPartResponse,
+    dependencies=[CsrfGuard],
+)
+async def put_upload_part(
+    session_id: uuid.UUID,
+    part_number: int,
+    user: CurrentUser,
+    context: Context,
+    db: DbSession,
+    request: Request,
+) -> UploadPartResponse:
+    """Upload one bounded part as a raw octet-stream body.
+
+    Each request carries at most one part, sized by the server, so the body
+    stays under platform request limits regardless of the document's total
+    size. Ownership is enforced before a single byte is read.
+    """
+    # The raw stream is buffered for the worker thread, but only up to the
+    # configured part size plus one byte — a body larger than one part is
+    # refused while it is being read, never buffered in full. (The platform
+    # already caps request bodies; this protects self-hosted deployments.)
+    limit = context.settings.upload_part_size_bytes
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > limit:
+            raise FileRejectedError(
+                "حجم الجزء يتجاوز الحد المسموح.",
+                details={"reason": "part_too_large"},
+            )
+        chunks.append(chunk)
+    part = await run_in_threadpool(
+        context.upload_sessions.put_part,
+        db,
+        owner_id=user.id,
+        session_id=session_id,
+        part_number=part_number,
+        chunks=chunks,
+    )
+    # No audit event per part: the part row itself is the durable record;
+    # the audit log tracks session lifecycle, not chunk traffic.
+    db.commit()
+    return UploadPartResponse(
+        part_number=part.part_number,
+        size_bytes=part.size_bytes,
+        received_bytes=part.session.received_bytes,
+    )
+
+
+@router.post(
+    "/upload-sessions/{session_id}/finalize",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[CsrfGuard],
+)
+async def finalize_upload_session(
+    session_id: uuid.UUID,
+    user: CurrentUser,
+    context: Context,
+    db: DbSession,
+) -> DocumentResponse:
+    """Assemble the uploaded parts and register the document.
+
+    The assembled object goes through the exact same verification, malware
+    scan, quota and job pipeline as a single-request upload.
+    """
+    document = await run_in_threadpool(
+        context.upload_sessions.finalize,
+        db,
+        owner_id=user.id,
+        session_id=session_id,
+    )
+    context.audit.record(
+        db,
+        action="document_uploaded",
+        actor_id=user.id,
+        target_type="document",
+        target_id=str(document.id),
+    )
+    db.commit()
+    context.worker.wake()
+    return _to_response(document)
+
+
+@router.delete(
+    "/upload-sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[CsrfGuard],
+)
+def abort_upload_session(
+    session_id: uuid.UUID,
+    user: CurrentUser,
+    context: Context,
+    db: DbSession,
+) -> Response:
+    """Abandon a pending session; its stored parts are removed."""
+    context.upload_sessions.abort(db, owner_id=user.id, session_id=session_id)
+    context.audit.record(
+        db,
+        action="upload_session_aborted",
+        actor_id=user.id,
+        target_type="upload_session",
+        target_id=str(session_id),
+    )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(

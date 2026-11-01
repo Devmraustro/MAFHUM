@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -33,6 +34,7 @@ from mafhum_api.services.deletion.service import DeletionService
 from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
 from mafhum_api.services.documents.storage import DocumentStorage, LocalFileStorage, StorageError
+from mafhum_api.services.documents.upload_sessions import UploadSessionService
 from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
@@ -107,18 +109,26 @@ def build_context(settings: Settings | None = None) -> AppContext:
             max_output_bytes=settings.presentation_max_output_mb * 1024 * 1024,
         ),
     )
+    documents = DocumentService(
+        storage,
+        limits,
+        row_locking=database.supports_row_locking,
+        scanner=scanner,
+        scan_required=settings.malware_scan_required,
+    )
     return AppContext(
         settings=settings,
         database=database,
         storage=storage,
         identity=IdentityService(session_ttl_minutes=settings.session_ttl_minutes),
         projects=ProjectService(),
-        documents=DocumentService(
+        documents=documents,
+        upload_sessions=UploadSessionService(
             storage,
+            documents,
             limits,
-            row_locking=database.supports_row_locking,
-            scanner=scanner,
-            scan_required=settings.malware_scan_required,
+            part_size_bytes=settings.upload_part_size_bytes,
+            session_ttl=timedelta(minutes=settings.upload_session_ttl_minutes),
         ),
         sources=SourceService(),
         deletion=DeletionService(storage),

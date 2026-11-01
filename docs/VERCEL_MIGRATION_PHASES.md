@@ -117,12 +117,60 @@ are also skipped in CI's backend job.
   provisioning + token are owner actions; fake-client tests are explicit test
   doubles, not real-service claims).
 
-## Phase E — Direct upload architecture — ⬜ (planned)
+## Phase E — Direct upload architecture — ✅ backend; frontend wiring in Phase J
 
 Constraint discovered during the Phase-A SDK review: the pinned Python SDK
 (`vercel-blob==0.5.0`) has **no client-upload-token minting API** (it only
 recognizes the `client_token_pathname_mismatch` service error), so the
-direct-to-Blob browser flow of the JS SDK is not directly available.
+direct-to-Blob browser flow of the JS SDK is not available to this backend.
+The SDK's `multipart_upload_blob` is a single-process context manager and
+cannot span serverless invocations.
+
+Implemented architecture — **API-mediated chunked upload sessions**:
+
+- `POST /api/v1/documents/upload-sessions` — authenticated, CSRF-guarded
+  intent: filename/content-type validated against the same allowlist,
+  declared size capped by `MAX_UPLOAD_MB`, soft quota check, server-chosen
+  opaque final key, part size (`UPLOAD_PART_SIZE_BYTES`, default 4 MiB,
+  under the ~4.5 MB platform body limit) and TTL
+  (`UPLOAD_SESSION_TTL_MINUTES`). The response exposes only the session id
+  and the splitting plan — never a storage key.
+- `PUT /upload-sessions/{id}/parts/{n}` — one bounded part per request,
+  raw octet-stream. Ownership is enforced before any byte is stored; the
+  endpoint refuses a body larger than one part *while reading it* (no
+  unbounded buffering on self-hosted deployments); duplicate part numbers
+  are refused (replay protection); parts are immutable once accepted.
+- `POST /upload-sessions/{id}/finalize` — verifies part count and byte
+  total against the declaration, assembles the parts server-side into the
+  final object (streamed, never whole-file buffered), then hands the
+  assembled object to the *same* registration pipeline as a direct upload:
+  magic-number check, digest/size verification, structural validation,
+  **malware scan**, hard locked quota enforcement, document + processing
+  job rows. Rejected finalizes compensate the assembled object AND expire
+  the session with its stored parts (the parts are the rejected bytes).
+  Part objects are deleted after successful assembly.
+- `DELETE /upload-sessions/{id}` — explicit abort; parts removed.
+- Expiry: on-access expiry plus `cleanup_expired()` (bounded, idempotent)
+  for the durable-processing tick (Phase F).
+- Database: additive migration `0010_upload_sessions` (sessions + parts,
+  CHECK constraints, unique part numbers); round-trip
+  upgrade→downgrade→upgrade verified.
+
+Verified by 31 tests in `tests/test_upload_sessions.py`: full-flow parity
+with the single-request path (same document, same processing outcome),
+cross-user isolation with no existence oracle (404 shape identical),
+CSRF on all mutations, oversized declared/part sizes, out-of-range part
+numbers, replayed parts and double finalize, incomplete uploads, expired
+intents (parts reclaimed, state persisted even when the triggering request
+fails), abort, bounded idempotent cleanup, corrupt-content and
+signature-mismatch rejection through the same gate, **EICAR-signature
+rejection with zero rows and zero stored objects** (stub clamd — same
+boundary as the existing scanning tests: application wiring, not engine
+detection), and hard quota enforcement at finalize.
+
+The single-request upload path remains available and unchanged (it stays
+under the platform limit for small files); the frontend will choose the
+chunked path for large files in Phase J.
 
 ## Phase F — Durable background processing — ⬜ (planned)
 

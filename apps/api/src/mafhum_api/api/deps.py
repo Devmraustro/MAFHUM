@@ -27,6 +27,7 @@ from mafhum_api.services.audit.service import AuditService
 from mafhum_api.services.deletion.service import DeletionService
 from mafhum_api.services.documents.service import DocumentLimits, DocumentService
 from mafhum_api.services.documents.storage import DocumentStorage
+from mafhum_api.services.documents.upload_sessions import UploadSessionService
 from mafhum_api.services.documents.worker import ProcessingWorker, WorkerConfig
 from mafhum_api.services.identity.service import AuthenticatedUser, IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
@@ -47,6 +48,7 @@ class AppContext:
     identity: IdentityService
     projects: ProjectService
     documents: DocumentService
+    upload_sessions: UploadSessionService
     sources: SourceService
     deletion: DeletionService
     research: ResearchService

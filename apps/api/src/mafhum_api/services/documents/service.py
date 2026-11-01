@@ -192,55 +192,16 @@ class DocumentService:
         # committed must remove it, otherwise rejected uploads accumulate as
         # orphans that no database row accounts for.
         try:
-            digest, size_bytes = self._digest(storage_key)
-            if size_bytes != stored.size_bytes:
-                raise FileRejectedError(
-                    validators.ARABIC_MESSAGES[validators.REASON_MALFORMED],
-                    details={"reason": validators.REASON_MALFORMED},
-                )
-            validators.check_size(size_bytes, self._validation_limits())
-
-            # Format-specific structural validation, on the stored bytes.
-            if detected == DocumentFormat.DOCX.value:
-                self._validate_docx_container(storage_key)
-            elif detected == DocumentFormat.PDF.value:
-                self._validate_pdf_page_count(storage_key)
-
-            # Content scanning, on the stored bytes. Structural validation above
-            # is NOT scanning: it rejects malformed and abusive files but detects
-            # no malicious content, so it cannot stand in for this step.
-            verdict = self._scan_bytes(storage_key, display_name)
-
-            document = Document(
-                id=uuid.uuid4(),
+            document = self._register_stored_document(
+                db,
                 owner_id=owner_id,
                 project_id=project_id,
                 storage_key=storage_key,
-                display_filename=display_name,
-                format=detected,
-                size_bytes=size_bytes,
-                content_sha256=digest,
-                status=DocumentStatus.PENDING.value,
-                language_hint=(language_hint or None),
-                # NULL would mean "never asked"; recording the real verdict is
-                # what lets an audit tell a scanned file from an unscanned one.
-                scan_verdict=verdict.value,
+                display_name=display_name,
+                detected=detected,
+                language_hint=language_hint,
+                expected_size=stored.size_bytes,
             )
-            try:
-                self._enforce_quota(db, owner_id, size_bytes)
-                db.add(document)
-                db.add(
-                    DocumentProcessingJob(
-                        id=uuid.uuid4(),
-                        document_id=document.id,
-                        generation=1,
-                        status=JobStatus.QUEUED.value,
-                    )
-                )
-                db.flush()
-            except SQLAlchemyError:
-                db.rollback()
-                raise
         except BaseException:
             # Covers validation failures, quota rejections, database errors and
             # interrupts alike: the blob never outlives a failed upload.
@@ -251,6 +212,113 @@ class DocumentService:
             "document uploaded",
             extra={"event": "document_uploaded", "document_id": str(document.id)},
         )
+        return document
+
+    # Wrappers so sibling services (upload sessions) share the exact same
+    # checks instead of re-implementing them.
+    def assert_project_owned(self, db: Session, owner_id: uuid.UUID, project_id: uuid.UUID) -> None:
+        self._assert_project_owned(db, owner_id, project_id)
+
+    def soft_quota_check(self, db: Session, owner_id: uuid.UUID) -> None:
+        self._soft_quota_check(db, owner_id)
+
+    def register_assembled_upload(
+        self,
+        db: Session,
+        *,
+        owner_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+        storage_key: str,
+        display_name: str,
+        declared_format: str,
+        head: bytes,
+        language_hint: str | None = None,
+    ) -> Document:
+        """Register bytes that are already in storage under ``storage_key``.
+
+        Used by the chunked-upload flow: the parts have been assembled into a
+        final object by the upload-session service, and this method applies the
+        *same* validation, scanning, quota, and registration guarantees the
+        single-request path applies — nothing skips the pipeline.
+        """
+        detected = validators.check_signature(head, declared_format)
+        return self._register_stored_document(
+            db,
+            owner_id=owner_id,
+            project_id=project_id,
+            storage_key=storage_key,
+            display_name=display_name,
+            detected=detected,
+            language_hint=language_hint,
+        )
+
+    def _register_stored_document(
+        self,
+        db: Session,
+        *,
+        owner_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+        storage_key: str,
+        display_name: str,
+        detected: str,
+        language_hint: str | None,
+        expected_size: int | None = None,
+    ) -> Document:
+        """Verify, scan and register a stored object as a document.
+
+        Shared by the single-request upload and the chunked-upload finalize
+        path so both go through identical controls. When ``expected_size`` is
+        given it must match the stored object's size exactly.
+        """
+        digest, size_bytes = self._digest(storage_key)
+        if expected_size is not None and size_bytes != expected_size:
+            raise FileRejectedError(
+                validators.ARABIC_MESSAGES[validators.REASON_MALFORMED],
+                details={"reason": validators.REASON_MALFORMED},
+            )
+        validators.check_size(size_bytes, self._validation_limits())
+
+        # Format-specific structural validation, on the stored bytes.
+        if detected == DocumentFormat.DOCX.value:
+            self._validate_docx_container(storage_key)
+        elif detected == DocumentFormat.PDF.value:
+            self._validate_pdf_page_count(storage_key)
+
+        # Content scanning, on the stored bytes. Structural validation above
+        # is NOT scanning: it rejects malformed and abusive files but detects
+        # no malicious content, so it cannot stand in for this step.
+        verdict = self._scan_bytes(storage_key, display_name)
+
+        document = Document(
+            id=uuid.uuid4(),
+            owner_id=owner_id,
+            project_id=project_id,
+            storage_key=storage_key,
+            display_filename=display_name,
+            format=detected,
+            size_bytes=size_bytes,
+            content_sha256=digest,
+            status=DocumentStatus.PENDING.value,
+            language_hint=(language_hint or None),
+            # NULL would mean "never asked"; recording the real verdict is
+            # what lets an audit tell a scanned file from an unscanned one.
+            scan_verdict=verdict.value,
+        )
+        try:
+            self._enforce_quota(db, owner_id, size_bytes)
+            db.add(document)
+            db.add(
+                DocumentProcessingJob(
+                    id=uuid.uuid4(),
+                    document_id=document.id,
+                    generation=1,
+                    status=JobStatus.QUEUED.value,
+                )
+            )
+            db.flush()
+        except SQLAlchemyError:
+            db.rollback()
+            raise
         return document
 
     # -------------------------------------------------------------------- read

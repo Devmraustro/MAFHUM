@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "mafhum_csrf"
     csrf_header_name: str = "X-CSRF-Token"
     session_ttl_minutes: int = 60 * 24 * 7
+    # Chunked uploads (Vercel-safe path for files above the 4.5 MB request
+    # body limit). Parts are bounded so any single request stays small; the
+    # session expires and its stored parts are reclaimed when abandoned.
+    upload_part_size_bytes: int = 4 * 1024 * 1024
+    upload_session_ttl_minutes: int = 60 * 24
     cookie_secure: bool = False
     # Login throttle. Counted in the database, so the limit holds across every
     # API process rather than per worker.
