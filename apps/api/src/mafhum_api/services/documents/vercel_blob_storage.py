@@ -103,7 +103,9 @@ class VercelBlobStorage:
 
         size = 0
         try:
-            with tempfile.SpooledTemporaryFile(max_size=min(_SPOOL_MEMORY_BYTES, max_bytes), mode="w+b") as spool:
+            with tempfile.SpooledTemporaryFile(
+                max_size=min(_SPOOL_MEMORY_BYTES, max_bytes), mode="w+b"
+            ) as spool:
                 for chunk in chunks:
                     if not isinstance(chunk, bytes):
                         raise StorageError("upload stream yielded a non-bytes chunk")
@@ -125,7 +127,9 @@ class VercelBlobStorage:
                 if returned_pathname != pathname:
                     # A random suffix or rewritten path would break the DB key
                     # contract; fail closed and remove only the returned object.
-                    if isinstance(returned_pathname, str) and returned_pathname.startswith(_BLOB_PREFIX):
+                    if isinstance(returned_pathname, str) and returned_pathname.startswith(
+                        _BLOB_PREFIX
+                    ):
                         with suppress(Exception):
                             self._client.delete_blob(returned_pathname)
                     raise StorageError("Blob provider returned an unexpected pathname")
