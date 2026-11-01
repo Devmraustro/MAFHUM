@@ -355,6 +355,11 @@ Production wiring — scraping, alert delivery, scheduled tick secrets — is
 **BLOCKED — OWNER ACTION REQUIRED** (needs the real deployment's URLs and
 tokens; nothing was executed against production).
 
-## Phase L — Production-readiness audit — ⬜ (`docs/PRODUCTION_READINESS_REPORT.md` at the end)
+## Phase L — Production-readiness audit — ✅ `docs/PRODUCTION_READINESS_REPORT.md`
+
+Written with evidence-based PASS / PARTIAL / BLOCKED / FAIL classifications
+for every phase and requirement; nothing is PASS without a real integration
+test behind it, test doubles are named as such, and every BLOCKED item
+carries exact owner instructions (§6 of the report).
 
 (Detailed per-phase notes are appended below as each phase completes.)

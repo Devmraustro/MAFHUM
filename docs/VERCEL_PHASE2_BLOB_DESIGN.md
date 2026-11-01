@@ -68,6 +68,19 @@ The exact Python SDK/client-upload API and token policy must be proven before im
 
 ## 6. Required tests before Phase 2 can be called complete
 
+> **Status (2026-11-01, migration Phase D):** every hermetic item below is
+> implemented and green — the shared contract suite
+> (`apps/api/tests/test_storage_backend_contract.py`) runs the same
+> behavioral contract against both backends; provider failure paths,
+> malformed metadata, delete-many partial failure, and replay/overwrite
+> rejection are covered (`test_vercel_blob_storage.py`, 19 tests;
+> `test_upload_sessions.py` for intent expiry, replay prevention, ownership,
+> and abandoned-upload cleanup). The one item still outstanding is the
+> **real-store smoke test**, which is owner-gated: it requires provisioning a
+> private Blob store and read-write token (documented in
+> `docs/VERCEL_MIGRATION_PHASES.md` Phase D and the serverless runbook).
+> No fake client result is claimed as a real-service result.
+
 - Contract tests run against both LocalFileStorage and VercelBlobStorage.
 - Streamed upload with chunk boundaries, empty chunks, exact-limit and over-limit cases.
 - Pinned `vercel-blob==0.5.0` SDK contract smoke tests using a real private test store, only after the owner separately authorizes provisioning.
