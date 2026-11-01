@@ -33,6 +33,7 @@ from mafhum_api.services.deletion.service import DeletionService
 from mafhum_api.services.documents.scanning import build_scanner
 from mafhum_api.services.documents.service import DocumentService
 from mafhum_api.services.documents.storage import LocalFileStorage, StorageError
+from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 from mafhum_api.services.documents.worker import ProcessingWorker
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
@@ -78,11 +79,14 @@ def build_context(settings: Settings | None = None) -> AppContext:
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=settings.db_pool_pre_ping,
     )
-    storage = LocalFileStorage(
-        settings.storage_root,
-        dir_mode=settings.storage_dir_mode,
-        file_mode=settings.storage_file_mode,
-    )
+    if settings.storage_backend == "vercel_blob":
+        storage = VercelBlobStorage()
+    else:
+        storage = LocalFileStorage(
+            settings.storage_root,
+            dir_mode=settings.storage_dir_mode,
+            file_mode=settings.storage_file_mode,
+        )
     limits = document_limits(settings)
     worker = ProcessingWorker(database, storage, limits, worker_config(settings))
     scanner = build_scanner(settings)
