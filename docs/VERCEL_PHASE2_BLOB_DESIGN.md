@@ -1,17 +1,15 @@
 # Vercel Blob Phase 2 — Private Storage Design
 
-**Status:** Design verified; implementation and acceptance tests not yet complete.  
+**Status:** Adapter draft and fake-client tests committed; CI validation pending. Direct client-upload intents and production Blob acceptance remain out of scope.  
 **Branch:** `feat/vercel-native-migration`  
 **Database decision:** Neon PostgreSQL selected by the owner; provisioning and credentials remain gated on separate approval.  
 **Scope:** Code and test design only. No Blob store, Neon project, paid resource, secret, production setting, or real-user data is created or changed.
 
 ## 1. Provider compatibility verified
 
-Vercel documents a first-party Python SDK distributed as `vercel` (install with `pip install vercel`). The Blob Python API exposes:
+Vercel publishes the official `vercel-blob` Python package (pinned to `0.5.0` in this branch). Its documented synchronous API supports file-like readers and iterables for `put_blob()` when `content_length` is supplied, and provides synchronous `stream_blob()`, `head_blob()`, `delete_blob()`, and paginated `query_blobs()`. This matches the existing synchronous `DocumentStorage` protocol; no async bridge is needed.
 
-- `vercel.blob.AsyncBlobClient.put(...)`, accepting an `AsyncIterator[bytes]` body and `access="private"`.
-- `AsyncBlobClient.get(...)`, returning a streamed async iterator for the object body.
-- `BlobClient` synchronous operations, but the documented synchronous upload examples use an in-memory `bytes` body.
+The adapter draft in `apps/api/src/mafhum_api/services/documents/vercel_blob_storage.py` uses a 1 MiB in-memory `SpooledTemporaryFile` threshold, spills larger uploads to transient temporary storage, enforces `max_bytes` while consuming chunks, and sends the exact length to the SDK. The spool is closed after upload and is never used as durable storage. The adapter explicitly sets `access="private"` for upload and download, rejects pathnames outside the opaque key namespace, and reports orphans without deleting them.
 
 Private Blob is the only acceptable store mode for MAFHUM documents. Private reads require authentication and must remain behind MAFHUM's own authorization checks. Public Blob URLs are not acceptable for original documents, extracted source files, or generated user presentations.
 
@@ -37,14 +35,7 @@ Document ingestion, retry, deletion, account reclamation, export, and presentati
 
 ## 3. Critical implementation constraint
 
-The Python SDK's streaming upload API is asynchronous, while the current storage protocol is synchronous. The synchronous SDK path is documented with a `bytes` body and would require buffering the complete upload in memory. That is not an acceptable implementation for the current 20 MB upload contract or future multipart uploads.
-
-Before coding the adapter, choose and test one of these approaches:
-
-1. Refactor the storage protocol and all call sites to an async streaming contract, with a carefully scoped migration that preserves synchronous CPU-bound document parsing and worker behavior; or
-2. Implement a bounded sync/async bridge that streams chunks through `AsyncBlobClient` without collecting the complete file in memory, with explicit cancellation, exception propagation, iterator closure, and thread-safety tests.
-
-Do not ship a whole-file `bytes` buffer as the default adapter. Do not write uploads to a temporary file and describe that as durable storage; temporary disk may only be used as a bounded transient bridge if its lifecycle and limits are tested.
+The selected implementation uses the SDK's documented synchronous streaming reader contract. Since the SDK requires an exact `content_length`, the adapter first consumes the incoming bounded chunks into a `SpooledTemporaryFile`, configured to retain at most 1 MiB in memory before spilling to transient disk. The SDK then reads that file-like object as a stream; the complete file is never materialized as a `bytes` object. The spool is closed on success or failure. The configured maximum upload size bounds temporary disk use. This design must still pass runtime tests against the pinned SDK before production use.
 
 ## 4. Required object-key and metadata rules
 
@@ -79,6 +70,7 @@ The exact Python SDK/client-upload API and token policy must be proven before im
 
 - Contract tests run against both LocalFileStorage and VercelBlobStorage.
 - Streamed upload with chunk boundaries, empty chunks, exact-limit and over-limit cases.
+- Pinned `vercel-blob==0.5.0` SDK contract smoke tests using a real private test store, only after the owner separately authorizes provisioning.
 - No whole-file buffering for uploads or downloads.
 - Private access is explicit; public access is never requested.
 - Missing/invalid token, missing object, transient SDK failure, timeout, cancellation, and malformed SDK response fail safely.
@@ -93,4 +85,4 @@ The exact Python SDK/client-upload API and token policy must be proven before im
 
 ## 7. Explicit non-actions
 
-This design commit does not create a Blob store, Neon database, Vercel environment variable, token, or deployment. It does not modify `main`, merge PR #12 or PR #13, promote a preview, or migrate any existing file. Provisioning, credentials, production configuration, and data migration require separate owner approval.
+This code phase does not create a Blob store, Neon database, Vercel environment variable, token, or deployment. It does not modify `main`, merge PR #12 or PR #13, promote a preview, or migrate any existing file. Provisioning, credentials, production configuration, and data migration require separate owner approval.
