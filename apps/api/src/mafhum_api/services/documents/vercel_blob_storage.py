@@ -28,6 +28,7 @@ def _is_blob_not_found(exc: Exception) -> bool:
     """Recognize the SDK's documented not-found exception without leaking it."""
     return isinstance(exc, FileNotFoundError) or type(exc).__name__ == "BlobNotFoundError"
 
+
 _BLOB_PREFIX = "mafhum/"
 _KEY_PATTERN = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{64}$")
 _SPOOL_MEMORY_BYTES = 1024 * 1024
