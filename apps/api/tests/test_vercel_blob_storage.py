@@ -15,6 +15,10 @@ from mafhum_api.services.documents.storage import (
 from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 
 
+class BlobNotFoundError(Exception):
+    """Mirror the documented Vercel SDK not-found exception."""
+
+
 @dataclass
 class _Metadata:
     pathname: str
@@ -54,7 +58,7 @@ class _FakeBlobClient:
     def stream_blob(self, pathname: str, *, access: str) -> Iterator[Iterator[bytes]]:
         self.read_access.append(access)
         if pathname not in self.objects:
-            raise FileNotFoundError(pathname)
+            raise BlobNotFoundError(pathname)
         value = self.objects[pathname]
         yield iter(value[i : i + 3] for i in range(0, len(value), 3))
 
