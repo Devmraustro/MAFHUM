@@ -113,8 +113,6 @@ class VercelBlobStorage:
                     if size > max_bytes:
                         raise StorageError("upload exceeds maximum size")
                     spool.write(chunk)
-                if size == 0:
-                    raise StorageError("empty uploads are not supported")
                 spool.seek(0)
                 result = self._client.put_blob(
                     pathname,
