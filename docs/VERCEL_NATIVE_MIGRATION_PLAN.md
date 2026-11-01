@@ -1,6 +1,6 @@
 # MAFHUM — Vercel-Native Migration Plan
 
-**Status:** Phase 0 — isolated migration branch created; implementation not started.  
+**Status:** Phase 1 implemented — FastAPI deployment proof on `feat/vercel-native-migration` (see `docs/VERCEL_PHASE1_POC.md`); awaiting independent verification before Phase 2.  
 **Branch:** `feat/vercel-native-migration`  
 **Baseline:** PR #12 head `11ccaed3fb5bdf706494a2f04937299969d8ba10`  
 **PR #12 remains open and unmerged.**  

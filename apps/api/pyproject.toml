@@ -127,3 +127,10 @@ filterwarnings = [
     # pgserver warns when XDG_RUNTIME_DIR is unset in sandboxes; not actionable here.
     "ignore:.*XDG_RUNTIME_DIR.*:RuntimeWarning",
 ]
+
+[tool.vercel]
+# Phase 1 of the Vercel-native migration: the single Function entrypoint.
+# Loads the `app` variable from api/index.py (which re-exports the serverless
+# application built by mafhum_api.vercel_app). See
+# docs/VERCEL_NATIVE_MIGRATION_PLAN.md.
+entrypoint = "api.index:app"

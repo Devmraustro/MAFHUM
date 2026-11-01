@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://mafhum:change_me@localhost:5432/mafhum"
     db_pool_size: int = 5
     db_max_overflow: int = 10
+    # Emit a lightweight liveness ping before each pooled connection checkout.
+    # Intended for serverless/managed-Postgres deployments where connections
+    # can go stale between invocations; off by default to keep the
+    # long-lived-container behaviour (and its per-request latency) unchanged.
+    db_pool_pre_ping: bool = False
 
     # --- private blob storage -------------------------------------------------
     # Files live OUTSIDE any static/public directory and are never served directly.
