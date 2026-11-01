@@ -372,10 +372,21 @@ class DockerCli:
 
     # -- mutations (isolated resources only) ------------------------------------
     def volume_rm(self, name: str) -> CommandResult:
+        # Fail closed at the lowest layer: the call-site triple gate and the
+        # post-run audit are necessary but not sufficient — the destructive
+        # primitive itself must refuse a production identifier BEFORE the
+        # command is recorded or executed, so a future call site that forgets
+        # the gate still cannot touch production.
+        if is_production_resource_identifier(name):
+            raise ValueError(f"refusing to remove a production volume: {name!r}")
         return self._run(["docker", "volume", "rm", name], 120)
 
     def exec_refresh_probe(self, container: str) -> CommandResult:
         """Prove the 12 h freshclam loop is alive inside OUR container."""
+        # Same rule for exec: only this run's isolated containers are ever
+        # addressable, enforced before the command is recorded or executed.
+        if is_production_resource_identifier(container):
+            raise ValueError(f"refusing to exec into a production container: {container!r}")
         script = (
             "for p in /proc/[0-9]*/cmdline; "
             'do tr "\\0" " " < "$p" 2>/dev/null; echo; done | grep -q "sleep 43200"'

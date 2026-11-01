@@ -486,6 +486,49 @@ def test_production_volume_name_is_refused_by_the_gate() -> None:
     assert docker.invocations == []
 
 
+def test_volume_rm_primitive_itself_refuses_production_identifiers() -> None:
+    """The destructive primitive is fail-closed at the lowest layer.
+
+    The call-site gate and the post-run audit are necessary but not
+    sufficient: if a future call site forgets the gate, the primitive must
+    still refuse a production identifier BEFORE the command is recorded or
+    executed.
+    """
+    recorded: list[list[str]] = []
+
+    def runner(args: list[str], timeout: float) -> PBA.CommandResult:
+        recorded.append(args)
+        return PBA.CommandResult(0, "", "")
+
+    docker = PBA.DockerCli(runner=runner)
+    for name in ("mafhum-prod_clamd_db", "mafhum-prod-clamd-1", "mafhum", "mafhum-prod"):
+        try:
+            docker.volume_rm(name)
+        except ValueError as exc:
+            assert "production" in str(exc)
+        else:
+            raise AssertionError(f"volume_rm accepted a production identifier: {name!r}")
+    assert docker.invocations == [], "a refused volume_rm must not reach the docker CLI"
+    assert recorded == [], "a refused volume_rm must not execute any command"
+
+
+def test_exec_probe_primitive_refuses_production_containers() -> None:
+    """exec is only ever addressable on this run's isolated containers."""
+    docker = PBA.DockerCli(runner=lambda args, timeout: PBA.CommandResult(0, "", ""))
+    for name in ("mafhum-prod-clamd-1", "mafhum-prod_clamd_db", "mafhum-prod", "mafhum"):
+        try:
+            docker.exec_refresh_probe(name)
+        except ValueError as exc:
+            assert "production" in str(exc)
+        else:
+            raise AssertionError(f"exec_refresh_probe accepted a production container: {name!r}")
+    assert docker.invocations == [], "a refused exec must not reach the docker CLI"
+    # The isolated container is still probed normally.
+    plan = make_plan()
+    docker.exec_refresh_probe(plan.clamd_container)
+    assert docker.invocations[-1][:3] == ["docker", "exec", plan.clamd_container]
+
+
 # --------------------------------------------------------- failure non-violence
 def test_bootstrap_failure_triggers_non_destructive_cleanup(tmp_path: Path) -> None:
     docker = make_docker(fail_substrings=("up -d clamd",))
