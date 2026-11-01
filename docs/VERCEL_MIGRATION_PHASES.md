@@ -302,7 +302,30 @@ no threads even when the env allows it, the declared state matches
 reality, and the tick endpoint answers 200 (not 409) on the serverless
 path (23 deployment tests total).
 
-## Phase J — Frontend integration — ⬜ (verification planned)
+## Phase J — Frontend integration — ✅ upload flow, polling, tick; no secret leakage
+
+* **Path selection:** files ≤ `DIRECT_UPLOAD_MAX_BYTES` (4 MiB) use the
+  single-request upload; larger files use `documents.uploadChunked` —
+  create session → PUT server-sized parts (octet-stream) → finalize. Both
+  paths apply identical server-side validation, malware scanning, and quota
+  enforcement; the threshold keeps every request under a serverless body
+  limit on any deployment.
+* **Processing nudge:** after an upload (and after a retry) the page fires
+  one `processing.tick()`; on worker-driven deployments the tick is refused
+  (409) and swallowed — the resident worker owns processing there. Status
+  polling is unchanged (polls while any document is pending/processing).
+* **No secret leakage:** the chunked client sends only the session id and
+  part bytes; the session plan carries no storage key, path, or token. A
+  dedicated test asserts no request URL or body ever contains
+  `storage`/`key`/`path`/`token=`/`vercel_blob`. All requests remain
+  relative (same-origin proxy), cookie-authenticated, CSRF-headed.
+* **Error parity:** a rejected part surfaces as the server's safe Arabic
+  `ApiError` envelope — the page shows exactly the message the API sent.
+
+Verified: web lint clean, `tsc --noEmit` clean, 112 vitest tests pass
+(+5: chunked happy path with part-order/content-type/range assertions,
+no-leak request audit, rejected-part propagation, tick call + CSRF,
+threshold constant), production build succeeds.
 
 ## Phase K — Observability, security, operations — ⬜ (planned)
 

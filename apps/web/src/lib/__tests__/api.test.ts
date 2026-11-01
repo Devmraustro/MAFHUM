@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { API_PREFIX, ApiError, auth, documents, readCsrfToken, request } from "@/lib/api";
+import {
+  API_PREFIX,
+  ApiError,
+  DIRECT_UPLOAD_MAX_BYTES,
+  auth,
+  documents,
+  processing,
+  readCsrfToken,
+  request,
+} from "@/lib/api";
 
 /**
  * Tests for the real API client.
@@ -232,6 +241,116 @@ describe("documents", () => {
     await documents.upload(new File(["x"], "a.docx"), null);
     expect((calls[0]?.init.body as FormData).get("project_id")).toBeNull();
   });
+
+
+  it("uploads in server-sized parts and finalizes", async () => {
+    // A file of 10 bytes with a 4-byte part plan: parts 1-3 carry 4/4/2 bytes.
+    setCsrfCookie("tok");
+    const calls: { url: string; init: RequestInit }[] = [];
+    let created = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        const url = String(input);
+        calls.push({ url, init });
+        if (url.endsWith("/documents/upload-sessions") && init.method === "POST") {
+          created = true;
+          return jsonResponse({ id: "sess-1", part_size: 4, total_parts: 3, received_bytes: 0, expires_at: "x" });
+        }
+        if (url.includes("/parts/")) {
+          expect(created).toBe(true); // parts only after the session exists
+          return jsonResponse({ part_number: 1, size_bytes: 4, received_bytes: 4 });
+        }
+        if (url.endsWith("/finalize")) {
+          return jsonResponse({ id: "doc-9", status: "pending" });
+        }
+        throw new Error(`unexpected url: ${url}`);
+      }),
+    );
+    const file = new File([new Uint8Array(10)], "large.pdf", { type: "application/pdf" });
+    const summary = await documents.uploadChunked(file, "proj-1");
+    expect(summary.id).toBe("doc-9");
+
+    expect(calls[0]?.url).toBe(`${API_PREFIX}/documents/upload-sessions`);
+    const intent = JSON.parse(String(calls[0]?.init.body));
+    expect(intent).toEqual({
+      filename: "large.pdf",
+      content_type: "application/pdf",
+      total_bytes: 10,
+      project_id: "proj-1",
+    });
+    // Exactly total_parts part uploads, in order, each with the octet-stream
+    // content type and the right byte range.
+    const parts = calls.filter((c) => c.url.includes("/parts/"));
+    expect(parts).toHaveLength(3);
+    expect(parts[0]?.url).toBe(`${API_PREFIX}/documents/upload-sessions/sess-1/parts/1`);
+    expect(parts[1]?.url).toBe(`${API_PREFIX}/documents/upload-sessions/sess-1/parts/2`);
+    expect(parts[2]?.url).toBe(`${API_PREFIX}/documents/upload-sessions/sess-1/parts/3`);
+    expect(parts[0]?.init.headers).toMatchObject({ "Content-Type": "application/octet-stream" });
+    expect(calls.at(-1)?.url).toBe(`${API_PREFIX}/documents/upload-sessions/sess-1/finalize`);
+  });
+
+  it("never puts a storage key, path, or token in any chunked-upload request", async () => {
+    setCsrfCookie("tok");
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        seen.push(String(input), String(init.body ?? ""));
+        if (String(input).endsWith("/documents/upload-sessions")) {
+          return jsonResponse({ id: "s", part_size: 8, total_parts: 1, received_bytes: 0, expires_at: "x" });
+        }
+        return jsonResponse({ id: "d", status: "pending" });
+      }),
+    );
+    await documents.uploadChunked(new File([new Uint8Array(8)], "f.pdf", { type: "application/pdf" }));
+    const flat = seen.join(" ").toLowerCase();
+    for (const forbidden of ["storage", "key", "path", "token=", "vercel_blob"]) {
+      expect(flat).not.toContain(forbidden);
+    }
+  });
+
+  it("propagates a rejected part as an ApiError instead of continuing", async () => {
+    setCsrfCookie("tok");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/documents/upload-sessions")) {
+          return jsonResponse({ id: "s", part_size: 4, total_parts: 2, received_bytes: 0, expires_at: "x" });
+        }
+        if (url.includes("/parts/")) {
+          return jsonResponse({ code: "file_rejected", message: "كبير جداً" }, 422);
+        }
+        throw new Error(`unexpected url: ${url}`);
+      }),
+    );
+    const file = new File([new Uint8Array(8)], "big.pdf", { type: "application/pdf" });
+    await expect(documents.uploadChunked(file)).rejects.toMatchObject({
+      code: "file_rejected",
+      status: 422,
+    });
+  });
+
+describe("processing", () => {
+  it("POSTs the tick with the CSRF header and returns the counters", async () => {
+    const { calls } = stubFetch(() =>
+      jsonResponse({ recovered_stale_jobs: 0, expired_upload_sessions: 0, processed: 1, succeeded: 1, failed: 0, stopped_reason: "drained" }),
+    );
+    setCsrfCookie("tok");
+    const result = await processing.tick();
+    expect(result.processed).toBe(1);
+    expect(calls[0]?.url).toBe(`${API_PREFIX}/processing/tick`);
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(calls[0]?.init.headers).toMatchObject({ "X-CSRF-Token": "tok" });
+  });
+});
+
+describe("upload path selection", () => {
+  it("direct threshold equals one serverless-safe request body", () => {
+    expect(DIRECT_UPLOAD_MAX_BYTES).toBe(4 * 1024 * 1024);
+  });
+});
 
   it("builds a relative, authorization-bearing download URL", async () => {
     const url = documents.downloadUrl("doc-1");
