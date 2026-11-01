@@ -27,7 +27,6 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -361,13 +360,3 @@ def test_nextjs_proxy_configuration_is_unchanged() -> None:
 
     web_vercel = json.loads((API_ROOT.parent / "web" / "vercel.json").read_text(encoding="utf-8"))
     assert web_vercel["framework"] == "nextjs"
-
-
-def _load_shim() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "mafhum_api_vercel_shim_check", API_ROOT / "api" / "index.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module

@@ -73,6 +73,50 @@ rejected; the Next.js proxy config is unchanged.
 - Python functions are not tree-shaken: everything reachable is bundled
   (500 MB limit) — hence `excludeFiles` for tests/tools/alembic/data.
 
+## Live preview deployment (evidence, 2026-11-01)
+
+An isolated throwaway project — **`mafhum-api-poc`** (team
+`devmraustros-projects`, Hobby plan, root directory `apps/api`, framework
+`python`, **not** git-linked so nothing auto-deploys) — was created via the
+Vercel API purely to prove the build. The real project `mafhum-web` and its
+environment were not touched.
+
+- **Deployment:** `dpl_Hw5syp9hJyUBfegg5VqznLgPA278` — status **READY**
+  (preview environment), built from git SHA `eed6d86` (PR #13 head).
+  URL: `mafhum-api-l8fvp4qww-devmraustros-projects.vercel.app`;
+  branch alias: `mafhum-api-poc-git-feat-vercel-nat-6c66a0-devmraustros-projects.vercel.app`.
+- **Build log confirms the conventions:** clone of `feat/vercel-native-migration`
+  @ `eed6d86` → “Using Python 3.12 from `apps/api/.python-version`” → uv
+  installs from `pyproject.toml` → “Compiling Python bytecode…” → “Build
+  Completed in /vercel/output [15s]” → one Python Function
+  (`lambdaRuntimeStats: {"python":1}`), build cache ~48 MB. This is exactly
+  the zero-config Python path the official docs describe.
+- **Preview environment variables** (encrypted, preview + production
+  targets): `APP_ENV=development`, `STORAGE_ROOT=/tmp/mafhum-storage`,
+  `DB_POOL_SIZE=1`, `DB_MAX_OVERFLOW=1`, `DB_POOL_PRE_PING=true`,
+  `PROCESSING_WORKER_ENABLED=false`, `LOG_FORMAT=json`. Deliberately **no
+  `DATABASE_URL`**: wiring a managed PostgreSQL is an owner decision (Phase 2+),
+  so DB-backed endpoints cannot work in this preview and `/health/ready`
+  reports `degraded` (database unavailable, processing worker stopped) —
+  the honest fail-closed state.
+- **What is *not* verified at runtime:** the account’s deployment protection
+  (“Vercel Authentication”, `all_except_custom_domains`) requires a logged-in
+  team member for every `*.vercel.app` URL — anonymous probes redirect to
+  `vercel.com/login`. This is correct security posture and was **not**
+  disabled. A logged-in owner opening the preview URL should see
+  `/health/live` → `ok` and `/health/ready` → `degraded` (no DB configured).
+  Runtime behaviour is otherwise covered by the hermetic test suite, which
+  runs the identical factory against a real PostgreSQL instance.
+- **Operational notes:** the API-created *first* deployment of a brand-new
+  project is auto-promoted to the project’s default (production) environment;
+  that one was built before the environment variables covered it (default
+  `STORAGE_ROOT` is not writable on Vercel) and was deleted — the preview
+  above is the project’s only deployment. The Vercel REST API also rejects a
+  first deployment for a framework-less project unless `projectSettings` is
+  supplied (the connector cannot send it); resolved by setting the project’s
+  framework to `python`. Preview deployments on this project expire after
+  30 days, and the whole project can be deleted by the owner at any time.
+
 ## Known Phase-1 boundaries (honest, not blockers for the POC)
 
 - **No managed database is wired.** A real deployment needs a managed
