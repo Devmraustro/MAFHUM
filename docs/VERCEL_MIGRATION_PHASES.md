@@ -237,7 +237,40 @@ Remaining: **real ClamAV engine evidence on the production host is
 BLOCKED — OWNER ACTION REQUIRED** (Vercel cannot host the daemon; the
 runbook documents an external host or re-architecture decision).
 
-## Phase H — Document processing and retrieval — ⬜ (audit planned)
+## Phase H — Document processing and retrieval — ✅ audited; parity proven for the new paths
+
+Audit findings (existing guarantees re-verified, all suites green):
+
+* **Grounded answers are extractive by construction**: the grounded path
+  never calls a language model; it selects passages that literally appear
+  in the evidence and quotes them verbatim with citations
+  (`services/research/grounding.py`, `sanitize.py`). Statuses are honest
+  (`grounded` / `insufficient_evidence` / `no_evidence_available`); an
+  empty topic yields no evidence rather than an invention (tested).
+* **Prompt-injection defense** (`services/research/sanitize.py`):
+  instruction-shaped content is neutralized before reaching any prompt,
+  Unicode bidi/control characters are stripped (Arabic/Latin reordering),
+  untrusted content is delimiter-wrapped, and the UI renders text only.
+  Unit tests cover the neutralizer; the extractive design means an injected
+  instruction has nothing to act on even if it survived.
+* **User isolation**: the IDOR matrix (`test_api_isolation.py`) covers
+  documents/text/download/retry/delete/projects/sources with
+  indistinguishable-404 guarantees; ownership is enforced in SQL
+  predicates before any byte is read.
+
+Gaps found and closed for the migration's new paths
+(`tests/test_serverless_retrieval_parity.py`, 9 tests):
+
+* A document uploaded **in chunks and processed by a tick** (no resident
+  worker) produces byte-identical segments and the same grounded, cited
+  answers as a direct upload — every quote is asserted to literally appear
+  in the stored segments of the cited document.
+* Cross-user grounding: two users with near-identical documents — each
+  answer cites only its own user's materials; attaching another user's
+  document is refused with an indistinguishable 404.
+* Anonymous access refused on every new endpoint (upload sessions, parts,
+  finalize, abort, both ticks); the tick response carries counters only —
+  no uuids, filenames, or keys (asserted by shape and content).
 
 ## Phase I — PPTX generation — ⬜ (audit planned)
 
