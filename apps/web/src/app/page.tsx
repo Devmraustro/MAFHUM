@@ -82,10 +82,13 @@ export default function AuthPage() {
     );
   }
 
+  const titleKey = mode === "register" ? "register.title" : "login.title";
+  const subtitleKey = mode === "register" ? "register.subtitle" : "login.subtitle";
+
   return (
     <div className="card" style={{ maxWidth: "32rem", marginInline: "auto" }}>
-      <h1>{t("login.title")}</h1>
-      <p className="hint">{t("login.subtitle")}</p>
+      <h1>{t(titleKey)}</h1>
+      <p className="hint">{t(subtitleKey)}</p>
 
       {formError ? <ErrorAlert message={formError} onClose={() => setFormError(null)} /> : null}
 
