@@ -21,6 +21,7 @@ French is secondary.
 | Area | Status |
 |---|---|
 | Identity: register, login, logout, sessions, CSRF | Implemented, tested |
+| Account lifecycle: password reset, email verification, password change, session revoke | Implemented, tested — `docs/ACCOUNT_LIFECYCLE.md` |
 | Projects (per-user) | Implemented, tested |
 | Document ingestion: PDF + DOCX upload, validation, private storage | Implemented, tested |
 | Text extraction, normalization, segmentation (Arabic + French) | Implemented, tested |
@@ -28,7 +29,8 @@ French is secondary.
 | Academic source catalog with provenance tracking | Implemented, tested |
 | Quotas, rate limits, cross-user isolation | Implemented, tested |
 | Account and document deletion with cleanup | Implemented, tested |
-| Web UI: Arabic-first RTL, French locale, document workspace | Implemented, tested |
+| Web UI: Arabic-first RTL, French locale, public landing page, document workspace, projects, account settings | Implemented, tested |
+| In-document search (Arabic diacritic/alef folding, French case-insensitive) | Implemented, tested |
 | Grounded research: lexical retrieval, verbatim citations, insufficient-evidence status | Implemented, tested — no language model; `docs/GROUNDING_EVALUATION.md` |
 | Tutor and TD tools: topics, questions, SM-2 flashcards, plans | Implemented, tested |
 | Editable PPTX: jobs, private artifacts, Arabic RTL, French deck, chart/table | Implemented, tested — `docs/PPTX_BENCHMARK.md` |
@@ -77,6 +79,14 @@ cd apps/web
 npm install
 npm run dev                   # http://localhost:3000
 ```
+
+Routes: `/` (public landing page), `/login`, `/reset-password`, `/verify-email`,
+`/documents`, `/documents/[id]`, `/projects`, `/research`, `/study`,
+`/presentations`, `/account`.
+
+To exercise password reset locally without an SMTP server, set
+`EMAIL_DELIVERY=file` and `EMAIL_FILE_DIR=./.mail` in `.env`: each message is
+written as a `0600` `.eml` there. The reset link inside it is real.
 
 The browser only ever calls **relative** `/api/v1/...` URLs. `next.config.mjs`
 proxies them to `MAFHUM_API_URL` (default `http://127.0.0.1:8000`), so session
@@ -210,6 +220,15 @@ Please report vulnerabilities privately to the repository maintainers rather tha
 opening a public issue. See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
 ## License and third-party components
+
+MAFHUM itself is released under the **MIT License** — see [`LICENSE`](LICENSE).
+`THIRD_PARTY_NOTICES.md` records the license of every dependency, and
+`docs/OSS_REUSE_REGISTER.md` records what was evaluated and rejected.
+
+> The `LICENSE` file states MIT. If you intend to offer MAFHUM as a hosted
+> service and want modifications to stay open, AGPL-3.0 is the alternative to
+> consider **before** contributors start relying on the current terms; changing
+> it later requires the agreement of everyone who contributed.
 
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for every runtime,
 development and test dependency with its verified license, and

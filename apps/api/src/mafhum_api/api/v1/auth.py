@@ -158,6 +158,27 @@ def session_csrf(user: CurrentUser, response: Response, context: Context) -> Csr
     return CsrfTokenResponse(csrf_token=csrf)
 
 
+@router.get("/csrf", response_model=CsrfTokenResponse)
+def public_csrf(response: Response, context: Context) -> CsrfTokenResponse:
+    """Issue a CSRF cookie to a visitor with no session.
+
+    Needed by the recovery and verification pages: those run while signed out, and
+    the double-submit check needs a cookie to compare against. The cookie carries
+    no identity and grants nothing on its own.
+    """
+    csrf = generate_csrf_token()
+    response.set_cookie(
+        context.settings.csrf_cookie_name,
+        csrf,
+        httponly=False,
+        secure=context.settings.cookie_secure,
+        samesite="lax",
+        path="/",
+        max_age=context.settings.session_ttl_minutes * 60,
+    )
+    return CsrfTokenResponse(csrf_token=csrf)
+
+
 @router.get("/me", response_model=UserResponse)
 def me(user: CurrentUser) -> UserResponse:
     return _user_payload(user)

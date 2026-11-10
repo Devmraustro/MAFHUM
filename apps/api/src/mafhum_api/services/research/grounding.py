@@ -22,26 +22,10 @@ from __future__ import annotations
 
 import itertools
 import re
-import unicodedata
 import uuid
 from dataclasses import dataclass, field
 
-# Arabic diacritics (harakat, tanwin, shadda, sukun, superscript alef) and
-# tatweel. Removing them lets an unvowelled query match a vowelled document.
-_ARABIC_DIACRITICS = dict.fromkeys(
-    map(ord, "\u064b\u064c\u064d\u064e\u064f\u0650\u0651\u0652\u0670\u0640")
-)
-
-_ARABIC_FOLD = {
-    ord("أ"): "ا",
-    ord("إ"): "ا",
-    ord("آ"): "ا",
-    ord("ٱ"): "ا",
-    ord("ى"): "ي",
-    ord("ئ"): "ي",
-    ord("ة"): "ه",
-    ord("ؤ"): "و",
-}
+from mafhum_api.services.text.fold import fold_arabic
 
 _TOKEN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
@@ -122,8 +106,8 @@ def detect_language(text: str) -> str:
 
 
 def _normalize(text: str) -> str:
-    folded = unicodedata.normalize("NFKC", text or "").translate(_ARABIC_DIACRITICS)
-    return folded.translate(_ARABIC_FOLD).lower()
+    # Shared with document search: one definition of Arabic equivalence.
+    return fold_arabic(text or "")
 
 
 def _tokens(text: str) -> set[str]:

@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 
 import { ErrorAlert, InfoAlert } from "@/components/alerts";
@@ -25,9 +25,21 @@ const POLL_MS = 2500;
  * and no progress bar is faked — the status column reflects the server's real
  * processing state, refreshed by polling while work is outstanding.
  */
-export default function DocumentsPage() {
+function DocumentsWorkspace() {
   const { locale, t } = useLocale();
   const router = useRouter();
+
+  /**
+   * The active project filter, from `?project=` in the URL.
+   *
+   * The projects page links here with a project id, so the list has to start
+   * filtered. `useSearchParams` is used (under the Suspense boundary at the
+   * bottom of this file) rather than reading `window.location` during render:
+   * the latter produces server HTML that disagrees with the first client render,
+   * which React reports as a hydration mismatch.
+   */
+  const searchParams = useSearchParams();
+  const [activeProject, setActiveProject] = useState<string>(() => searchParams.get("project") ?? "");
 
   const [items, setItems] = useState<DocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -55,7 +67,11 @@ export default function DocumentsPage() {
       if (!quiet) setLoading(true);
       try {
         const [list, currentUsage] = await Promise.all([
-          documents.list({ page: targetPage, pageSize: PAGE_SIZE }),
+          documents.list({
+            page: targetPage,
+            pageSize: PAGE_SIZE,
+            projectId: activeProject || undefined,
+          }),
           documents.usage(),
         ]);
         setItems(list.items);
@@ -64,7 +80,7 @@ export default function DocumentsPage() {
         setListError(null);
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
-          router.replace("/");
+          router.replace("/login");
           return;
         }
         setListError(error instanceof ApiError ? error.message : t("error.generic"));
@@ -72,7 +88,7 @@ export default function DocumentsPage() {
         if (!quiet) setLoading(false);
       }
     },
-    [router, t],
+    [activeProject, router, t],
   );
 
   // Initial load: session, CSRF, limits, projects and the first page.
@@ -82,7 +98,7 @@ export default function DocumentsPage() {
       try {
         const user = await auth.me();
         if (!user) {
-          router.replace("/");
+          router.replace("/login");
           return;
         }
         await auth.ensureCsrf();
@@ -221,6 +237,26 @@ export default function DocumentsPage() {
       </p>
 
       {listError ? <ErrorAlert message={listError} onClose={() => setListError(null)} /> : null}
+
+      {activeProject ? (
+        <p className="filter-chip" role="status">
+          <span>
+            {t("documents.filteredByProject")}:{" "}
+            {projectList.find((project) => project.id === activeProject)?.title ?? activeProject}
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => {
+              setActiveProject("");
+              setPage(1);
+              router.replace("/documents");
+            }}
+          >
+            {t("documents.clearFilter")}
+          </button>
+        </p>
+      ) : null}
       {actionError ? <ErrorAlert message={actionError} onClose={() => setActionError(null)} /> : null}
       {notice ? (
         <InfoAlert>
@@ -453,5 +489,24 @@ export default function DocumentsPage() {
         />
       ) : null}
     </>
+  );
+}
+
+/**
+ * `useSearchParams` suspends during static prerendering, so the workspace sits
+ * behind a Suspense boundary with a status message a screen reader announces
+ * instead of an empty box.
+ */
+export default function DocumentsPage() {
+  return (
+    <Suspense
+      fallback={
+        <p role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" /> …
+        </p>
+      }
+    >
+      <DocumentsWorkspace />
+    </Suspense>
   );
 }

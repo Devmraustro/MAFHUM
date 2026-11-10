@@ -32,6 +32,8 @@ from mafhum_api.services.documents.upload_sessions import UploadSessionService
 from mafhum_api.services.documents.worker import ProcessingWorker, WorkerConfig
 from mafhum_api.services.identity.service import AuthenticatedUser, IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
+from mafhum_api.services.identity.tokens import AccountTokenService
+from mafhum_api.services.notifications.email import OutboxService
 from mafhum_api.services.presentations.service import PresentationService
 from mafhum_api.services.projects.service import ProjectService
 from mafhum_api.services.research.service import ResearchService
@@ -59,6 +61,8 @@ class AppContext:
     processing_ticker: ProcessingTicker
     login_throttle: LoginThrottle
     audit: AuditService
+    account_tokens: AccountTokenService
+    outbox: OutboxService
 
     @property
     def limits(self) -> DocumentLimits:
@@ -240,7 +244,52 @@ def _csrf_error(reason: str) -> DomainError:
 
 
 # For use in ``dependencies=[CsrfGuard]`` on a route decorator.
+def enforce_csrf_anonymous(
+    request: Request,
+    response: Response,
+    context: Context,
+) -> None:
+    """CSRF protection for endpoints a *signed-out* user must be able to call.
+
+    Password reset and email verification happen precisely when there is no
+    session: the user cannot sign in, or is opening a link in a different
+    browser. Requiring ``CurrentUser`` there made the recovery flow impossible —
+    a defect only a live run exposed.
+
+    What still protects the request:
+
+    1. **Origin/Referer allowlist** — mandatory. A cross-site form post carries
+       the attacker's origin, and JavaScript cannot forge it.
+    2. **Double-submit token** — enforced whenever the browser already holds a
+       CSRF cookie (``GET /auth/csrf`` issues one to anyone). A cross-origin
+       script cannot read that cookie to fill the header.
+
+    The endpoints behind this guard are not authorised by a session, so nothing
+    here relies on the token for *authorisation* — only for request integrity.
+    """
+    if request.method not in _MUTATING_METHODS:
+        return
+    settings = context.settings
+    verdict = verify_origin(
+        request.headers.get("origin"),
+        request.headers.get("referer"),
+        settings.allowed_origins,
+    )
+    if not verdict.allowed:
+        raise _csrf_error("origin_rejected")
+    expected = request.cookies.get(settings.csrf_cookie_name)
+    if not expected:
+        # No cookie yet: the Origin check above is the whole guarantee, and the
+        # action is rate-limited and non-destructive (it sends a mail or redeems
+        # a 32-byte token the caller already possesses).
+        return
+    provided = request.headers.get(settings.csrf_header_name)
+    if not provided or not tokens_match(provided, expected):
+        raise _csrf_error("csrf_token_mismatch")
+
+
 CsrfGuard = Depends(enforce_csrf)
+CsrfGuardAnonymous = Depends(enforce_csrf_anonymous)
 # For use as a function parameter annotation when a handler wants it injected.
 CsrfGuardAnnotated = Annotated[None, Depends(enforce_csrf)]
 

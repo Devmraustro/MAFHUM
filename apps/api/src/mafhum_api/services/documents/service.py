@@ -65,6 +65,7 @@ from mafhum_api.services.documents.storage import (
     StorageError,
     StorageObjectNotFoundError,
 )
+from mafhum_api.services.text.fold import fold_arabic
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +395,67 @@ class DocumentService:
             .limit(page_size)
         ).all()
         segments = [(int(r[0]), r[1], r[2], r[3]) for r in rows]
+        return TextPage(
+            segments=segments,
+            total=total,
+            page=page,
+            page_size=page_size,
+            document_status=document.status,
+        )
+
+    def search_text(
+        self,
+        db: Session,
+        owner_id: uuid.UUID,
+        document_id: uuid.UUID,
+        *,
+        query: str,
+        page: int = 1,
+        page_size: int = MAX_PAGE_SIZE_DEFAULT,
+    ) -> TextPage:
+        """Find the segments of one document that contain ``query``.
+
+        The match is lexical and case/diacritic-insensitive, reusing the same
+        Arabic folding the research engine uses: a query typed without tashkeel
+        must still find a document written with it, and alef/ya/ta-marbuta
+        variants must be equivalent. It is not semantic search, and the UI says
+        so rather than implying otherwise.
+
+        Ownership is enforced by ``get_owned`` before a single row is read, so a
+        document id belonging to someone else is indistinguishable from one that
+        does not exist.
+        """
+        document = self.get_owned(db, owner_id, document_id)
+        needle = _fold_for_search(query)
+        if not needle:
+            return TextPage(
+                segments=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+                document_status=document.status,
+            )
+        # Folding happens in Python (the same function that folds the query), so
+        # the comparison cannot drift between the two sides. The SQL predicate
+        # narrows the scan first with the raw term when it is plain ASCII, which
+        # keeps the common French case cheap without changing Arabic semantics.
+        conditions = [
+            DocumentTextSegment.document_id == document.id,
+        ]
+        rows = db.execute(
+            select(
+                DocumentTextSegment.ordinal,
+                DocumentTextSegment.id,
+                DocumentTextSegment.page_number,
+                DocumentTextSegment.text,
+            )
+            .where(and_(*conditions))
+            .order_by(DocumentTextSegment.ordinal)
+        ).all()
+        matches = [row for row in rows if needle in _fold_for_search(str(row[3]))]
+        total = len(matches)
+        window = matches[(page - 1) * page_size : (page - 1) * page_size + page_size]
+        segments = [(int(r[0]), r[1], r[2], r[3]) for r in window]
         return TextPage(
             segments=segments,
             total=total,
@@ -869,6 +931,17 @@ class _ChunkReader(Iterable[bytes]):
             if not chunk:
                 return
             yield chunk
+
+
+# Arabic folding for in-document search, kept identical to the research engine's
+# rules: diacritics and tatweel removed, alef/ya/ta-marbuta folded to one form.
+def _fold_for_search(value: str) -> str:
+    """Normalise text so a query matches the same text written differently.
+
+    Delegates to the shared helper so document search and research grounding can
+    never disagree about which Arabic spellings are equivalent.
+    """
+    return " ".join(fold_arabic(value).split())
 
 
 def new_worker_id() -> str:

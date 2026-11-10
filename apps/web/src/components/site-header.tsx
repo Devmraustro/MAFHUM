@@ -21,6 +21,9 @@ export function SiteHeader() {
   const [user, setUser] = useState<User | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
+  // Re-read the session on every route change. A sign-out elsewhere, or a
+  // session revoked from the account page, must not leave the header showing
+  // navigation for an account that is no longer signed in.
   useEffect(() => {
     let cancelled = false;
     void auth
@@ -34,7 +37,7 @@ export function SiteHeader() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pathname]);
 
   async function handleSignOut() {
     setSigningOut(true);
@@ -44,14 +47,16 @@ export function SiteHeader() {
       // Even if the server call fails, drop the local view of the session.
     }
     setUser(null);
-    router.replace("/");
+    router.replace("/login");
   }
 
   const navItems = [
     { href: "/documents", label: t("nav.documents") },
+    { href: "/projects", label: t("nav.projects") },
     { href: "/research", label: t("nav.research") },
     { href: "/study", label: t("nav.study") },
     { href: "/presentations", label: t("nav.presentations") },
+    { href: "/account", label: t("nav.account") },
   ];
 
   return (
@@ -97,7 +102,7 @@ export function SiteHeader() {
               {signingOut ? t("common.loading") : t("nav.signout")}
             </button>
           ) : (
-            <Link href="/" aria-current={pathname === "/" ? "page" : undefined}>
+            <Link href="/login" aria-current={pathname === "/login" ? "page" : undefined}>
               {t("auth.signin")}
             </Link>
           )}

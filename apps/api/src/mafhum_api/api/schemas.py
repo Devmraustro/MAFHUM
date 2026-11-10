@@ -120,6 +120,8 @@ class DocumentTextResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    # Echoed back so the UI can show "N results for «…»" without guessing.
+    query: str | None = None
 
 
 class DocumentRetryResponse(BaseModel):
@@ -264,3 +266,60 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     version: str
     checks: dict[str, str] = Field(default_factory=dict)
+
+
+# ------------------------------------------------------- account lifecycle
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    email: EmailStr = Field(description="البريد الإلكتروني المسجّل")
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    token: str = Field(min_length=8, max_length=256, description="الرمز من رابط البريد")
+    password: str = Field(min_length=8, max_length=256, description="كلمة المرور الجديدة")
+
+
+class PasswordChangeRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class EmailVerificationConfirmRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    token: str = Field(min_length=8, max_length=256)
+
+
+class MessageResponse(BaseModel):
+    """The single honest shape for 'we did something, here is what'."""
+
+    message: str
+
+
+class AccountStateResponse(BaseModel):
+    """What the UI needs to nudge the user about, without exposing internals."""
+
+    email: str
+    email_verified: bool
+    # True when this deployment can actually deliver mail. The UI hides the
+    # verification prompt when false rather than offering a button that fails.
+    email_delivery_configured: bool
+    password_reset_available: bool
+
+
+class SessionItemResponse(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    expires_at: datetime
+    user_agent: str | None = None
+    current: bool = False
+
+
+class SessionListResponse(BaseModel):
+    items: list[SessionItemResponse]
+    total: int

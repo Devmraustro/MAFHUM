@@ -30,7 +30,9 @@ jobs:
         run: |
           set -euo pipefail
           required=(
-            README.md AGENTS.md SECURITY.md .github/CODEOWNERS
+            README.md AGENTS.md SECURITY.md LICENSE .github/CODEOWNERS
+            docs/ACCOUNT_LIFECYCLE.md docs/DEPLOYMENT_DECISION.md
+            docs/LANDING_PAGE.md
             docs/PROJECT_ARCHITECTURE.md docs/ROADMAP.md docs/THREAT_MODEL.md
             docs/DATA_POLICY.md docs/OSS_REUSE_REGISTER.md
             docs/ADR/0001-modular-monolith.md

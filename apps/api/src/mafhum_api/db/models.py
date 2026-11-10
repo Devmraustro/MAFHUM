@@ -190,6 +190,9 @@ class User(TimestampMixin, Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    tokens: Mapped[list[UserToken]] = relationship(
+        cascade="all, delete-orphan", passive_deletes=True
+    )
     sessions: Mapped[list[UserSession]] = relationship(
         cascade="all, delete-orphan", passive_deletes=True
     )
@@ -1048,3 +1051,109 @@ class AuditEvent(Base):
     target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     details: Mapped[dict[str, object]] = mapped_column(JsonVariant, nullable=False, default=dict)
+
+
+# ---------------------------------------------------------------------------
+# Account lifecycle: one-time tokens and the email outbox.
+#
+# A one-time token is never stored in the clear. The row keeps a SHA-256 digest
+# and a *prefix* of the token; the prefix exists so a token that was already
+# consumed can be told apart from one that never existed, which is what lets the
+# API answer "this link was already used" instead of a misleading "invalid link".
+# Neither value can be turned back into a working token.
+# ---------------------------------------------------------------------------
+
+
+class TokenPurpose(str, enum.Enum):
+    PASSWORD_RESET = "password_reset"  # noqa: S105 - a token purpose, not a credential
+    EMAIL_VERIFICATION = "email_verification"
+
+
+class UserToken(TimestampMixin, Base):
+    """A single-use, expiring token for password reset or email verification."""
+
+    __tablename__ = "user_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('password_reset', 'email_verification')",
+            name="ck_user_tokens_purpose",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_user_tokens_expiry",
+        ),
+        Index("ix_user_tokens_user_purpose", "user_id", "purpose"),
+        Index("ix_user_tokens_expires", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # First 8 characters of the raw token. Not secret: 48 random bytes remain.
+    token_prefix: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OutboxStatus(str, enum.Enum):
+    PENDING = "pending"
+    SENDING = "sending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+class EmailOutbox(Base):
+    """An email the application decided to send.
+
+    Written in the *same transaction* as the action that caused it, so a reset
+    request can never be acknowledged while its mail is silently lost, and a
+    rolled-back request can never leave mail behind that refers to nothing.
+
+    Deliberately contains no subject or body: those are rendered at delivery
+    time. A password-reset link therefore exists in exactly one place -- the
+    token row's hash -- for as long as the message is queued.
+    """
+
+    __tablename__ = "email_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sending', 'sent', 'failed')",
+            name="ck_email_outbox_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_email_outbox_attempts"),
+        CheckConstraint("char_length(template) BETWEEN 1 AND 64", name="ck_email_outbox_template"),
+        CheckConstraint(
+            "last_error IS NULL OR char_length(last_error) <= 200",
+            name="ck_email_outbox_error_len",
+        ),
+        Index("ix_email_outbox_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # Delivery address, normalised at enqueue time.
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False)
+    template: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Rendering inputs only -- never the token itself (see class docstring).
+    payload: Mapped[dict[str, object]] = mapped_column(JsonVariant, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=OutboxStatus.PENDING.value,
+        server_default=OutboxStatus.PENDING.value,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
