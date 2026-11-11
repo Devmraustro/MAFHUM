@@ -12,6 +12,13 @@ Every result below was produced by a command that was actually run. Where
 something was not verified, it says so and says why. Nothing in this document is
 inferred from a README or a previous report.
 
+> **Note on an external submission.** A separate "Phase 32 container readiness"
+> summary was submitted describing a different branch
+> (`integration/phase1-phase2-main-reconciliation`, head `1cdc65db`). That branch
+> is `main` plus one 2-file i18n commit and contains none of this work. §12
+> reconciles the two line-by-line and records which of its claims are false for
+> this branch. Its figures stay labelled unverified.
+
 ---
 
 ## 1. Commit and PR status
@@ -386,3 +393,74 @@ OCR remains **not implemented** and is advertised as such: `GET
 `services/documents/ocr.py` (the single source of truth), and a test asserts both
 the flag and that the reason string names the text-layer limitation. No simulated
 OCR exists anywhere in the codebase, and none was added.
+
+## 12. External claim reconciliation (Phase 32 submission)
+
+A separate "Phase 32 container readiness" summary was submitted for review. It
+does **not** describe this branch. Reconciled against the server on
+2026-11-10; every figure below is reproducible with the commands shown.
+
+| Property | Phase 32 summary claims | This branch (`arena/cd6c8603-mafhum`) |
+| --- | --- | --- |
+| Branch | `integration/phase1-phase2-main-reconciliation` | `arena/cd6c8603-mafhum` |
+| Head commit | `1cdc65db5f20cfc9ff96d016f0c12e7e99535771` | `4b3532b7c8c5c08116467fa9b8b5c8c88ce28ae3` |
+| Commit date | 2026-11-03 | 2026-11-11 |
+| Report file | `docs/PHASE32_CONTAINER_READINESS_REPORT.md` | absent (never committed on any ref) |
+
+### 12.1 What the other branch actually is
+
+`git ls-remote origin "refs/heads/integration/*"` returns exactly one head:
+
+```
+1cdc65db5f20cfc9ff96d016f0c12e7e99535771	refs/heads/integration/phase1-phase2-main-reconciliation
+```
+
+After fetching it to an explicit remote-tracking ref:
+
+- `git merge-base origin/main <branch>` = `bc28114e` — i.e. the branch **is
+  exactly `main` plus one commit**.
+- `git rev-list --count origin/main..<branch>` = **1**.
+- `git rev-list --count <branch>..origin/main` = **0** (not behind).
+- `git diff --stat origin/main..<branch>` = **2 files, 9 insertions, 2
+  deletions**, touching only `apps/web/src/app/page.tsx` and
+  `apps/web/src/lib/i18n.ts` — an Arabic/French registration-page title fix.
+
+So the branch is a **one-commit cosmetic i18n fix on top of `main`**, not a
+container-readiness branch. It contains none of the engineering the submitted
+summary attributes to it (`notifications/email.py` absent,
+`account_lifecycle` absent, the Phase 32 report absent). Merging it into this
+branch would also conflict in `page.tsx`, because this branch restructured that
+page (the app root is now the public landing page).
+
+An earlier probe that reported empty output for `git log`/`rev-list`/`ls-tree`
+on `origin/integration/...` was a tooling artefact, not evidence: the fetch had
+brought the objects but created no tracking ref, so `origin/...` was not a valid
+revision. Everything above was re-probed by explicit ref and by SHA.
+
+### 12.2 Consequence for the submitted figures
+
+The Phase 32 numbers (1148 passed / 26 skipped, 0 critical / 0 high / 0 medium /
+1 low / 3 info, "Web Docker build blocked by `ECONNRESET`", "OpenRouter
+mock-only") are **unverified external data**. They cannot be reproduced here and
+must not be merged into this report's findings. Two specific corrections:
+
+- **"SMTP: not implemented" is false for this branch.** `SmtpEmailSender` is at
+  `apps/api/src/mafhum_api/services/notifications/email.py:112`, the factory
+  `build_email_sender` at `:167`, and `apps/api/tests/test_smtp_delivery.py`
+  exercises it against a real SMTP server. Section 5 records a real end-to-end
+  delivery. The observation is explainable: at `1cdc65db` that file does not
+  exist, so a reader of that tree would correctly see no SMTP.
+- **"Web Docker build blocked" is untestable here.** `docker` is not installed in
+  this environment, so neither a success nor a failure can be claimed for any
+  image build. What *is* checkable and true: `apps/web/Dockerfile`,
+  `apps/api/Dockerfile` and `deploy/clamd/Dockerfile` are all tracked.
+
+### 12.3 Where the two reviews nonetheless agree
+
+The submitted summary's verdict `NO-GO FOR PRODUCTION` matches section 11 of
+this report. The reasons differ — here the blockers are a missing Neon database
+connection, no API deployment, no email-provider credential, and ClamAV being
+unable to run on Vercel Functions — not an unimplemented mail transport.
+
+**Status of this reconciliation:** complete and reproducible. The external
+figures remain labelled unverified by design.
