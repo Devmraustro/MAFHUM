@@ -4,7 +4,9 @@
 **Branch:** `arena/cd6c8603-mafhum`
 **PR:** [#15](https://github.com/Devmraustro/MAFHUM/pull/15)
 **Release recommendation:** **CONDITIONAL GO for the container path; NO-GO for a
-public production launch today.** Reasons and conditions are in §10.
+public production launch today.** One PR check (Vercel) is red *on purpose*: it is
+the new build guard refusing to publish a site whose API origin is a placeholder.
+Reasons and conditions are in §10.
 
 Every result below was produced by a command that was actually run. Where
 something was not verified, it says so and says why. Nothing in this document is
@@ -37,7 +39,7 @@ All ten were green on `66b89d8` before Phase 31 work began:
 | Compose config + production contract | pass (29s) |
 | Real ClamAV engine — clean / EICAR / engine-outage | pass (2m29s) |
 | Repository baseline | pass (4s) |
-| Vercel | pass |
+| Vercel | pass (pre-Phase-31 commit) |
 | Vercel Preview Comments | pass |
 
 Phase 31 adds a commit; its checks are reported in §9.
@@ -67,8 +69,23 @@ anonymous flows) became stricter.
 
 ## 3. CI results (Phase 31 commit)
 
-See §9 — the Phase 31 commit was pushed and its checks are recorded there. Locally,
-on the Phase 31 tree, the complete gate set was run and passed:
+On commit `8099e7b` (Phase 31), GitHub Actions reported **9 of 10 checks passing**;
+the tenth is Vercel, which **fails by design** — see §8.4.
+
+| Check | Result on `8099e7b` |
+|---|---|
+| Backend — lint, types, tests | pass (4m24s) |
+| Frontend — lint, types, tests, build | pass (1m35s) — includes the new placeholder-origin gate |
+| Migrations — upgrade and downgrade | pass (44s) |
+| Security — SAST, secrets, config contract | pass (37s) |
+| Local authenticated DAST (production posture) | pass (1m15s) |
+| Compose config + production contract | pass (36s) |
+| Real ClamAV engine — clean / EICAR / engine-outage | pass (1m42s) |
+| Repository baseline | pass (9s) — required-docs list now includes the new documents |
+| Vercel Preview Comments | pass |
+| Vercel | **fail (intentional)** — the build guard refused the placeholder API origin |
+
+Locally, on the same tree, the complete gate set was run and passed:
 
 | Gate | Command | Result |
 |---|---|---|
@@ -297,6 +314,27 @@ login fail. **A deployment URL is therefore deliberately not claimed.**
   findings, and the exact owner steps to finish the serverless path.
 
 ---
+
+### 8.4 The deployment guard fired in production CI
+
+The Phase 31 commit's Vercel build **failed, by design**, and the failure is the
+proof that the fix works. From Vercel deployment `dpl_6jrN263bQ3CiFaqtPTuPXhGRaZaW`
+(build logs, verbatim):
+
+```
+Running "node scripts/verify-api-origin.mjs && npm run build"
+✗ MAFHUM_API_URL uses a reserved, non-resolving domain (mafhum-api.invalid).
+  This is a placeholder: set the real API origin before deploying.
+Error: [BUILD_UTILS_SPAWN_1] Command "node scripts/verify-api-origin.mjs && npm run build" exited with 1
+```
+
+Before this change the same configuration produced a **successful** deployment
+(`dpl_7qCct8GexUw8SzBTgiNyVHUwftZd`, READY) whose `/api/*` proxy pointed at a
+non-existent host. The build now refuses to publish that artifact, and the PR
+check reports it honestly instead of a green tick on a broken site.
+
+The condition to clear it is an owner decision, not a code change: set
+`MAFHUM_API_URL` (and the API) before expecting a green Vercel check on this PR.
 
 ## 9. Migrations
 
