@@ -30,6 +30,7 @@ from mafhum_api.services.documents.service import DocumentLimits, DocumentServic
 from mafhum_api.services.documents.storage import DocumentStorage
 from mafhum_api.services.documents.upload_sessions import UploadSessionService
 from mafhum_api.services.documents.worker import ProcessingWorker, WorkerConfig
+from mafhum_api.services.identity.request_throttle import RequestThrottle
 from mafhum_api.services.identity.service import AuthenticatedUser, IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
 from mafhum_api.services.identity.tokens import AccountTokenService
@@ -60,6 +61,7 @@ class AppContext:
     worker: ProcessingWorker
     processing_ticker: ProcessingTicker
     login_throttle: LoginThrottle
+    request_throttle: RequestThrottle
     audit: AuditService
     account_tokens: AccountTokenService
     outbox: OutboxService
@@ -232,6 +234,30 @@ def enforce_csrf(
     provided = request.headers.get(settings.csrf_header_name)
     if not expected or not provided or not tokens_match(provided, expected):
         raise _csrf_error("csrf_token_mismatch")
+
+
+def client_identifier(request: Request, *, trusted_hops: int = 1) -> str:
+    """Resolve the caller's address from the proxy that fronts this deployment.
+
+    Security note: ``X-Forwarded-For`` is only trusted because every supported
+    deployment sets it at the edge and overwrites whatever the client sent
+    (compose runs the API behind Next's server; Vercel terminates the connection).
+    The trusted proxy count is configurable so a deployment behind two hops does
+    not silently key every user to the *edge* address — which would make one shared
+    rate-limit bucket for the entire internet.
+
+    The value is used for rate limiting only, never for authorisation, and is
+    HMACed before it is stored.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        hops = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if hops:
+            # Take the right-most hop that our own proxies did not add: entries to
+            # its left were supplied by the client and can be anything.
+            index = min(len(hops), max(1, trusted_hops))
+            return hops[-index][:64]
+    return (request.client.host if request.client else "unknown")[:64]
 
 
 def _csrf_error(reason: str) -> DomainError:

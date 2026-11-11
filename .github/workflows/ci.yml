@@ -32,6 +32,7 @@ jobs:
           required=(
             README.md AGENTS.md SECURITY.md LICENSE .github/CODEOWNERS
             docs/ACCOUNT_LIFECYCLE.md docs/DEPLOYMENT_DECISION.md
+            docs/EMAIL_PROVIDERS.md docs/PHASE31_PRODUCTION_ACCEPTANCE_REPORT.md
             docs/LANDING_PAGE.md
             docs/PROJECT_ARCHITECTURE.md docs/ROADMAP.md docs/THREAT_MODEL.md
             docs/DATA_POLICY.md docs/OSS_REUSE_REGISTER.md
@@ -250,7 +251,21 @@ jobs:
       - name: Tests
         run: npm test
 
+      # The deployed origin is validated, not merely required to be non-empty.
+      # The Vercel project for this repository was once configured with a
+      # reserved `.invalid` hostname; the old check accepted it and published a
+      # site that could not reach its own API. See docs/DEPLOYMENT_DECISION.md.
+      - name: Reject placeholder API origin
+        run: |
+          if MAFHUM_API_URL="https://mafhum-api.invalid" node scripts/verify-api-origin.mjs; then
+            echo "::error::verify-api-origin accepted a reserved .invalid hostname"
+            exit 1
+          fi
+          MAFHUM_API_URL="http://127.0.0.1:8000" node scripts/verify-api-origin.mjs
+
       - name: Production build
+        env:
+          MAFHUM_API_URL: http://127.0.0.1:8000
         run: npm run build
 
       # Phase 6: the PptxGenJS comparison generator lives in its own package.

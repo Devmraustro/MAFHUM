@@ -38,6 +38,7 @@ from mafhum_api.services.documents.storage import DocumentStorage, LocalFileStor
 from mafhum_api.services.documents.upload_sessions import UploadSessionService
 from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 from mafhum_api.services.documents.worker import ProcessingWorker
+from mafhum_api.services.identity.request_throttle import RequestThrottle
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
 from mafhum_api.services.identity.tokens import AccountTokenService
@@ -157,6 +158,12 @@ def build_context(settings: Settings | None = None) -> AppContext:
             lambda: build_email_sender(settings),
             batch_size=settings.outbox_batch_size,
             max_attempts=settings.outbox_max_attempts,
+        ),
+        request_throttle=RequestThrottle(
+            database,
+            pepper=settings.session_secret,
+            window_seconds=settings.request_throttle_window_seconds,
+            max_attempts=settings.request_throttle_max_attempts,
         ),
         login_throttle=LoginThrottle(
             database,

@@ -35,7 +35,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -342,5 +342,13 @@ class OutboxService:
         message = EmailMessage()
         message["To"] = row.recipient
         message["Subject"] = rendered.subject
+        # RFC 5322 requires both. Omitting Date is not cosmetic: relays reject or
+        # delay such mail (SpamAssassin scores it, some MTAs 554 it), and a reset
+        # link that is quarantined for a missing header is a locked-out student.
+        # `SmtpEmailSender` stamps these too, but the message must be correct
+        # before any transport sees it, including the file transport used in
+        # development.
+        message["Date"] = formatdate(localtime=False)
+        message["Message-ID"] = make_msgid(domain="mafhum.local")
         message.set_content(rendered.body)
         return message

@@ -10,7 +10,8 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify:api-origin": "node scripts/verify-api-origin.mjs"
   },
   "dependencies": {
     "next": "16.4.2",

@@ -251,6 +251,7 @@ class TestHistory:
         # walk_revisions returns newest-first. Asserting the exact chain, rather
         # than just its length, catches both a gap and a duplicated revision.
         assert [r.revision for r in revisions] == [
+            "0012_request_throttle",
             "0011_account_lifecycle",
             "0010_upload_sessions",
             "0009_admin_audit",

@@ -1157,3 +1157,29 @@ class EmailOutbox(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ThrottledAction(Base):
+    """A rate-limited request by a client that was not signed in.
+
+    The login throttle cannot cover password recovery: the endpoint has to be
+    callable by someone who cannot sign in. That makes it an open, mail-sending
+    endpoint unless it has its own counter, which is what this table is.
+
+    ``scope`` separates the buckets (``password_reset``, ``email_verification``)
+    so exhausting one does not disable the other. ``client_key`` is an HMAC of the
+    client identifier rather than the identifier itself: the throttle only compares
+    keys for equality, so keeping raw addresses here would turn a rate limiter into
+    a log of who tried to recover which account from where.
+    """
+
+    __tablename__ = "throttled_actions"
+    __table_args__ = (
+        Index("ix_throttled_actions_scope_client", "scope", "client_key", "attempted_at"),
+        Index("ix_throttled_actions_attempted", "attempted_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    client_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

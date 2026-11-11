@@ -96,6 +96,7 @@ which would let them receive the victim's token.
 ## Operator checklist
 
 1. Set `PUBLIC_WEB_URL` to the public origin, exactly.
-2. Choose `EMAIL_DELIVERY=smtp` and fill the `SMTP_*` values.
+2. Choose `EMAIL_DELIVERY=smtp` and fill the `SMTP_*` values — provider-specific
+   values and free-tier limits are in [`EMAIL_PROVIDERS.md`](EMAIL_PROVIDERS.md).
 3. Request one reset yourself and complete it end to end.
 4. Only then tell users that password recovery works.

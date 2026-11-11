@@ -632,6 +632,16 @@ const fr: Dictionary = {
 
 const dictionaries: Record<Locale, Dictionary> = { ar, fr };
 
+/**
+ * The dictionaries, exported for the parity tests only.
+ *
+ * The two locales must never drift: a missing French key silently falls back to
+ * Arabic, which is how a "translated" interface ends up half Arabic. Exporting the
+ * data lets a test assert exact key parity, no empty strings, and no Arabic script
+ * left inside the French copy.
+ */
+export const dictionariesByLocale = { ar, fr } as const;
+
 /** Look up a localized string. Falls back to Arabic, then to the key itself. */
 export function t(locale: Locale, key: string): string {
   return dictionaries[locale][key] ?? dictionaries.ar[key] ?? key;

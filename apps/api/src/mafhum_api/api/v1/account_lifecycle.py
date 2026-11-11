@@ -32,6 +32,7 @@ from mafhum_api.api.deps import (
     CsrfGuardAnonymous,
     CurrentUser,
     DbSession,
+    client_identifier,
 )
 from mafhum_api.api.schemas import (
     AccountStateResponse,
@@ -51,6 +52,22 @@ from mafhum_api.services.notifications.email import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+# Scope names, not credentials; the linter sees "password" and objects.
+SCOPE_PASSWORD_RESET = "password_reset"  # noqa: S105
+SCOPE_EMAIL_VERIFICATION = "email_verification"
+
+
+def _throttle(context: Context, request: Request, scope: str) -> None:
+    """Charge one attempt against the caller's budget, or refuse.
+
+    Checked before the account lookup so a throttled caller cannot use response
+    timing to learn whether an address exists.
+    """
+    key = client_identifier(request, trusted_hops=context.settings.trusted_proxy_hops)
+    context.request_throttle.check(scope, key)
+    context.request_throttle.record(scope, key)
 
 
 def _require_delivery(context: Context) -> None:
@@ -87,8 +104,10 @@ def request_password_reset(
     payload: PasswordResetRequest,
     context: Context,
     db: DbSession,
+    request: Request,
 ) -> MessageResponse:
     """Queue a reset mail, answering identically whether or not the address exists."""
+    _throttle(context, request, SCOPE_PASSWORD_RESET)
     _require_delivery(context)
 
     user = context.identity.find_active_by_email(db, payload.email)
@@ -173,7 +192,11 @@ def request_email_verification(
     user: CurrentUser,
     context: Context,
     db: DbSession,
+    request: Request,
 ) -> MessageResponse:
+    # Authenticated, but still mail-sending: a signed-in account must not be able
+    # to use this endpoint as a mail cannon at a victim's address.
+    _throttle(context, request, SCOPE_EMAIL_VERIFICATION)
     _require_delivery(context)
     if context.identity.email_is_verified(db, user.id):
         return MessageResponse(message="بريدك مؤكَّد بالفعل.")

@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     # API process rather than per worker.
     login_throttle_window_seconds: int = 60
     login_throttle_max_attempts: int = 10
+    # Throttle for the *unauthenticated* mail-sending endpoints (password reset,
+    # address verification). Deliberately tighter than the login window: each
+    # allowed call costs a real email, and on a free tier an abused endpoint takes
+    # recovery down for everyone. Five per 15 minutes is far above what a human
+    # needs and far below what a script would want.
+    request_throttle_window_seconds: int = 900
+    request_throttle_max_attempts: int = 5
+    # How many proxies sit between the client and this process. 1 = one edge that
+    # sets X-Forwarded-For (Vercel, or Next's server in the compose stack). Two
+    # hops (e.g. CDN -> load balancer -> API) must say 2, otherwise every client
+    # resolves to the CDN address and all of them share a single rate-limit bucket.
+    trusted_proxy_hops: int = 1
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     # --- upload limits (server-authoritative) ---------------------------------

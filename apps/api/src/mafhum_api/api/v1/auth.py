@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 
-from mafhum_api.api.deps import Context, CurrentUser, DbSession
+from mafhum_api.api.deps import Context, CurrentUser, DbSession, client_identifier
 from mafhum_api.api.schemas import (
     CsrfTokenResponse,
     LoginRequest,
@@ -16,13 +16,6 @@ from mafhum_api.core.security import generate_csrf_token
 from mafhum_api.db.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def _client_key(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
-    return (request.client.host if request.client else "unknown")[:64]
 
 
 def _set_auth_cookies(response: Response, context: Context, token: str, csrf: str) -> None:
@@ -96,7 +89,7 @@ def login(
     context: Context,
     db: DbSession,
 ) -> SessionResponse:
-    key = _client_key(request)
+    key = client_identifier(request, trusted_hops=context.settings.trusted_proxy_hops)
     # Counted in the database, so the configured limit is the real limit across
     # every API process rather than per worker.
     context.login_throttle.check(key)
