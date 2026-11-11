@@ -50,6 +50,13 @@ ACTIONS: frozenset[str] = frozenset(
         "auth_login",
         "auth_login_failed",
         "auth_logout",
+        "password_reset_requested",
+        "password_reset_requested_unknown",
+        "password_reset_completed",
+        "password_changed",
+        "email_verification_requested",
+        "email_verified",
+        "session_revoked",
         "account_deleted",
         "account_exported",
         "audit_events_purged",
@@ -68,7 +75,9 @@ ACTIONS: frozenset[str] = frozenset(
     }
 )
 
-_ALLOWED_DETAIL_KEYS: frozenset[str] = frozenset({"reason", "resource", "status", "code", "count"})
+_ALLOWED_DETAIL_KEYS: frozenset[str] = frozenset(
+    {"reason", "resource", "status", "code", "count", "sessions_revoked", "delivered", "failed"}
+)
 _MAX_DETAIL_CHARS = 120
 _MAX_PAGE_SIZE = 100
 DENIAL_WINDOW_SECONDS = 60

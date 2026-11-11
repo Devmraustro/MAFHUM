@@ -548,3 +548,589 @@ tbody tr:hover {
   margin: 0;
   padding-inline-start: 0;
 }
+
+/* ==========================================================================
+ * Landing page
+ *
+ * A landing page is where a product is most tempted to overstate itself, so the
+ * layout is deliberately editorial: one clear claim, evidence under it, then the
+ * limitations stated in the same voice as the benefits.
+ *
+ * Everything here is CSS-only. Nothing is hidden behind JavaScript, so the page
+ * is complete before hydration, and every animation is disabled under
+ * `prefers-reduced-motion`.
+ * ======================================================================== */
+
+.landing {
+  /* Children break out of the shared `main` width where a full-bleed band is
+   * wanted, without a second layout wrapper. */
+  display: block;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  align-items: center;
+  gap: 3rem;
+  padding-block: 2.5rem 3.5rem;
+}
+
+.hero-copy {
+  max-width: 34rem;
+}
+
+.hero-eyebrow {
+  margin: 0 0 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--navy-600);
+  text-transform: none;
+}
+
+.hero-title {
+  font-size: clamp(1.9rem, 4.2vw, 3rem);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  margin-block: 0 1rem;
+  color: var(--navy-900);
+  /* Arabic headlines need a little extra leading to keep the dots clear. */
+  padding-block-end: 0.15em;
+}
+
+.hero-lead {
+  font-size: 1.075rem;
+  color: var(--ink-muted);
+  margin-block: 0 1.6rem;
+  max-width: 32rem;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.hero-note {
+  margin-block: 1rem 0;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.hero-art {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px -28px rgba(11, 37, 69, 0.45);
+  /* A hairline edge keeps the illustration from bleeding into the page. */
+  outline: 1px solid var(--line);
+}
+
+.hero-art img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+}
+
+.btn-lg {
+  font-size: 1rem;
+  padding: 0.75rem 1.4rem;
+}
+
+.btn-inverse {
+  background: var(--white);
+  color: var(--navy-800);
+}
+
+.btn-inverse:hover:not(:disabled) {
+  background: var(--navy-50);
+}
+
+/* ------------------------------------------------------------ stat strip --- */
+.stat-strip {
+  list-style: none;
+  margin: 0 0 3.5rem;
+  padding: 1.1rem 1.4rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem 1.5rem;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.stat-strip li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.9rem;
+  color: var(--ink-muted);
+}
+
+.stat-mark {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 3rem;
+  padding-inline: 0.4rem;
+  block-size: 2rem;
+  border-radius: 999px;
+  background: var(--navy-100);
+  color: var(--navy-800);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+/* ------------------------------------------------------------- sections --- */
+.landing-section {
+  padding-block: 2.5rem;
+  scroll-margin-block-start: 1.5rem;
+}
+
+.section-head {
+  max-width: 42rem;
+  margin-block-end: 2rem;
+}
+
+.section-head h2 {
+  font-size: clamp(1.35rem, 2.4vw, 1.75rem);
+  margin-block: 0 0.6rem;
+}
+
+.section-lead {
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+/* ------------------------------------------------------------- features --- */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 1.25rem;
+}
+
+.feature-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1.35rem;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.feature-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.feature-card p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.94rem;
+}
+
+.feature-art {
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--navy-50);
+  border: 1px solid var(--navy-100);
+}
+
+.feature-art img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+}
+
+/* Placeholder art for the citation feature: a quotation mark and a locator,
+ * which is what a grounded answer actually looks like. */
+.feature-art-mark {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0.35rem;
+  /* Keeps the four cards optically even without an image. */
+  aspect-ratio: 4 / 3;
+  background: linear-gradient(160deg, var(--navy-800), var(--navy-600));
+  color: var(--white);
+}
+
+.quote-mark {
+  font-size: 4rem;
+  line-height: 1;
+  opacity: 0.9;
+}
+
+.quote-source {
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  opacity: 0.85;
+}
+
+/* ------------------------------------------------------------------ how --- */
+.how-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1.25rem;
+  counter-reset: step;
+}
+
+.how-list li {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  padding: 1.1rem;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.how-list h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.how-list p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink-muted);
+}
+
+.how-number {
+  flex: none;
+  inline-size: 2rem;
+  block-size: 2rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--navy-800);
+  color: var(--white);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+/* ----------------------------------------------------------- principles --- */
+.principles {
+  background: var(--navy-50);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding-inline: 1.5rem;
+}
+
+.principle-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.principle-list li {
+  position: relative;
+  padding-inline-start: 1.9rem;
+  color: var(--ink);
+}
+
+.principle-list li::before {
+  content: "✓";
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0.05em;
+  inline-size: 1.35rem;
+  block-size: 1.35rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--success-bg);
+  color: var(--success);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.text-link {
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ cta --- */
+.cta-band {
+  margin-block: 3rem 2rem;
+  padding: 2rem;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--navy-900), var(--navy-700));
+  color: var(--white);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.cta-band h2 {
+  color: var(--white);
+  margin-block: 0 0.5rem;
+  font-size: 1.4rem;
+}
+
+.cta-band p {
+  margin: 0;
+  color: var(--navy-100);
+  max-width: 34rem;
+}
+
+/* --------------------------------------------------------------- footer --- */
+.landing-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-block: 1.5rem 0.5rem;
+  border-block-start: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.landing-footer p {
+  margin: 0;
+}
+
+.landing-footer nav {
+  display: flex;
+  gap: 1.25rem;
+}
+
+/* --------------------------------------------------------- scroll reveal --- */
+/* Progressive enhancement only: the element is fully visible without this
+ * animation running, because the animation's end state is `opacity: 1` and it
+ * starts immediately rather than waiting for a scroll observer. */
+.reveal {
+  animation: reveal-up 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.reveal-late {
+  animation-delay: 0.12s;
+}
+
+@keyframes reveal-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ------------------------------------------------ shared app-page pieces --- */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.page-head h1 {
+  margin-block-end: 0.25rem;
+}
+
+.auth-card {
+  max-width: 32rem;
+  margin-inline: auto;
+}
+
+.notice {
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  margin-block: 0 1rem;
+  font-size: 0.92rem;
+}
+
+.notice-success {
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid currentColor;
+}
+
+.notice-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid currentColor;
+}
+
+.badge-success {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.badge-warning {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.badge-info {
+  background: var(--navy-100);
+  color: var(--navy-800);
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.25rem;
+  max-width: 32rem;
+}
+
+/* Visible only to screen readers; the search input has a real label. */
+.sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.search-bar {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-block-end: 0.75rem;
+}
+
+.search-bar input {
+  flex: 1 1 16rem;
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+}
+
+.account-email {
+  font-weight: 600;
+  color: var(--navy-800);
+  word-break: break-all;
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.session-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-block-end: 0.9rem;
+  border-block-end: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.session-list li:last-child {
+  border-block-end: 0;
+  padding-block-end: 0;
+}
+
+.session-agent {
+  margin: 0 0 0.2rem;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.project-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1.25rem;
+}
+
+.project-card h2 {
+  margin-block: 0 0.4rem;
+  font-size: 1.1rem;
+}
+
+.project-meta {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-block: 0.5rem 1rem;
+}
+
+/* ------------------------------------------------------- responsive ends --- */
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.75rem;
+    padding-block: 1.5rem 2.5rem;
+  }
+
+  .hero-art {
+    order: -1;
+  }
+
+  .stat-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .cta-band {
+    padding: 1.35rem;
+  }
+
+  .landing-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* Respect the OS-level motion preference: no reveals, no transitions, but the
+ * layout stays identical and nothing becomes invisible. */
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal-late {
+    animation: none;
+  }
+
+  * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Active project filter on the document list: visible, and removable in place. */
+.filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.9rem;
+  margin-block: 0 1rem;
+  border: 1px solid var(--navy-100);
+  background: var(--navy-50);
+  border-radius: 10px;
+  font-size: 0.9rem;
+}

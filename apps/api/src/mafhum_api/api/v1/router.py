@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from mafhum_api.api.v1 import (
     account,
+    account_lifecycle,
     admin,
     auth,
     documents,
@@ -19,6 +20,7 @@ from mafhum_api.api.v1 import (
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
+api_router.include_router(account_lifecycle.router)
 api_router.include_router(projects.router)
 api_router.include_router(documents.router)
 api_router.include_router(sources.router)

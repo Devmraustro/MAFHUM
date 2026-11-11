@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     # API process rather than per worker.
     login_throttle_window_seconds: int = 60
     login_throttle_max_attempts: int = 10
+    # Throttle for the *unauthenticated* mail-sending endpoints (password reset,
+    # address verification). Deliberately tighter than the login window: each
+    # allowed call costs a real email, and on a free tier an abused endpoint takes
+    # recovery down for everyone. Five per 15 minutes is far above what a human
+    # needs and far below what a script would want.
+    request_throttle_window_seconds: int = 900
+    request_throttle_max_attempts: int = 5
+    # How many proxies sit between the client and this process. 1 = one edge that
+    # sets X-Forwarded-For (Vercel, or Next's server in the compose stack). Two
+    # hops (e.g. CDN -> load balancer -> API) must say 2, otherwise every client
+    # resolves to the CDN address and all of them share a single rate-limit bucket.
+    trusted_proxy_hops: int = 1
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     # --- upload limits (server-authoritative) ---------------------------------
@@ -119,6 +131,37 @@ class Settings(BaseSettings):
     processing_stale_after_seconds: int = 300
     processing_max_attempts: int = 3
     processing_startup_recovery: bool = True
+
+    # --- account lifecycle -----------------------------------------------------
+    # Password reset and address verification both depend on outbound email, so
+    # they are opt-in. With the default (disabled) configuration the API still
+    # serves the endpoints, but refuses to start a reset with an explicit,
+    # honest "email delivery is not configured" instead of pretending a message
+    # was sent. Nothing silently no-ops.
+    email_delivery: Literal["disabled", "file", "smtp"] = "disabled"
+    # Where the "file" transport writes rendered messages (development only).
+    # One .eml per message, mode 0600, inside a gitignored directory. This is
+    # what replaces "print the reset link to the log": the log is redacted on
+    # purpose, so a real token cannot travel through it.
+    email_file_dir: Path = Path("./.mail")
+    # Public origin used to build links in email. Never inferred from the Host
+    # header: an attacker controls that header, and the resulting link is
+    # emailed to the user.
+    public_web_url: str = "http://localhost:3000"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    # "starttls" (587), "ssl" (465) or "plain" (local relay only).
+    smtp_security: Literal["starttls", "ssl", "plain"] = "starttls"
+    smtp_from_address: str = "no-reply@mafhum.local"
+    smtp_timeout_seconds: float = 15.0
+    # Tokens are single-use and short-lived; minutes.
+    password_reset_ttl_minutes: int = 60
+    email_verification_ttl_minutes: int = 60 * 24 * 3
+    # Outbox delivery pass: bounded so one scheduled run cannot loop forever.
+    outbox_batch_size: int = 20
+    outbox_max_attempts: int = 5
 
     # --- concurrency guards ---------------------------------------------------
     max_concurrent_uploads_per_user: int = 3
@@ -256,6 +299,47 @@ class Settings(BaseSettings):
     def export_max_total_bytes(self) -> int:
         return self.export_max_total_bytes_mb * 1024 * 1024
 
+    @property
+    def email_delivery_configured(self) -> bool:
+        """True when this deployment can actually deliver mail.
+
+        ``log`` is a real delivery mode (messages are written to the application
+        log for local development), so it counts. ``smtp`` counts only when a
+        host was supplied.
+        """
+        if self.email_delivery == "file":
+            return True
+        if self.email_delivery == "smtp":
+            return bool(self.smtp_host.strip())
+        return False
+
+    @field_validator("smtp_port")
+    @classmethod
+    def _valid_port(cls, v: int) -> int:
+        if not 1 <= v <= 65535:
+            raise ValueError("smtp_port must be between 1 and 65535")
+        return v
+
+    @field_validator(
+        "password_reset_ttl_minutes",
+        "email_verification_ttl_minutes",
+        "outbox_batch_size",
+        "outbox_max_attempts",
+    )
+    @classmethod
+    def _positive_lifecycle_bound(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("account lifecycle bounds must be >= 1")
+        return v
+
+    @field_validator("public_web_url")
+    @classmethod
+    def _valid_public_url(cls, v: str) -> str:
+        stripped = v.strip().rstrip("/")
+        if not stripped.startswith(("http://", "https://")):
+            raise ValueError("public_web_url must be an absolute http(s) URL")
+        return stripped
+
     def assert_production_ready(self) -> None:
         """Refuse to boot in production with development defaults.
 
@@ -273,6 +357,10 @@ class Settings(BaseSettings):
             problems.append("COOKIE_SECURE must be true in production")
         if "localhost" in self.database_url:
             problems.append("DATABASE_URL must not point at localhost in production")
+        if self.email_delivery == "file":
+            problems.append(
+                "EMAIL_DELIVERY=file writes messages to disk and must not be used in production"
+            )
         if not self.malware_scan_required:
             problems.append("MALWARE_SCAN_REQUIRED must be true in production")
         elif not (self.clamd_host or self.clamd_unix_path):

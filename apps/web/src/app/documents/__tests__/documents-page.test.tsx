@@ -13,8 +13,16 @@ const routerStub = vi.hoisted(() => ({
   replace: vi.fn(),
 }));
 
+/**
+ * The query string the page will see. Tests that exercise `?project=` replace it;
+ * everything else gets an empty one.
+ */
+const searchParamsStub = { current: new URLSearchParams() };
+
 vi.mock("next/navigation", () => ({
   useRouter: () => routerStub,
+  // The workspace only calls `.get("project")`, so plain URLSearchParams suffices.
+  useSearchParams: () => searchParamsStub.current,
 }));
 import { LocaleProvider } from "@/lib/locale-context";
 import { t } from "@/lib/i18n";
@@ -132,6 +140,7 @@ function attachFile(input: HTMLInputElement, file: File) {
 beforeEach(() => {
   routerStub.push.mockClear();
   routerStub.replace.mockClear();
+  searchParamsStub.current = new URLSearchParams();
 });
 
 afterEach(() => {
@@ -433,6 +442,34 @@ describe("documents workspace", () => {
     }
   });
 
+  it("starts filtered when the projects page links with ?project=", async () => {
+    searchParamsStub.current = new URLSearchParams("project=p-1");
+    const { calls } = routeFetch({
+      ...BASE_ROUTES,
+      "GET /projects": () => ({
+        body: { items: [{ id: "p-1", title: "مشروع التخرج", language: "ar" }], total: 1 },
+      }),
+      "GET /documents": () => ({ body: { items: [doc()], total: 1, page: 1, page_size: 20 } }),
+    });
+    renderPage();
+
+    await screen.findByText("بحث-التخرج.pdf");
+
+    // The filter is sent to the API, not applied in the browser: pagination and
+    // totals must describe the filtered set, not a client-side slice of it.
+    const list = calls.find((call) => call.url.includes("/documents?"));
+    expect(list?.url).toContain("project_id=p-1");
+
+    // And the student can see the filter is on and remove it.
+    expect(screen.getByText(new RegExp(t("ar", "documents.filteredByProject")))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("ar", "documents.clearFilter") }));
+    await waitFor(() => expect(routerStub.replace).toHaveBeenCalledWith("/documents"));
+    // Clearing the filter starts a fresh list request from page 1.
+    await waitFor(() =>
+      expect(calls.filter((call) => call.url.includes("/documents?")).length).toBeGreaterThan(1),
+    );
+  });
+
   it("redirects to the sign-in page when the session has expired", async () => {
     routeFetch({
       ...BASE_ROUTES,
@@ -443,6 +480,8 @@ describe("documents workspace", () => {
     });
     renderPage();
 
-    await waitFor(() => expect(routerStub.replace).toHaveBeenCalledWith("/"));
+    // The sign-in page moved to /login when the public landing page took over
+    // "/"; an expired session now lands where the form actually is.
+    await waitFor(() => expect(routerStub.replace).toHaveBeenCalledWith("/login"));
   });
 });

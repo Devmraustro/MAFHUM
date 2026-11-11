@@ -38,8 +38,11 @@ from mafhum_api.services.documents.storage import DocumentStorage, LocalFileStor
 from mafhum_api.services.documents.upload_sessions import UploadSessionService
 from mafhum_api.services.documents.vercel_blob_storage import VercelBlobStorage
 from mafhum_api.services.documents.worker import ProcessingWorker
+from mafhum_api.services.identity.request_throttle import RequestThrottle
 from mafhum_api.services.identity.service import IdentityService
 from mafhum_api.services.identity.throttle import LoginThrottle
+from mafhum_api.services.identity.tokens import AccountTokenService
+from mafhum_api.services.notifications.email import OutboxService, build_email_sender
 from mafhum_api.services.presentations.generator import PythonPptxGenerator
 from mafhum_api.services.presentations.service import (
     PresentationLimits,
@@ -147,6 +150,21 @@ def build_context(settings: Settings | None = None) -> AppContext:
         presentations=presentations,
         worker=worker,
         audit=AuditService(),
+        account_tokens=AccountTokenService(
+            reset_ttl_minutes=settings.password_reset_ttl_minutes,
+            verification_ttl_minutes=settings.email_verification_ttl_minutes,
+        ),
+        outbox=OutboxService(
+            lambda: build_email_sender(settings),
+            batch_size=settings.outbox_batch_size,
+            max_attempts=settings.outbox_max_attempts,
+        ),
+        request_throttle=RequestThrottle(
+            database,
+            pepper=settings.session_secret,
+            window_seconds=settings.request_throttle_window_seconds,
+            max_attempts=settings.request_throttle_max_attempts,
+        ),
         login_throttle=LoginThrottle(
             database,
             window_seconds=settings.login_throttle_window_seconds,

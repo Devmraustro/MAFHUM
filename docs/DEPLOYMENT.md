@@ -1,3 +1,6 @@
+> Canonical deployment path and the evidence behind it:
+> [`DEPLOYMENT_DECISION.md`](DEPLOYMENT_DECISION.md).
+
 # MAFHUM — Deployment
 
 ## Process model: one document worker per database

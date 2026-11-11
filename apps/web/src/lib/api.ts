@@ -103,6 +103,7 @@ export interface DocumentTextResponse {
   total: number;
   page: number;
   page_size: number;
+  query?: string | null;
 }
 
 export interface Usage {
@@ -257,6 +258,22 @@ export const auth = {
     }
   },
 
+  /**
+   * Bootstrap a CSRF cookie without a session.
+   *
+   * The reset and verification pages run while signed out, so they cannot use
+   * `/auth/session` (which requires a session). This endpoint issues the same
+   * double-submit cookie and grants nothing on its own.
+   */
+  async ensureAnonymousCsrf(): Promise<string | null> {
+    try {
+      const body = await request<{ csrf_token: string }>("/auth/csrf");
+      return body.csrf_token;
+    } catch {
+      return readCsrfToken();
+    }
+  },
+
   /** Ensure a readable CSRF cookie exists for the current session. */
   async ensureCsrf(): Promise<string | null> {
     try {
@@ -268,15 +285,82 @@ export const auth = {
   },
 };
 
+// ------------------------------------------------------- account lifecycle
+export interface AccountState {
+  email: string;
+  email_verified: boolean;
+  email_delivery_configured: boolean;
+  password_reset_available: boolean;
+}
+
+export interface SessionItem {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  user_agent: string | null;
+  current: boolean;
+}
+
+export interface SessionList {
+  items: SessionItem[];
+  total: number;
+}
+
+/**
+ * Account lifecycle calls.
+ *
+ * Every mutation here is CSRF-guarded server-side; the client only has to make
+ * sure a CSRF cookie exists before the first one, which the pages do with
+ * `auth.ensureCsrf()`.
+ */
+export const account = {
+  state(): Promise<AccountState> {
+    return request("/auth/account-state");
+  },
+  requestPasswordReset(email: string): Promise<{ message: string }> {
+    return request("/auth/password-reset/request", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+  confirmPasswordReset(token: string, password: string): Promise<{ message: string }> {
+    return request("/auth/password-reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
+    });
+  },
+  requestEmailVerification(): Promise<{ message: string }> {
+    return request("/auth/email-verification/request", { method: "POST" });
+  },
+  confirmEmailVerification(token: string): Promise<{ message: string }> {
+    return request("/auth/email-verification/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  },
+  changePassword(currentPassword: string, newPassword: string): Promise<{ message: string }> {
+    return request("/auth/password/change", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  },
+  sessions(): Promise<SessionList> {
+    return request("/auth/sessions");
+  },
+  revokeSession(id: string): Promise<void> {
+    return request(`/auth/sessions/${id}`, { method: "DELETE" });
+  },
+};
+
 // ----------------------------------------------------------------- projects
 export const projects = {
   list(): Promise<{ items: Project[]; total: number }> {
     return request("/projects");
   },
-  create(title: string, language: string): Promise<Project> {
+  create(title: string, language: string, description = ""): Promise<Project> {
     return request("/projects", {
       method: "POST",
-      body: JSON.stringify({ title, language }),
+      body: JSON.stringify({ title, language, description }),
     });
   },
   remove(id: string): Promise<void> {
@@ -360,8 +444,17 @@ export const documents = {
     return request(`/documents/${id}`);
   },
 
-  text(id: string, page = 1, pageSize = 20): Promise<DocumentTextResponse> {
-    return request(`/documents/${id}/text?page=${page}&page_size=${pageSize}`);
+  /**
+   * A page of the document's text, optionally filtered by a search term.
+   *
+   * The server folds Arabic diacritics and alef/ya/ta-marbuta variants before
+   * matching, so an unvowelled query finds a vowelled document. The response
+   * echoes `query` back when a filter was applied.
+   */
+  text(id: string, page = 1, pageSize = 20, query?: string): Promise<DocumentTextResponse> {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (query && query.trim()) params.set("q", query.trim());
+    return request(`/documents/${id}/text?${params.toString()}`);
   },
 
   /**

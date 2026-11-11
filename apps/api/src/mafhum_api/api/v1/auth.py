@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 
-from mafhum_api.api.deps import Context, CurrentUser, DbSession
+from mafhum_api.api.deps import Context, CurrentUser, DbSession, client_identifier
 from mafhum_api.api.schemas import (
     CsrfTokenResponse,
     LoginRequest,
@@ -16,13 +16,6 @@ from mafhum_api.core.security import generate_csrf_token
 from mafhum_api.db.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def _client_key(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
-    return (request.client.host if request.client else "unknown")[:64]
 
 
 def _set_auth_cookies(response: Response, context: Context, token: str, csrf: str) -> None:
@@ -96,7 +89,7 @@ def login(
     context: Context,
     db: DbSession,
 ) -> SessionResponse:
-    key = _client_key(request)
+    key = client_identifier(request, trusted_hops=context.settings.trusted_proxy_hops)
     # Counted in the database, so the configured limit is the real limit across
     # every API process rather than per worker.
     context.login_throttle.check(key)
@@ -145,6 +138,27 @@ def logout(
 @router.get("/session", response_model=CsrfTokenResponse)
 def session_csrf(user: CurrentUser, response: Response, context: Context) -> CsrfTokenResponse:
     """Issue or rotate the CSRF token for the current session."""
+    csrf = generate_csrf_token()
+    response.set_cookie(
+        context.settings.csrf_cookie_name,
+        csrf,
+        httponly=False,
+        secure=context.settings.cookie_secure,
+        samesite="lax",
+        path="/",
+        max_age=context.settings.session_ttl_minutes * 60,
+    )
+    return CsrfTokenResponse(csrf_token=csrf)
+
+
+@router.get("/csrf", response_model=CsrfTokenResponse)
+def public_csrf(response: Response, context: Context) -> CsrfTokenResponse:
+    """Issue a CSRF cookie to a visitor with no session.
+
+    Needed by the recovery and verification pages: those run while signed out, and
+    the double-submit check needs a cookie to compare against. The cookie carries
+    no identity and grants nothing on its own.
+    """
     csrf = generate_csrf_token()
     response.set_cookie(
         context.settings.csrf_cookie_name,

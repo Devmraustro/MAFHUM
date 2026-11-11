@@ -43,11 +43,12 @@ a variable `Settings` does not read.
 deterministic mock AI provider.
 
 Done, except: the AI gateway is a disabled flag rather than a mock provider.
-A root `docker-compose.yml` and `apps/api/Dockerfile` are now tracked, and Gate B
-verified the API image build, non-root runtime, readiness and graceful shutdown
-on a GitHub-hosted runner (run `40377229156`). **`docker compose up` on the full
-stack has not been executed**, and there is no `apps/web/Dockerfile`; neither is
-claimed as verified.
+A root `docker-compose.yml`, `apps/api/Dockerfile` **and `apps/web/Dockerfile`**
+are tracked, and Gate B verified the API image build, non-root runtime, readiness
+and graceful shutdown on a GitHub-hosted runner (run `40377229156`). `docker
+compose up` HAS since been executed by the deployment-rehearsal workflow
+(`40530008866`, `40593579965`); the *production* blueprint remains
+config-validated only, and that distinction is kept everywhere it matters.
 
 ## Phase 2 — Secure identity and workspace
 
@@ -58,7 +59,18 @@ Done. Login throttling and quotas were hardened to be **database-enforced**
 (`login_attempts` table, `SELECT ... FOR UPDATE` on the owning user row) and
 are verified across two independent application instances. The document
 processing worker remains per-process — see `docs/DEPLOYMENT.md`.
-Account **export** is not implemented — deletion is.
+
+Account **export** IS implemented (`GET /api/v1/account/me/export`, bounded ZIP
+built against hard caps) and **deletion** is too. An earlier revision of this
+file said export was unimplemented; that was stale and is corrected here.
+
+**Account lifecycle (added, previously absent):** password reset, email
+verification, password change and session revoke. Before this, a student who
+forgot their password lost access to their documents permanently. See
+`docs/ACCOUNT_LIFECYCLE.md`. Verification is *derived* from a consumed token,
+not a mutable boolean; reset links are built from `PUBLIC_WEB_URL`, never from
+the request `Host` header; and when no mail transport is configured the endpoints
+answer `503` with an honest message instead of a cheerful `200`.
 
 ## Phase 3 — Documents and source catalog
 

@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Iterator
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 
@@ -41,6 +41,7 @@ from mafhum_api.api.schemas import (
 )
 from mafhum_api.core.errors import FileRejectedError, ValidationError
 from mafhum_api.db.models import Document
+from mafhum_api.services.documents import ocr as ocr_capability
 from mafhum_api.services.documents.validators import ALLOWED_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,9 @@ def upload_limits(context: Context) -> LimitsResponse:
         max_documents_per_user=settings.max_documents_per_user,
         max_total_bytes_per_user_mb=settings.max_total_bytes_per_user_mb,
         allowed_extensions=sorted(ALLOWED_EXTENSIONS),
-        ocr_available=False,
+        # Read from the capability module so the UI cannot advertise OCR that
+        # no code path can perform.
+        ocr_available=ocr_capability.status().available,
         # Read from the service that does the scanning, so what is advertised is
         # what actually happens rather than a constant that can drift.
         malware_scanning_available=context.documents.scanner.available,
@@ -207,10 +210,25 @@ def get_document_text(
     db: DbSession,
     page: Page,
     page_size: PageSize,
+    q: Annotated[str | None, Query(max_length=200, description="بحث نصي داخل المستند")] = None,
 ) -> DocumentTextResponse:
-    result = context.documents.get_text(db, user.id, document_id, page=page, page_size=page_size)
+    """Return the document's text, or only the segments matching ``q``.
+
+    The same endpoint serves both because the shape of the answer is identical:
+    a page of segments plus the total. A separate search route would have had to
+    duplicate the ownership check for no benefit.
+    """
+    if q is not None and q.strip():
+        result = context.documents.search_text(
+            db, user.id, document_id, query=q, page=page, page_size=page_size
+        )
+    else:
+        result = context.documents.get_text(
+            db, user.id, document_id, page=page, page_size=page_size
+        )
     return DocumentTextResponse(
         document_id=document_id,
+        query=q if q and q.strip() else None,
         status=result.document_status,
         items=[
             DocumentTextSegmentResponse(

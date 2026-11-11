@@ -8,11 +8,13 @@ Why pypdf (see ``docs/OSS_REUSE_REGISTER.md``):
 PyMuPDF was rejected because its PyPI metadata declares
 "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License", and MAFHUM's
 reuse policy does not admit AGPL components without an explicit compatibility
-review. OCRmyPDF was rejected because it requires the external ``tesseract``
-binary, which is not part of the default install.
+review. OCRmyPDF was rejected for the same reason, and because it pulls in the
+external ``tesseract`` binary; the capability is now described in one place,
+``services/documents/ocr.py``, which also explains what a real backend would need.
 
 **No OCR is performed.** A PDF that carries no extractable text layer is
-reported as scanned rather than silently returning empty text.
+reported as scanned — ``is_scanned`` on the document and its pages — rather than
+silently returning empty text and letting a student believe a scan is searchable.
 """
 
 from __future__ import annotations

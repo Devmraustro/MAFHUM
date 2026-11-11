@@ -46,6 +46,11 @@ artifacts/
 .DS_Store
 Thumbs.db
 
+# Development mail transport: rendered .eml files contain live reset links.
+.mail/
+# Local preview scratch space (database URL, uploaded blobs, rendered mail).
+.preview/
+
 # Local end-to-end verification scratch space (a real PostgreSQL data directory,
 # uploaded blobs and generated connection strings live here).
 .e2e/

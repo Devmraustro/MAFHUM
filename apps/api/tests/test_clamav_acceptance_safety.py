@@ -337,15 +337,35 @@ def test_project_name_collision_aborts_before_any_mutation(tmp_path: Path) -> No
 
 
 def test_ambiguous_resource_state_aborts() -> None:
+    """Ambiguity aborts even when the loopback port is free.
+
+    ``port_free`` is pinned: these tests are about resource ambiguity and name
+    collision, so they must not depend on whether something in the host happens
+    to be listening on 127.0.0.1:8000. Left to the default probe, the preflight
+    stops at the port check and the assertion never sees its own problem.
+    """
     docker = make_docker(preexisting_label_volumes={SAFE_PROJECT: [f"{SAFE_PROJECT}_clamd_db"]})
-    problems = PBA.preflight(docker, make_plan(), env={})
+    problems = PBA.preflight(docker, make_plan(), port_free=lambda port: True, env={})
     assert any("ambiguity" in problem for problem in problems)
 
 
 def test_container_name_collision_aborts() -> None:
+    """Name collision aborts even when the loopback port is free (see above)."""
     docker = make_docker(existing_container_names={f"{SAFE_PROJECT}-clamd-1"})
-    problems = PBA.preflight(docker, make_plan(), env={})
+    problems = PBA.preflight(docker, make_plan(), port_free=lambda port: True, env={})
     assert any("collision" in problem for problem in problems)
+
+
+def test_a_busy_port_is_reported_before_resource_ambiguity() -> None:
+    """A busy loopback port still aborts the run, and it does so first.
+
+    This is the behaviour the two tests above must not accidentally rely on, so
+    it gets its own explicit test instead of being implied by the host state.
+    """
+    docker = make_docker(preexisting_label_volumes={SAFE_PROJECT: [f"{SAFE_PROJECT}_clamd_db"]})
+    problems = PBA.preflight(docker, make_plan(), port_free=lambda port: False, env={})
+    assert any("already in use" in problem for problem in problems)
+    assert not any("ambiguity" in problem for problem in problems)
 
 
 # ------------------------------------------------------- default non-destructive

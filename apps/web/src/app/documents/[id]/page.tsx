@@ -28,6 +28,10 @@ export default function DocumentDetailPage() {
 
   const [projectTitle, setProjectTitle] = useState<{ id: string; title: string } | null>(null);
   const [segmentPage, setSegmentPage] = useState(1);
+  /** Draft value of the search box; only the submitted term drives requests. */
+  const [searchDraft, setSearchDraft] = useState("");
+  /** The term the current result page belongs to. Empty means "all text". */
+  const [appliedQuery, setAppliedQuery] = useState("");
   /**
    * Segments are stored together with the page they belong to, so "loading" is
    * *derived* rather than tracked by a flag set synchronously inside an effect,
@@ -94,7 +98,12 @@ export default function DocumentDetailPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const response = await documents.text(documentId, segmentPage, SEGMENT_PAGE_SIZE);
+        const response = await documents.text(
+          documentId,
+          segmentPage,
+          SEGMENT_PAGE_SIZE,
+          appliedQuery || undefined,
+        );
         if (!cancelled) {
           setSegmentResult({ page: segmentPage, items: response.items, total: response.total });
         }
@@ -105,7 +114,7 @@ export default function DocumentDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [documentId, segmentPage, status, t]);
+  }, [documentId, segmentPage, status, appliedQuery, t]);
 
   // Re-read the metadata while processing is still underway. The state update
   // fires from the timer callback, not from the effect body.
@@ -292,12 +301,59 @@ export default function DocumentDetailPage() {
             </span>
           </div>
 
+          <form
+            className="search-bar"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setSegmentPage(1);
+              setAppliedQuery(searchDraft.trim());
+            }}
+          >
+            <label className="sr-only" htmlFor="document-search">
+              {t("documents.search")}
+            </label>
+            <input
+              id="document-search"
+              type="search"
+              maxLength={200}
+              placeholder={t("documents.searchPlaceholder")}
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
+            />
+            <button className="btn btn-sm btn-primary" type="submit">
+              {t("documents.searchButton")}
+            </button>
+            {appliedQuery ? (
+              <button
+                className="btn btn-sm btn-secondary"
+                type="button"
+                onClick={() => {
+                  setSearchDraft("");
+                  setAppliedQuery("");
+                  setSegmentPage(1);
+                }}
+              >
+                {t("documents.searchClear")}
+              </button>
+            ) : null}
+          </form>
+
+          {appliedQuery ? (
+            <p className="hint" role="status">
+              {totalSegments} {t("documents.searchResults")} «{appliedQuery}» —{" "}
+              {t("documents.searchNote")}
+            </p>
+          ) : null}
+
           {segmentsLoading && segments.length === 0 ? (
             <p role="status">
               <span className="spinner" aria-hidden="true" /> {t("common.loading")}
             </p>
           ) : segments.length === 0 ? (
-            <p className="empty-state">{t("detail.noSegments")}</p>
+            <p className="empty-state">
+              {appliedQuery ? t("documents.searchNone") : t("detail.noSegments")}
+            </p>
           ) : (
             <ol className="segment-list" start={(segmentPage - 1) * SEGMENT_PAGE_SIZE + 1}>
               {segments.map((segment) => (
