@@ -367,8 +367,27 @@ The condition to clear it is an owner decision, not a code change: set
 | 6 | Throttle trusts `X-Forwarded-For` at a configured hop count | Medium | Confirm the edge overwrites the header; raise `TRUSTED_PROXY_HOPS` if two hops |
 | 7 | No real-browser E2E (no Chromium in this environment) | Medium | Visual/mobile review against a running instance; the CSS and viewport are in place but unverified visually |
 | 8 | Serverless path unverified end to end (no resident worker; tick-driven) | Medium | Accept tick semantics, or use containers |
-| 9 | Pre-existing ClamAV acceptance test isolation defect on port 8000 | Low | Free the port, or pass `--api-port` in the fixture; predates Phase 31 |
+| 9 | ~~Pre-existing ClamAV acceptance test isolation defect on port 8000~~ **CLOSED** | ~~Low~~ Resolved | Fixed: the two preflight tests pin `port_free`; a third test now asserts the busy-port abort explicitly |
 | 10 | OCR still not implemented (correctly advertised as unavailable) | Low (product scope) | Implement per `services/documents/ocr.py`; do not advertise before verification |
+
+### 10.1 Risk 9 closed — the port-8000 test defect
+
+Reproduced, then fixed. With a socket holding `127.0.0.1:8000`, both
+`test_ambiguous_resource_state_aborts` and `test_container_name_collision_aborts`
+failed before the change and pass after it, and the whole file passes with the
+port free as well.
+
+**Root cause:** those two tests are about resource ambiguity and container-name
+collision, but they called `PBA.preflight(docker, plan, env={})` without
+`port_free`. `preflight` checks the loopback port *first* and returns early when
+it is busy (`production_bootstrap_acceptance.py:614`), so on a host with anything
+listening on 8000 the assertion never reached the problem it was written to test.
+
+**Fix:** pin `port_free=lambda port: True` in both tests so they are hermetic,
+plus one new test, `test_a_busy_port_is_reported_before_resource_ambiguity`,
+which asserts the busy-port abort directly. The behaviour is now covered in both
+directions instead of being an accident of host state. No production code was
+changed and no assertion was weakened.
 
 ---
 
